@@ -1,0 +1,92 @@
+"""Tests for config.py: Settings loading and YAML target validation."""
+
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from investor.config import Settings, load_targets
+
+
+class TestSettings:
+    def test_loads_from_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BROKER", "alpaca_paper")
+        monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+        monkeypatch.setenv("ALPACA_SECRET_KEY", "test-secret")
+        s = Settings()
+        assert s.broker == "alpaca_paper"
+        assert s.alpaca_api_key == "test-key"
+
+    def test_invalid_broker_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BROKER", "coinbase")
+        monkeypatch.setenv("ALPACA_API_KEY", "k")
+        monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+        with pytest.raises(Exception, match="broker must be one of"):
+            Settings()
+
+    def test_missing_alpaca_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BROKER", "alpaca_paper")
+        monkeypatch.setenv("ALPACA_API_KEY", "")
+        monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+        with pytest.raises(Exception, match="ALPACA_API_KEY is required"):
+            Settings()
+
+
+class TestLoadTargets:
+    def test_valid_yaml_loads(self, tmp_path: Path) -> None:
+        yaml_text = textwrap.dedent("""\
+            watchlist: [VOO, QQQ, SCHD, AAPL, MSFT]
+            targets:
+              VOO:  { pct: 40, band: [35, 45] }
+              QQQ:  { pct: 25, band: [21, 29] }
+              SCHD: { pct: 15, band: [12, 18] }
+              AAPL: { pct: 10, band: [7,  13] }
+              MSFT: { pct: 5,  band: [3,  8]  }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        config = load_targets(str(f))
+        assert len(config.targets) == 5
+        assert config.cash_buffer_pct == 5.0
+        pcts = {t.ticker: t.pct for t in config.targets}
+        assert pcts["VOO"] == 40.0
+        assert sum(pcts.values()) == pytest.approx(95.0, abs=0.01)
+
+    def test_bad_sum_raises(self, tmp_path: Path) -> None:
+        yaml_text = textwrap.dedent("""\
+            watchlist: [VOO]
+            targets:
+              VOO: { pct: 50, band: [45, 55] }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        with pytest.raises(ValueError, match="must equal 100 - cash_buffer_pct"):
+            load_targets(str(f))
+
+    def test_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            load_targets(str(tmp_path / "nonexistent.yaml"))
+
+    def test_band_values_loaded(self, tmp_path: Path) -> None:
+        yaml_text = textwrap.dedent("""\
+            watchlist: [VOO]
+            targets:
+              VOO: { pct: 95, band: [85, 100] }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        config = load_targets(str(f))
+        voo = config.targets[0]
+        assert voo.band_low == 85.0
+        assert voo.band_high == 100.0
+
+    def test_real_targets_yaml_validates(self) -> None:
+        config = load_targets("./config/targets.yaml")
+        assert len(config.targets) == 5
+        total = sum(t.pct for t in config.targets)
+        assert abs(total - 95.0) <= 0.5

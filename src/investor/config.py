@@ -1,0 +1,100 @@
+"""Application configuration: pydantic-settings + YAML target loader."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+VALID_BROKERS = {"alpaca_paper", "alpaca_live", "moomoo"}
+
+
+@dataclass(frozen=True)
+class TickerTarget:
+    ticker: str
+    pct: float
+    band_low: float
+    band_high: float
+
+
+@dataclass(frozen=True)
+class TargetsConfig:
+    watchlist: list[str]
+    targets: list[TickerTarget]
+    cash_buffer_pct: float
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    broker: str = "alpaca_paper"
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+
+    duckdb_path: str = "./data/investor.duckdb"
+    targets_path: str = "./config/targets.yaml"
+
+    log_level: str = "INFO"
+
+    @field_validator("broker")
+    @classmethod
+    def validate_broker(cls, v: str) -> str:
+        if v not in VALID_BROKERS:
+            raise ValueError(f"broker must be one of {VALID_BROKERS}, got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_alpaca_keys(self) -> "Settings":
+        if self.broker.startswith("alpaca"):
+            if not self.alpaca_api_key:
+                raise ValueError("ALPACA_API_KEY is required when BROKER starts with 'alpaca'")
+            if not self.alpaca_secret_key:
+                raise ValueError("ALPACA_SECRET_KEY is required when BROKER starts with 'alpaca'")
+        return self
+
+
+def load_targets(targets_path: str) -> TargetsConfig:
+    """Load and validate targets.yaml. Raises ValueError if pct sum is wrong."""
+    path = Path(targets_path)
+    if not path.exists():
+        raise FileNotFoundError(f"targets.yaml not found at {path.resolve()}")
+
+    raw: dict[str, Any] = yaml.safe_load(path.read_text())
+
+    watchlist: list[str] = raw.get("watchlist", [])
+    cash_buffer_pct: float = float(raw.get("cash_buffer_pct", 0.0))
+    raw_targets: dict[str, Any] = raw.get("targets", {})
+
+    targets: list[TickerTarget] = []
+    for ticker, spec in raw_targets.items():
+        pct = float(spec["pct"])
+        band_low = float(spec["band"][0])
+        band_high = float(spec["band"][1])
+        targets.append(TickerTarget(ticker=ticker, pct=pct, band_low=band_low, band_high=band_high))
+
+    total_pct = sum(t.pct for t in targets)
+    expected = 100.0 - cash_buffer_pct
+    if abs(total_pct - expected) > 0.5:
+        raise ValueError(
+            f"Target pct sum {total_pct:.2f} must equal 100 - cash_buffer_pct "
+            f"({expected:.2f}) ± 0.5"
+        )
+
+    logger.info(
+        "Loaded %d targets from %s (sum=%.2f%%, cash_buffer=%.2f%%)",
+        len(targets), path, total_pct, cash_buffer_pct,
+    )
+    return TargetsConfig(watchlist=watchlist, targets=targets, cash_buffer_pct=cash_buffer_pct)

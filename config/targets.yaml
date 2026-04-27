@@ -1,0 +1,8 @@
+watchlist: [VOO, QQQ, SCHD, AAPL, MSFT]
+targets:
+  VOO:  { pct: 40, band: [35, 45] }
+  QQQ:  { pct: 25, band: [21, 29] }
+  SCHD: { pct: 15, band: [12, 18] }
+  AAPL: { pct: 10, band: [7,  13] }
+  MSFT: { pct: 5,  band: [3,  8]  }
+cash_buffer_pct: 5
