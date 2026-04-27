@@ -16,9 +16,9 @@ from functools import partial
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from sqlalchemy import text
 
 from .config import Settings, load_targets
+from .queries import account_last_sync, positions_latest, targets_active_count
 from .db import init_db, session_scope
 from .jobs.sync import run_sync_job
 from .scheduler import make_scheduler
@@ -78,14 +78,10 @@ def health() -> dict[str, Any]:
 
     try:
         with session_scope() as session:
-            row = session.execute(
-                text("SELECT last_sync FROM broker_account ORDER BY last_sync DESC LIMIT 1")
-            ).fetchone()
+            row = session.execute(account_last_sync).fetchone()
             if row:
                 last_sync = row[0]
-            count_row = session.execute(
-                text("SELECT COUNT(*) FROM target_allocation WHERE effective_to IS NULL")
-            ).fetchone()
+            count_row = session.execute(targets_active_count).fetchone()
             if count_row:
                 target_count = int(count_row[0])
     except Exception as exc:
@@ -104,17 +100,7 @@ def positions() -> list[dict[str, Any]]:
     """Return the most recent positions snapshot per ticker."""
     try:
         with session_scope() as session:
-            rows = session.execute(
-                text("""
-                WITH ranked AS (
-                  SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ts DESC) AS rn
-                  FROM positions_snapshot
-                )
-                SELECT ticker, ts, qty, avg_cost, market_value, weight_pct
-                FROM ranked WHERE rn = 1
-                ORDER BY weight_pct DESC
-                """)
-            ).fetchall()
+            rows = session.execute(positions_latest).fetchall()
     except Exception as exc:
         logger.error("/positions query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Database query failed")
