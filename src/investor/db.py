@@ -1,7 +1,5 @@
-"""DuckDB engine and session factory.
+"""SQLite engine and session factory.
 
-Single-writer constraint: only one process opens the file-based engine.
-Use pool_size=1 to avoid DuckDB lock contention.
 Tests call override_engine_for_testing() with an in-memory StaticPool engine.
 """
 
@@ -25,12 +23,12 @@ _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None  # type: ignore[type-arg]
 
 
-def init_db(duckdb_path: str) -> Engine:
+def init_db(sqlite_path: str) -> Engine:
     """Create engine, run create_all (idempotent), apply Alembic migrations, return engine."""
     global _engine, _SessionLocal
-    url = f"duckdb:///{duckdb_path}"
-    logger.info("Connecting to DuckDB at %s", duckdb_path)
-    _engine = create_engine(url, pool_size=1, future=True)
+    url = f"sqlite:///{sqlite_path}"
+    logger.info("Connecting to SQLite at %s", sqlite_path)
+    _engine = create_engine(url, connect_args={"check_same_thread": False}, future=True)
     Base.metadata.create_all(_engine, checkfirst=True)
     alembic_cfg = AlembicConfig("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", url)
@@ -39,6 +37,7 @@ def init_db(duckdb_path: str) -> Engine:
     _SessionLocal = sessionmaker(bind=_engine, autoflush=True, autocommit=False)
     logger.info("Database initialised — tables: %s", list(Base.metadata.tables.keys()))
     return _engine
+
 
 
 def get_engine() -> Engine:

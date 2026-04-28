@@ -1,4 +1,4 @@
-"""Tests for compute_gap() using in-memory DuckDB with seeded fake data."""
+"""Tests for compute_gap() using in-memory SQLite with seeded fake data."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from investor.services.gap import GapRow, compute_gap
 
 @pytest.fixture()
 def db_session() -> Session:
-    """Provide a transactional in-memory DuckDB session."""
-    engine = create_engine("duckdb:///:memory:", poolclass=StaticPool, future=True)
+    """Provide a transactional in-memory SQLite session."""
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
     Base.metadata.create_all(engine)
     override_engine_for_testing(engine)
     with Session(engine) as session:

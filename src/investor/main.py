@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     logging.getLogger().setLevel(_settings.log_level.upper())
 
     logger.info("Starting Investor Assistant (broker=%s)", _settings.broker)
-    init_db(_settings.duckdb_path)
+    init_db(_settings.sqlite_path)
 
     targets = load_targets(_settings.targets_path)
     logger.info("Targets validated: %d tickers", len(targets.targets))

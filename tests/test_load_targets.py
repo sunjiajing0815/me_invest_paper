@@ -42,7 +42,7 @@ YAML_V2 = textwrap.dedent("""\
 
 @pytest.fixture()
 def db_session() -> Session:
-    engine = create_engine("duckdb:///:memory:", poolclass=StaticPool, future=True)
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
     Base.metadata.create_all(engine)
     override_engine_for_testing(engine)
     with Session(engine) as session:

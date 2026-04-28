@@ -2,10 +2,6 @@
 
 Phase 0: one-off DateTrigger runs 30s after startup to validate wiring.
 Phase 1: replace DateTrigger with CronTrigger for recurring daily schedule.
-
-Single-writer: the scheduler runs inside the FastAPI process and shares
-the same DuckDB connection pool. Never run the scheduler and a CLI script
-simultaneously against the same .duckdb file.
 """
 
 from __future__ import annotations

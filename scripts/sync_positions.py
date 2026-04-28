@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-"""CLI: pull positions from broker and persist to DuckDB.
+"""CLI: pull positions from broker and persist to SQLite.
 
 Run: uv run python scripts/sync_positions.py
-Do NOT run simultaneously with uvicorn — DuckDB single-writer constraint.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from investor.services.snapshot import take_snapshot
 
 def main() -> None:
     settings = Settings()
-    init_db(settings.duckdb_path)
+    init_db(settings.sqlite_path)
     adapter = make_adapter(settings)
     with session_scope() as session:
         n = take_snapshot(adapter, session, settings)

@@ -19,7 +19,8 @@ See `docs/phase_0_guide.md` (or the project-root copy) for the active build plan
 | Language | Python 3.12 | Best fintech/ML ecosystem |
 | API | FastAPI | Lifespan hooks for scheduler bootstrap; OpenAPI for free |
 | Scheduler | APScheduler (in-process) | No Redis/Celery needed at single-user scale |
-| DB | DuckDB via `duckdb-engine` + SQLAlchemy + Alembic | Vectorized analytics on OHLCV; single file; window functions |
+| OLTP DB | SQLite via SQLAlchemy + Alembic | Transactional tables; native Alembic support; built into Python |
+| Analytics DB | DuckDB (direct, not via SQLAlchemy) | Vectorized queries over Parquet bars; Phase 1+ |
 | Bars (cold storage) | Parquet under `data/bars/` | Survives DB migrations; queryable directly by DuckDB |
 | Broker (v1) | Alpaca via `alpaca-py` | REST, no gateway, free paper, fractional shares, AU residents allowed |
 | Broker (later) | Moomoo via OpenD on host | Already-funded account for actual long-term capital |
@@ -34,7 +35,7 @@ See `docs/phase_0_guide.md` (or the project-root copy) for the active build plan
 src/investor/
   main.py             FastAPI app + lifespan
   config.py           pydantic-settings + targets.yaml loader
-  db.py               DuckDB engine + session factory
+  db.py               SQLite engine + session factory
   models.py           SQLAlchemy ORM models
   scheduler.py        APScheduler bootstrap
   brokers/
@@ -47,7 +48,7 @@ config/targets.yaml   user's target allocation (hand-edited or via /targets API)
 migrations/           Alembic revisions
 scripts/              standalone CLIs (sync_positions, show_gap, load_targets)
 docs/adr/             Architecture Decision Records, numbered 0001+
-data/                 DuckDB file + Parquet bars; bind-mounted; gitignored
+data/                 SQLite file + Parquet bars; bind-mounted; gitignored
 tests/                pytest
 ```
 
@@ -94,9 +95,9 @@ uv run mypy src/
 
 5. **Suggestions are first-class rows.** Every recommendation lands in `order_suggestion` with `status` (`pending` | `accepted` | `rejected` | `expired`). The accept/reject flow updates status only — it never calls a broker. The product's audit trail is "what I suggested vs. what actually filled."
 
-6. **Storage philosophy: DuckDB for analytics, Parquet for bars, eventually Postgres for OLTP.** Phase 0–4: everything in DuckDB. Phase 5 (multi-user): split — Postgres for `users`, `target_allocation`, `order_suggestion`, `alert`; DuckDB/MotherDuck for `price_bar`, `positions_snapshot`, backtest results.
+6. **Storage philosophy: SQLite for OLTP, DuckDB for analytics, Parquet for bars, eventually Postgres for OLTP at scale.** Phase 0–4: SQLite for transactional tables, DuckDB (direct Python, not via SQLAlchemy) for Parquet-based analytical queries. Phase 5 (multi-user): split — Postgres for `users`, `target_allocation`, `order_suggestion`, `alert`; DuckDB/MotherDuck for `price_bar`, backtest results.
 
-7. **Single writer.** While in single-DuckDB-file mode, all writes go through the FastAPI process or one CLI script at a time. Don't run `uvicorn --reload` and a manual sync script simultaneously — DuckDB will lock.
+7. **Single writer (SQLite).** All writes go through the FastAPI process or one CLI script at a time. Don't run `uvicorn` and a manual sync script simultaneously against the same `investor.db` file.
 
 8. **All timestamps are UTC at rest.** Convert to `America/New_York` only for display or for cron triggers.
 
@@ -111,7 +112,7 @@ uv run mypy src/
 ## Things to never do
 
 - **Never call a broker's `submit_order` / equivalent from inside the app.** This is a hard product constraint, not a style preference. Only `submit_order_draft` or no order code at all is allowed in v1. If asked to "automate trades," push back and reference the suggest-only product principle.
-- **Never commit `.env`, `data/*.duckdb`, or any file under `data/`.** The `.gitignore` covers this; don't override.
+- **Never commit `.env`, `data/*.db`, `data/*.duckdb`, or any file under `data/`.** The `.gitignore` covers this; don't override.
 - **Never let the LLM emit price targets, fundamental claims, or trade recommendations.** The LLM's allowed outputs are: news summaries, "is this material?" classification, and structured JSON labels (bullish/bearish/neutral). If a prompt would produce more than that, restrict it.
 - **Never make `BrokerAdapter` async without an ADR.** APScheduler jobs and FastAPI endpoints are both happy with sync; mixing async/sync brokers complicates testing without buying anything.
 - **Never store secrets in the database.** Keys live in `.env` only. Phase 5 introduces envelope-encrypted credential storage when needed.
@@ -119,20 +120,20 @@ uv run mypy src/
 
 ## Common gotchas
 
-1. **DuckDB write locks.** If you see `IO Error: Could not set lock on file`, another process is holding the DB file. Stop the server or the script, then retry.
+1. **SQLite write contention.** SQLite serialises writes; if you run a CLI script while uvicorn is up, they share the same file and will queue (not deadlock). Avoid running both simultaneously for heavy writes.
 2. **Alpaca paper account is initially empty.** Place a few paper trades in the Alpaca dashboard before testing the gap query — otherwise every ticker shows 100% gap and you can't tell if the math works.
 3. **Cash buffer creates a permanent under-target.** If your YAML targets sum to 100 but you keep a 5% cash buffer, every ticker will look 0.5% under-target. Either set targets to sum to 95 (and accept they show "on target" against equity-only weights), or scale the gap by `equity / (equity - cash_buffer)` in the SQL. Document the choice in an ADR.
 4. **Moomoo OpenD is a host-side dependency, not a containerised service.** OpenD runs on macOS/Windows; in Docker the app reaches it via `host.docker.internal:11111`. Do not try to install OpenD inside the app image.
 5. **`alpaca-py` returns strings for numeric fields.** Wrap in `float()` at the adapter boundary.
 6. **APScheduler timezones.** `BackgroundScheduler(timezone="America/New_York")` is the right default for cron triggers, but `DateTrigger(run_date=...)` interprets naive datetimes in scheduler-local time — pass `datetime.now(UTC)` explicitly to avoid surprises.
-7. **`alembic --autogenerate` and DuckDB.** Works, but doesn't always detect column-type changes. When in doubt, write the migration by hand.
+7. **Alembic batch mode for SQLite column changes.** SQLite can't `ALTER COLUMN` or `DROP COLUMN` directly. Use `render_as_batch=True` (already set in `migrations/env.py`) — Alembic recreates the table transparently.
 
 ## Required env vars
 
 See `.env.example` for the canonical list. The app **fails to start** if any of these are missing or invalid:
 
 - `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` (when `BROKER` starts with `alpaca`)
-- `DUCKDB_PATH`
+- `SQLITE_PATH`
 - `TARGETS_PATH`
 
 Phase 1+ adds: `SMTP_*`, `EMAIL_*`, `ANTHROPIC_API_KEY`. They're declared as Optional in `config.py` but the relevant features won't work without them.

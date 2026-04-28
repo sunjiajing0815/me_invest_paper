@@ -1,15 +1,11 @@
-"""SQLAlchemy ORM models for Phase 0 tables.
-
-IMPORTANT: Every primary key uses Integer + Sequence to avoid DuckDB's
-lack of SERIAL/BIGSERIAL support.
-"""
+"""SQLAlchemy ORM models."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Double, Integer, Sequence, String
+from sqlalchemy import DateTime, Double, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,9 +18,7 @@ class TargetAllocation(Base):
 
     __tablename__ = "target_allocation"
 
-    id: Mapped[int] = mapped_column(
-        Integer, Sequence("target_allocation_id_seq"), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     target_pct: Mapped[float] = mapped_column(Double, nullable=False)
     band_low_pct: Mapped[float] = mapped_column(Double, nullable=False)
@@ -40,9 +34,7 @@ class PositionsSnapshot(Base):
 
     __tablename__ = "positions_snapshot"
 
-    id: Mapped[int] = mapped_column(
-        Integer, Sequence("positions_snapshot_id_seq"), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
@@ -66,9 +58,7 @@ class BrokerAccount(Base):
 
     __tablename__ = "broker_account"
 
-    id: Mapped[int] = mapped_column(
-        Integer, Sequence("broker_account_id_seq"), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)

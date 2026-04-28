@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""
 
-    duckdb_path: str = "./data/investor.duckdb"
+    sqlite_path: str = "./data/investor.db"
     targets_path: str = "./config/targets.yaml"
 
     log_level: str = "INFO"
