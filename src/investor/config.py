@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     broker: str = "alpaca_paper"
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""
-    alpaca_base_url: str = "https://paper-api.alpaca.markets"
 
     duckdb_path: str = "./data/investor.duckdb"
     targets_path: str = "./config/targets.yaml"

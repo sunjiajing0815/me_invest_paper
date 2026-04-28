@@ -2,7 +2,7 @@
 
 Converts Alpaca SDK types to domain dataclasses at the boundary.
 alpaca-py returns numeric fields as strings — every numeric is wrapped in float().
-ALPACA_BASE_URL env var is intentionally ignored; routing is via paper=True flag.
+Paper/live routing is via paper=True only; URL override is not supported.
 """
 
 from __future__ import annotations

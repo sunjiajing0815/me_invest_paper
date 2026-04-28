@@ -10,6 +10,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
@@ -25,6 +27,4 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["/bin/sh", "-c", \
-     "uv run python scripts/load_targets.py && \
-      uv run uvicorn src.investor.main:app --host 0.0.0.0 --port 8000"]
+CMD ["uv", "run", "uvicorn", "src.investor.main:app", "--host", "0.0.0.0", "--port", "8000"]

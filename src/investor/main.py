@@ -1,10 +1,11 @@
 """FastAPI application — Phase 0 MVP.
 
 Endpoints:
-  GET  /health          — status, broker, last sync ts, target count
-  GET  /positions       — latest portfolio snapshot rows
-  GET  /gap             — current allocation vs targets (% and USD)
-  POST /admin/run-sync  — ad-hoc sync trigger
+  GET  /health                  — status, broker, last sync ts, target count
+  GET  /positions               — latest portfolio snapshot rows
+  GET  /gap                     — current allocation vs targets (% and USD)
+  POST /admin/run-sync          — ad-hoc sync trigger
+  POST /admin/reload-targets    — reload targets from targets.yaml
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from .db import init_db, session_scope
 from .jobs.sync import run_sync_job
 from .scheduler import make_scheduler
 from .services.gap import GapRow, compute_gap
+from .services.targets import load_targets_into_db, yaml_hash
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -151,3 +153,18 @@ def admin_run_sync() -> dict[str, str]:
         logger.error("Ad-hoc sync failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"Sync failed: {exc}")
     return {"status": "ok", "message": "Sync completed"}
+
+
+@app.post("/admin/reload-targets", summary="Reload targets from targets.yaml")
+def admin_reload_targets() -> dict[str, str]:
+    """Reload target allocations from targets.yaml. No-op if file content is unchanged."""
+    settings = _get_settings()
+    try:
+        h = yaml_hash(settings.targets_path)
+        targets_cfg = load_targets(settings.targets_path)
+        with session_scope() as sess:
+            result = load_targets_into_db(sess, targets_cfg, h)
+    except Exception as exc:
+        logger.error("reload-targets failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Reload failed: {exc}")
+    return {"status": "ok", "result": result}

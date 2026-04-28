@@ -5,6 +5,7 @@ description = "Investor assistant — Phase 0 MVP"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.13",
     "alpaca-py>=0.43.2",
     "anthropic>=0.97.0",
     "apscheduler>=3.10,<4",

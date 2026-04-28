@@ -52,6 +52,15 @@ class PositionsSnapshot(Base):
     weight_pct: Mapped[float] = mapped_column(Double, nullable=False)
 
 
+class Meta(Base):
+    """Key/value store for app-level metadata (e.g. YAML content hashes)."""
+
+    __tablename__ = "meta"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class BrokerAccount(Base):
     """Time-versioned account state. Deduplicates unchanged values on write."""
 
