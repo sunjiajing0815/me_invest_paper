@@ -25,6 +25,7 @@ class AlpacaAdapter:
     def get_account(self) -> Account:
         raw = self._client.get_account()
         return Account(
+            account_id=str(raw.id),
             cash_usd=float(raw.cash),
             equity_usd=float(raw.equity),
             buying_power_usd=float(raw.buying_power),

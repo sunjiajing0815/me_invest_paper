@@ -6,7 +6,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from ..brokers.base import BrokerAdapter
+from ..brokers.base import Account, BrokerAdapter
 from ..config import Settings
 from ..models import BrokerAccount, PositionsSnapshot
 
@@ -17,7 +17,8 @@ def take_snapshot(adapter: BrokerAdapter, session: Session, settings: Settings) 
     """Pull account + positions from broker and persist in one transaction.
 
     Returns the number of position rows written.
-    Always writes one BrokerAccount row regardless of position count.
+    BrokerAccount: inserts a new row only when cash or equity changed; otherwise
+    updates last_sync in place to avoid unbounded table growth.
     """
     account = adapter.get_account()
     positions = adapter.get_positions()
@@ -31,6 +32,7 @@ def take_snapshot(adapter: BrokerAdapter, session: Session, settings: Settings) 
         weight_pct = (p.market_value / total_equity * 100.0) if total_equity else 0.0
         rows.append(
             PositionsSnapshot(
+                account_id=account.account_id,
                 ts=p.as_of,
                 ticker=p.ticker,
                 qty=p.qty,
@@ -41,15 +43,7 @@ def take_snapshot(adapter: BrokerAdapter, session: Session, settings: Settings) 
         )
 
     session.add_all(rows)
-    session.add(
-        BrokerAccount(
-            broker=broker_name,
-            mode=mode,
-            cash_usd=account.cash_usd,
-            equity_usd=account.equity_usd,
-            last_sync=account.as_of,
-        )
-    )
+    _write_broker_account(session, account, broker_name, mode)
     session.flush()
 
     logger.info(
@@ -57,3 +51,46 @@ def take_snapshot(adapter: BrokerAdapter, session: Session, settings: Settings) 
         len(rows), account.equity_usd,
     )
     return len(rows)
+
+
+def _write_broker_account(
+    session: Session,
+    account: Account,
+    broker_name: str,
+    mode: str,
+) -> None:
+    latest = (
+        session.query(BrokerAccount)
+        .filter(BrokerAccount.effective_to.is_(None))
+        .order_by(BrokerAccount.last_sync.desc())
+        .first()
+    )
+
+    same_values = (
+        latest is not None
+        and latest.account_id == account.account_id
+        and abs(latest.cash_usd - account.cash_usd) <= 0.01
+        and abs(latest.equity_usd - account.equity_usd) <= 0.01
+    )
+
+    if same_values:
+        latest.last_sync = account.as_of
+        logger.info("BrokerAccount unchanged — updated last_sync only")
+    else:
+        if latest is not None:
+            latest.effective_to = account.as_of
+        session.add(
+            BrokerAccount(
+                account_id=account.account_id,
+                broker=broker_name,
+                mode=mode,
+                cash_usd=account.cash_usd,
+                equity_usd=account.equity_usd,
+                last_sync=account.as_of,
+                effective_from=account.as_of,
+            )
+        )
+        logger.info(
+            "BrokerAccount changed (cash=%.2f, equity=%.2f) — new row inserted",
+            account.cash_usd, account.equity_usd,
+        )

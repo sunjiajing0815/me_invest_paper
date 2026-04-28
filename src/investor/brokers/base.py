@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(frozen=True)
 class Account:
+    account_id: str
     cash_usd: float
     equity_usd: float
     buying_power_usd: float

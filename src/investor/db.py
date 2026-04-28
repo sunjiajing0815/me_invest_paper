@@ -11,7 +11,7 @@ import logging
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,9 +30,28 @@ def init_db(duckdb_path: str) -> Engine:
     logger.info("Connecting to DuckDB at %s", duckdb_path)
     _engine = create_engine(url, pool_size=1, future=True)
     Base.metadata.create_all(_engine, checkfirst=True)
+    _migrate_broker_account_columns(_engine)
     _SessionLocal = sessionmaker(bind=_engine, autoflush=True, autocommit=False)
     logger.info("Database initialised — tables: %s", list(Base.metadata.tables.keys()))
     return _engine
+
+
+def _migrate_broker_account_columns(engine: Engine) -> None:
+    """Add columns introduced after initial schema to existing DB files."""
+    with engine.connect() as conn:
+        conn.execute(text(
+            "ALTER TABLE broker_account ADD COLUMN IF NOT EXISTS effective_from TIMESTAMPTZ"
+        ))
+        conn.execute(text(
+            "ALTER TABLE broker_account ADD COLUMN IF NOT EXISTS effective_to TIMESTAMPTZ"
+        ))
+        conn.execute(text(
+            "ALTER TABLE broker_account ADD COLUMN IF NOT EXISTS account_id VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE positions_snapshot ADD COLUMN IF NOT EXISTS account_id VARCHAR"
+        ))
+        conn.commit()
 
 
 def get_engine() -> Engine:

@@ -4,7 +4,7 @@ WITH latest AS (
   FROM positions_snapshot
 ),
 current AS (SELECT ticker, weight_pct, market_value FROM latest WHERE rn = 1),
-account AS (SELECT equity_usd FROM broker_account ORDER BY last_sync DESC LIMIT 1),
+account AS (SELECT equity_usd FROM broker_account WHERE effective_to IS NULL ORDER BY last_sync DESC LIMIT 1),
 targets AS (
   SELECT ticker, target_pct, band_low_pct, band_high_pct
   FROM target_allocation

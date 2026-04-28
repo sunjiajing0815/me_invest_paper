@@ -43,6 +43,7 @@ class PositionsSnapshot(Base):
     id: Mapped[int] = mapped_column(
         Integer, Sequence("positions_snapshot_id_seq"), primary_key=True
     )
+    account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     qty: Mapped[float] = mapped_column(Double, nullable=False)
@@ -52,15 +53,22 @@ class PositionsSnapshot(Base):
 
 
 class BrokerAccount(Base):
-    """Latest known account state. One row written per sync."""
+    """Time-versioned account state. Deduplicates unchanged values on write."""
 
     __tablename__ = "broker_account"
 
     id: Mapped[int] = mapped_column(
         Integer, Sequence("broker_account_id_seq"), primary_key=True
     )
+    account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)
     cash_usd: Mapped[float] = mapped_column(Double, nullable=False)
     equity_usd: Mapped[float] = mapped_column(Double, nullable=False)
     last_sync: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_from: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    effective_to: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
