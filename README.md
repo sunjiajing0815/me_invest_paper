@@ -8,7 +8,7 @@ A self-hosted, **suggest-only** portfolio assistant for long-term US-equity inve
 
 ### Prerequisites
 
-- Python 3.13 + [uv](https://docs.astral.sh/uv/)
+- Python 3.12 + [uv](https://docs.astral.sh/uv/)
 - Docker Desktop (for containerised run)
 - An [Alpaca](https://alpaca.markets) paper account (free)
 
@@ -39,8 +39,6 @@ cash_buffer_pct: 5
 
 ## Running locally (no Docker)
 
-> DuckDB is single-writer. Never run `uvicorn` and a CLI script simultaneously against the same `.duckdb` file.
-
 ```bash
 # Install dependencies
 uv sync
@@ -60,16 +58,22 @@ The API is now available at `http://localhost:8000`. Interactive docs at `http:/
 ### Updating targets
 
 1. Edit `config/targets.yaml`
-2. Stop uvicorn (`Ctrl+C`)
-3. Run `uv run python scripts/load_targets.py` — skips the write if nothing changed, otherwise closes old rows and inserts new ones
-4. Restart uvicorn
+2. Call `POST /admin/reload-targets` — skips the write if content is unchanged, otherwise closes old rows and inserts new ones:
+   ```bash
+   curl -X POST localhost:8000/admin/reload-targets
+   # → {"status":"ok","result":"updated"}
+   ```
+   Or run the CLI script directly (stop uvicorn first to avoid concurrent writes):
+   ```bash
+   uv run python scripts/load_targets.py
+   ```
 
 ---
 
 ## Running with Docker
 
 ```bash
-# First start — builds image, seeds targets, starts server
+# First start
 docker compose up --build -d
 
 # View logs
@@ -82,13 +86,25 @@ docker compose up --build -d
 docker compose down
 ```
 
-The container automatically runs `scripts/load_targets.py` then `uvicorn` on every start. The DuckDB file is stored in `./data/` which is bind-mounted, so data persists across restarts.
+On first deploy, seed the target allocation before or after starting:
+
+```bash
+# Option A: seed while server is stopped
+docker compose run --rm app uv run python scripts/load_targets.py
+docker compose up -d
+
+# Option B: seed via the running server's reload endpoint
+docker compose up -d
+curl -X POST localhost:8000/admin/reload-targets
+```
+
+The SQLite file is stored in `./data/` which is bind-mounted, so data persists across restarts.
 
 ### Full reset
 
 ```bash
 docker compose down
-rm data/investor.duckdb
+rm data/investor.db
 docker compose up --build -d
 ```
 
@@ -150,13 +166,23 @@ Triggers an immediate position sync from the broker. Runs synchronously and retu
 { "status": "ok", "message": "Sync completed" }
 ```
 
+### `POST /admin/reload-targets`
+
+Reloads target allocations from `config/targets.yaml`. Idempotent — compares a SHA-256 hash of the file content against what's stored; skips any DB write if the file hasn't changed.
+
+```json
+{ "status": "ok", "result": "updated" }
+```
+
+`result` is `"updated"` when new rows were written, `"unchanged"` when the file matched the stored hash.
+
 Interactive API docs: `http://localhost:8000/docs`
 
 ---
 
 ## Data models
 
-All tables are stored in a single DuckDB file at `./data/investor.duckdb`.
+All tables are stored in a single SQLite file at `./data/investor.db`.
 
 ### `target_allocation`
 
@@ -203,14 +229,23 @@ Time-versioned account state. On each sync: if cash and equity are within $0.01 
 | `effective_from` | timestamptz | When this account state began |
 | `effective_to` | timestamptz | When superseded (NULL = current) |
 
+### `meta`
+
+Key/value store for app-level metadata. Currently stores the SHA-256 hash of the last-loaded `targets.yaml` to enable idempotent reloads.
+
+| Column | Type | Description |
+|---|---|---|
+| `key` | varchar (PK) | e.g. `targets_yaml_hash` |
+| `value` | varchar | Stored value |
+
 ---
 
 ## Inspecting the database
 
-The DuckDB CLI is installed at `~/bin/duckdb`. Use `-readonly` to open the file while the server is running:
+Use the standard `sqlite3` CLI (built into macOS/Linux). The server and CLI can read the file simultaneously — SQLite allows multiple concurrent readers.
 
 ```bash
-duckdb -readonly data/investor.duckdb
+sqlite3 data/investor.db
 ```
 
 ```sql
@@ -226,6 +261,9 @@ WHERE (ticker, ts) IN (SELECT ticker, MAX(ts) FROM positions_snapshot GROUP BY t
 -- current account state
 SELECT account_id, cash_usd, equity_usd, last_sync
 FROM broker_account WHERE effective_to IS NULL;
+
+-- stored YAML hash
+SELECT value FROM meta WHERE key = 'targets_yaml_hash';
 ```
 
 ---
@@ -236,7 +274,7 @@ FROM broker_account WHERE effective_to IS NULL;
 src/investor/
   main.py             FastAPI app + lifespan (startup/shutdown)
   config.py           pydantic-settings + targets.yaml loader/validator
-  db.py               DuckDB engine, session factory, schema migrations
+  db.py               SQLite engine, session factory, Alembic migration runner
   models.py           SQLAlchemy ORM models
   scheduler.py        APScheduler bootstrap (initial sync 30s after start)
   queries.py          SQL registry — loads named .sql files at import time
@@ -251,6 +289,7 @@ src/investor/
   services/
     snapshot.py       Pull + persist positions and account state
     gap.py            Compute allocation gap from DB
+    targets.py        Hash-based idempotent target loader
   jobs/
     sync.py           APScheduler job wrapper for position sync
 config/
@@ -258,10 +297,12 @@ config/
 scripts/
   load_targets.py     Seed/update target_allocation from targets.yaml
   sync_positions.py   One-shot position sync from broker
-data/                 DuckDB file — bind-mounted in Docker, gitignored
+migrations/           Alembic revisions
+data/                 SQLite file — bind-mounted in Docker, gitignored
 tests/
   test_config.py      Settings + YAML loader tests (8 tests)
-  test_gap.py         Gap computation tests using in-memory DuckDB (8 tests)
+  test_gap.py         Gap computation tests using in-memory SQLite (8 tests)
+  test_load_targets.py Hash-based target dedup tests (5 tests)
 ```
 
 ---

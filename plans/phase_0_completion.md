@@ -4,7 +4,7 @@
 **Owner:** Jane  
 **Phase:** 0 — Foundation  
 **Completed:** 2026-04-28  
-**Git tag:** `v0.0.1-phase-0` (branch: `main`, HEAD: `207622a`)
+**Git tag:** `v0.0.1-phase-0` (branch: `main`; carryover fixes committed post-tag)
 
 ---
 
@@ -37,7 +37,7 @@ On startup, APScheduler fires a one-off sync 30 seconds after launch (`DateTrigg
 
 | Script | Purpose |
 |---|---|
-| `scripts/load_targets.py` | Seeds `target_allocation` from `config/targets.yaml`. Idempotent — skips write if targets are unchanged, prints a diff when something changes. |
+| `scripts/load_targets.py` | Seeds `target_allocation` from `config/targets.yaml`. Idempotent — compares SHA-256 hash of YAML content against `meta` table; skips write if unchanged. |
 | `scripts/sync_positions.py` | One-shot pull of positions from Alpaca; writes to `positions_snapshot` and `broker_account`. |
 
 ### Broker adapter
@@ -96,26 +96,21 @@ id | account_id | broker | mode | cash_usd | equity_usd | last_sync | effective_
 
 ## 4. Additions beyond original Phase 0 scope
 
-These were small improvements made during implementation that reduce Phase 1 rework:
+These were improvements made during and immediately after implementation that reduce Phase 1 rework:
 
 | Addition | Rationale |
 |---|---|
 | `account_id` on `broker_account` and `positions_snapshot` | Prevents data mixing if Alpaca account changes |
 | `effective_from` / `effective_to` on `broker_account` | Consistent time-versioning across all mutable state |
-| Deduplication in `load_targets.py` | Idempotent restarts — Docker CMD runs script on every container start |
+| Hash-based dedup in `load_targets.py` | SHA-256 of YAML content stored in `meta` table; idempotent across any number of restarts |
+| `POST /admin/reload-targets` endpoint | Reload targets from running service without touching CLI |
 | SQL extracted to `src/investor/sql/*.sql` | No inline SQL in Python; easier to audit and extend |
-| Incremental schema migration in `db.py` | `ALTER TABLE … ADD COLUMN IF NOT EXISTS` so existing DB files upgrade without manual intervention |
-| DuckDB CLI installed natively (arm64) | Developer convenience for inspecting live data |
+| Alembic for schema migrations | Replaces hand-rolled `ALTER TABLE`; enables safe schema evolution in Phases 2–4 |
+| SQLite for OLTP / DuckDB for analytics | Native Alembic support; `--autogenerate` works; no stub required; DuckDB kept for Phase 1+ Parquet analytics |
 
 ---
 
 ## 5. Known issues and limitations
-
-### Deduplication in `load_targets.py` has intermittent failures
-
-On each service restart the Dockerfile CMD runs `load_targets.py`. Duplicate `target_allocation` rows have been observed in the database despite the dedup check. Root cause is unconfirmed — suspected float type returned by duckdb-engine differs from Python `float` in a way that defeats the `!=` comparison. The comparison was hardened to use `round(float(x), 6)` but has not been tested end-to-end under Docker yet.
-
-**Recommended action for Phase 1:** Write a targeted test that seeds an in-memory DB, runs `load_targets.py` twice with no YAML change, and asserts exactly one set of open rows. Also consider changing the Dockerfile CMD to run `load_targets.py` only when the table is empty, and use `/admin/reload-targets` for subsequent updates.
 
 ### No recurring sync schedule
 
@@ -135,9 +130,9 @@ No notification layer. Phase 1 adds the daily portfolio snapshot email.
 
 Every sync appends rows. There is no retention policy. For daily syncs over 1–2 years this is manageable (~700 rows/ticker/year), but a periodic cleanup job should be considered by Phase 2.
 
-### Single-writer DuckDB constraint
+### Single-writer SQLite
 
-Running `uvicorn` and any CLI script simultaneously will raise a lock error. Currently documented but not enforced. Phase 5's multi-user requirement will require migrating transactional tables to Postgres.
+SQLite serialises writes. Running `uvicorn` and a CLI script simultaneously against `investor.db` is safe for reads but concurrent writes will queue. Avoid heavy write scripts while the server is under load. Phase 5's multi-user requirement will require migrating to Postgres.
 
 ---
 
@@ -147,8 +142,9 @@ Running `uvicorn` and any CLI script simultaneously will raise a lock error. Cur
 |---|---|---|
 | `tests/test_config.py` | 8 | `Settings` env var loading, broker validation, `load_targets` YAML parsing, sum validation, band values, real `targets.yaml` |
 | `tests/test_gap.py` | 8 | `compute_gap` with empty DB, fully unallocated, partial allocation, on-target, sort order, latest-snapshot-only, closed target exclusion, return type |
+| `tests/test_load_targets.py` | 5 | `load_targets_into_db` first load, idempotency (2 runs), correct open-row count after 3 runs, versioning closes old rows, open rows match new values |
 
-All 16 tests pass. No integration tests against a live Alpaca account.
+All 21 tests pass on `sqlite:///:memory:`. No integration tests against a live Alpaca account.
 
 ---
 
@@ -158,13 +154,17 @@ All 16 tests pass. No integration tests against a live Alpaca account.
 
 No file outside `src/investor/brokers/` may import `alpaca` or any broker SDK. This is enforced by convention (no tooling guard yet). The adapter converts SDK types to `Account` and `Position` dataclasses at the boundary.
 
-### `ALPACA_BASE_URL` is ignored
+### `ALPACA_BASE_URL` removed
 
-`alpaca-py`'s `TradingClient` routes paper/live via `paper=True`, not via URL. The env var is stored for human reference but not passed to the client. Documented in `.env.example` and in `CLAUDE.md`.
+`alpaca-py`'s `TradingClient` routes paper/live via `paper=True`, not via URL override. The env var was removed from `Settings` and `.env.example` entirely.
 
-### Alembic skipped for Phase 0
+### Alembic adopted (Phase 0 carryover)
 
-Schema changes are handled by `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in `init_db()`. This is intentional for Phase 0 to avoid DuckDB DDL quirks with Alembic's autogenerate. Phase 1 should evaluate whether to introduce Alembic or continue with inline migrations.
+Schema migrations are managed by Alembic. `init_db()` calls `alembic upgrade head` on every startup. `render_as_batch=True` is set in `migrations/env.py` for future column changes on SQLite. `--autogenerate` is available (no DuckDB catalog errors).
+
+### SQLite for OLTP, DuckDB for analytics (Phase 0 carryover)
+
+Transactional tables (`target_allocation`, `broker_account`, `meta`, `positions_snapshot`) are stored in SQLite (`data/investor.db`). DuckDB is retained as a direct Python dependency for Phase 1+ Parquet-based analytical queries.
 
 ### All timestamps UTC at rest
 
@@ -174,11 +174,11 @@ UTC is stored in all `TIMESTAMPTZ` columns. Conversion to `America/New_York` is 
 
 ## 8. Environment and dependencies
 
-- **Python:** 3.13 (project uses 3.12 in CLAUDE.md — actual runtime is 3.13)
-- **Key runtime deps:** `fastapi`, `uvicorn[standard]`, `apscheduler>=3.10,<4`, `sqlalchemy>=2.0`, `duckdb-engine`, `alpaca-py`, `pydantic-settings`, `pytz`
+- **Python:** 3.12
+- **Key runtime deps:** `fastapi`, `uvicorn[standard]`, `apscheduler>=3.10,<4`, `sqlalchemy>=2.0`, `alembic>=1.13`, `duckdb>=1.5.2` (analytics only), `alpaca-py`, `pydantic-settings`, `pytz`
 - **Key dev deps:** `pytest`, `httpx`, `ruff`, `mypy`
 - **Package manager:** `uv`
-- **Container:** `python:3.13-slim`, single-stage after two `uv sync` calls
+- **Container:** `python:3.12-slim`
 
 ---
 
@@ -188,9 +188,8 @@ Based on the product plan and current state, Phase 1 should deliver:
 
 1. **Daily scheduled sync** — replace `DateTrigger` with `CronTrigger` (Mon–Fri 16:00 ET)
 2. **Daily portfolio snapshot email** — positions table + gap table, sent after sync
-3. **Fix `load_targets.py` dedup** — add a test and resolve the intermittent duplicate-row bug
-4. **Bar data backfill** — fetch 2 years of OHLCV from Alpaca, store as Parquet under `data/bars/`, queryable directly by DuckDB
-5. **`price_bar` table / view** — makes bars accessible via SQLAlchemy for Phase 2 indicator work
+3. **Bar data backfill** — fetch 2 years of OHLCV from Alpaca, store as Parquet under `data/bars/`
+4. **DuckDB analytical layer** — query Parquet bars directly via `import duckdb` (not SQLAlchemy); expose computed indicators to Phase 2
 
 The email in step 2 is the main user-visible output of Phase 1 and the most important thing to ship. Everything else unblocks Phase 2.
 
@@ -203,5 +202,5 @@ The email in step 2 is the main user-visible output of Phase 1 and the most impo
 | `src/investor/services/` | Add `email.py` (SMTP via `smtplib` + Jinja2) |
 | `src/investor/config.py` | Add `SMTP_*`, `EMAIL_FROM`, `EMAIL_TO` settings (already in `.env.example`) |
 | `scripts/` | Add `backfill_bars.py` |
-| `src/investor/models.py` | Add `PriceBar` model (or keep bars Parquet-only and use DuckDB to query directly) |
+| `src/investor/models.py` | Add `PriceBar` model if needed (bars may stay Parquet-only, queried via DuckDB directly) |
 | `tests/` | Add `test_email.py`, `test_daily_report.py` |
