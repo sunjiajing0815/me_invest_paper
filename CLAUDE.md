@@ -16,7 +16,7 @@ See `docs/phase_0_guide.md` (or the project-root copy) for the active build plan
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Language | Python 3.13 | Best fintech/ML ecosystem |
+| Language | Python 3.12 | Best fintech/ML ecosystem |
 | API | FastAPI | Lifespan hooks for scheduler bootstrap; OpenAPI for free |
 | Scheduler | APScheduler (in-process) | No Redis/Celery needed at single-user scale |
 | DB | DuckDB via `duckdb-engine` + SQLAlchemy + Alembic | Vectorized analytics on OHLCV; single file; window functions |

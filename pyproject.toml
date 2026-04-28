@@ -3,7 +3,7 @@ name = "me-invest"
 version = "0.1.0"
 description = "Investor assistant — Phase 0 MVP"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.13",
     "alpaca-py>=0.43.2",
@@ -36,13 +36,13 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "B", "UP", "SIM"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 
