@@ -3,8 +3,8 @@
 **Project:** Investor Assistant  
 **Owner:** Jane  
 **Phase:** 1 — Portfolio Email & Bar Backfill  
-**Completed:** 2026-05-04  
-**Git tag:** planned as `v0.1.0-phase-1` (branch: `main`)
+**Code complete:** 2026-05-04  
+**Git tag:** `v0.1.0-phase-1` — deferred until 5 consecutive trading-day emails received (earliest 2026-05-09 per phase_1_guide §11 row 14)
 
 ---
 

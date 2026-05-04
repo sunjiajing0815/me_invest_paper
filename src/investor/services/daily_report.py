@@ -27,7 +27,7 @@ class AccountSnapshot:
 class DailyReport:
     date: date
     account: AccountSnapshot | None
-    positions: list[Any]          # SQLAlchemy RowMapping rows: .ticker .qty etc.
+    positions: list[Any]          # Raw SQL named-tuple rows (not ORM objects) — session-safe.
     gap_rows: list[GapRow]
     drift_alerts: list[GapRow]    # gap_rows where band_status != "in_band"
 

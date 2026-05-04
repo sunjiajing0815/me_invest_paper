@@ -32,7 +32,7 @@ DuckDB's vectorized columnar engine handles these workloads in milliseconds wher
 
 ### Why not a DuckDB database file (Option C)
 
-ADR-0003 established that DuckDB's single-writer file lock and limited Alembic support make it unsuitable for OLTP. Using a shared DuckDB file for bars would reintroduce the same concurrency hazard. Parquet files are immutable once written — no locking required.
+ADR-0002 established that DuckDB's single-writer file lock and limited Alembic support make it unsuitable for OLTP. Using a shared DuckDB file for bars would reintroduce the same concurrency hazard. Parquet files are immutable once written — no locking required.
 
 ### Why Parquet + read_parquet() (Option A)
 

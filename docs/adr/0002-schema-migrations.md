@@ -1,65 +1,89 @@
-# ADR-0002: Schema Migrations with Alembic + DuckDB
+# ADR-0002: Three-Tier Storage Architecture
 
-**Date:** 2026-04-28
+**Date:** 2026-04-28 (retroactive — decision taken during Phase 0/1 transition)
 **Status:** Accepted
 
 ## Context
 
-Phase 0 used four hand-rolled `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements in `db.py::_migrate_broker_account_columns()`. This approach breaks on column renames, type changes, and rollbacks — all of which are needed in Phases 2–4. A proper migration tool is required before adding more schema changes.
+The system needs to store three distinct kinds of data with very different access patterns:
+
+1. **Transactional state** — target allocations, position snapshots, broker account values, metadata. Rows in the hundreds to low thousands. Access pattern: key lookups, small window-function queries, idempotent upserts. Requires schema migrations, concurrent read safety, and Python library support.
+
+2. **Analytical time-series** — daily OHLCV bars per ticker, potentially years of history. Access pattern: full-column scans, rolling aggregations, cross-ticker comparisons. Requires vectorized execution; row-oriented storage is a bottleneck.
+
+3. **Cold bar archive** — immutable daily bars written once by a backfill script, appended daily thereafter. Must survive DB schema migrations without reprocessing. Must be readable by the analytical engine without ETL.
+
+Using a single engine for all three would mean either accepting poor analytical performance (SQLite row-store) or fighting Alembic support, single-writer locks, and OLTP hazards (DuckDB).
 
 ## Decision
 
-Adopt Alembic. Use it as a version tracker with manually written DDL in migration files. Never use `--autogenerate`.
+Three-tier storage, one engine per tier:
 
-## DuckDB-specific constraints
+| Tier | Engine | Location | Access pattern |
+|---|---|---|---|
+| OLTP | SQLite via SQLAlchemy + Alembic | `data/investor.db` | ORM reads/writes, session-scoped |
+| Analytics | DuckDB (direct `import duckdb`) | in-memory, reads from Parquet | vectorized scans, window functions |
+| Cold bars | Parquet files | `data/bars/<TICKER>.parquet` | written by scripts, read by DuckDB |
 
-### 1. Missing Alembic DDLImpl
+## Why SQLite for OLTP
 
-`duckdb-engine` does not register an Alembic dialect implementation. Without a stub, every `alembic` command fails:
+- **Zero extra dependency** — `sqlite3` is in Python's stdlib; no engine package required
+- **Native Alembic dialect** — `SQLiteImpl` is built-in; `--autogenerate` works; `render_as_batch=True` handles column renames and drops transparently (see ADR-0003)
+- **Concurrent reads** — `check_same_thread=False` lets APScheduler's background thread and FastAPI's request threads share one engine without risk
+- **Window functions** — `ROW_NUMBER() OVER (PARTITION BY ...)` supported since SQLite 3.25 (2018)
+- **Phase 5 path** — SQLite → Postgres is a well-trodden migration; DuckDB is not a drop-in OLTP replacement
+
+## Why DuckDB for analytics
+
+- **Vectorized columnar execution** — moving averages, support/resistance scans, and cross-ticker aggregations over years of daily bars run in milliseconds
+- **`read_parquet()` table function** — queries Parquet files directly, no ETL pipeline needed:
+  ```python
+  import duckdb
+  conn = duckdb.connect()
+  conn.execute("""
+      SELECT symbol, AVG(close) OVER (PARTITION BY symbol ORDER BY timestamp ROWS 19 PRECEDING)
+      FROM read_parquet('data/bars/*.parquet')
+  """)
+  ```
+- **SQLite scanner** — DuckDB can attach and join against the OLTP database in one query:
+  ```python
+  conn.execute("ATTACH 'data/investor.db' AS sq (TYPE SQLITE)")
+  conn.execute("""
+      SELECT b.symbol, b.close, t.target_pct
+      FROM read_parquet('data/bars/*.parquet') b
+      JOIN sq.target_allocation t ON b.symbol = t.ticker
+      WHERE t.effective_to IS NULL
+  """)
+  ```
+- **No file-lock hazard** — used in-memory only; Parquet files are immutable once written, so no single-writer constraint
+- **Used directly, not via SQLAlchemy** — `import duckdb` in analytical service functions; never via `duckdb-engine`
+
+## Why Parquet for cold bar storage
+
+- **Schema-independent** — Parquet carries its own schema; SQLite migrations never touch bar files
+- **Columnar format** — DuckDB reads only the columns a query touches, not full rows
+- **Per-ticker files** — `data/bars/VOO.parquet` etc.; adding a ticker means adding one file; backfilling one ticker doesn't touch others
+- **Append pattern** — `update_bars.py` deduplicates by timestamp and rewrites; no transactional write concerns
+
+## How the tiers interact
 
 ```
-KeyError: 'duckdb'
+FastAPI / APScheduler
+    │
+    ├── session_scope() ──► SQLite (investor.db)
+    │       ORM reads/writes via SQLAlchemy
+    │
+    └── duckdb.connect() ──► Parquet files (data/bars/*.parquet)
+            analytical queries via read_parquet()
+            optionally: ATTACH 'investor.db' AS sq (TYPE SQLITE)
 ```
 
-**Fix:** Register a minimal stub in `migrations/env.py`:
-
-```python
-from alembic.ddl.impl import DefaultImpl
-
-class DuckDBImpl(DefaultImpl):
-    __dialect__ = "duckdb"
-```
-
-### 2. `--autogenerate` is not viable
-
-Alembic's autogenerate introspects `pg_catalog.pg_collation` to detect collation changes. DuckDB does not implement this PostgreSQL catalog table:
-
-```
-CatalogException: Table with name pg_collation does not exist!
-```
-
-**Decision:** Write all migration files by hand. The baseline revision (`6c9b40ddd25c`) is a no-op that stamps the existing Phase 0 schema. Future revisions use `op.create_table`, `op.add_column`, etc., written manually.
-
-### 3. `batch_alter_table` for column renames and type changes
-
-DuckDB does not support `ALTER TABLE … ALTER COLUMN TYPE` for some type changes. Use Alembic's batch mode when needed:
-
-```python
-with op.batch_alter_table("my_table") as batch_op:
-    batch_op.alter_column("old_name", new_column_name="new_name", ...)
-```
-
-### 4. `pool.NullPool` in `env.py`
-
-`run_migrations_online()` creates a separate engine with `poolclass=pool.NullPool`. This avoids sharing a connection with the app engine, which is unreliable with DuckDB's single-writer constraint.
-
-## Baseline strategy
-
-`Base.metadata.create_all(checkfirst=True)` runs first in `init_db()` to handle fresh database creation. Alembic `upgrade head` runs immediately after to apply any pending incremental migrations. The two coexist because `create_all` is idempotent and the baseline revision is a no-op (empty `upgrade()`/`downgrade()`).
+Services in `src/investor/services/` that touch OLTP receive a `Session` argument. Services that touch analytics create their own `duckdb.connect()`. These two never share a connection object.
 
 ## Consequences
 
-- All schema changes from this point forward are tracked as Alembic revisions.
-- `--autogenerate` is permanently off-limits for this project.
-- The `meta` table (added in revision `71b1bd302b7e`) stores YAML content hashes for idempotent target loading.
-- Column renames and type changes require `batch_alter_table`.
+- `duckdb-engine` is not a dependency (removed during Phase 0 carryover; see ADR-0003 for the migration history)
+- `duckdb` is a runtime dependency, used directly
+- `pyarrow` is a runtime dependency, used by pandas for Parquet I/O in backfill/update scripts
+- All SQLite schema changes go through Alembic (see ADR-0003)
+- Phase 5 (multi-user): SQLite → Postgres for OLTP; DuckDB/MotherDuck for analytics; Parquet layer unchanged

@@ -12,6 +12,8 @@ targets AS (
 )
 SELECT
   t.ticker,
+  -- weight_pct is stored as pct of total equity (incl. cash).
+  -- Targets sum to 100 - cash_buffer_pct, so both sides share the same denominator — no scaling needed.
   COALESCE(c.weight_pct, 0)                                        AS current_pct,
   t.target_pct,
   t.target_pct - COALESCE(c.weight_pct, 0)                         AS gap_pct,

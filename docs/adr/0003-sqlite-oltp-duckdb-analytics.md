@@ -1,65 +1,90 @@
-# ADR-0003: SQLite for OLTP, DuckDB for Analytics
+# ADR-0003: Schema Migrations with Alembic + SQLite
 
-**Date:** 2026-04-28
+**Date:** 2026-04-28 (retroactive — decision taken during Phase 0 carryover)
 **Status:** Accepted
 
 ## Context
 
-Phase 0 used DuckDB for everything — both transactional inserts/updates and analytical queries. This was initially convenient (one file, one engine) but created ongoing friction:
+Phase 0 initially used four hand-rolled `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements inside `db.py::_migrate_broker_account_columns()`. That approach breaks on column renames, type changes, dropped tables, and rollbacks — all needed in Phases 2–4. A proper migration tool was required.
 
-- Alembic required a hand-written `DuckDBImpl` stub (ADR-0002) because `duckdb-engine` ships no DDL implementation.
-- `--autogenerate` was unusable (DuckDB doesn't implement `pg_catalog.pg_collation`).
-- `pool_size=1` was required to avoid DuckDB's single-writer file lock.
-- None of the Phase 0 tables benefit from DuckDB's vectorized engine — they contain tens to hundreds of rows.
+An earlier iteration of this codebase used DuckDB for OLTP, which made Alembic painful: `duckdb-engine` shipped no `DDLImpl`, autogenerate failed against DuckDB's missing `pg_catalog.pg_collation`, and migrations had to be written with a hand-rolled stub. When the storage split (ADR-0002) moved OLTP to SQLite, all those DuckDB-specific constraints disappeared.
 
 ## Decision
 
-Split the storage layer:
+Adopt Alembic with the native SQLite dialect. Write migration content by hand; use `--autogenerate` only for schema inspection, not as the source of truth.
 
-| Workload | Engine | Path |
+## SQLite dialect — what works out of the box
+
+| Feature | DuckDB (old) | SQLite (current) |
 |---|---|---|
-| OLTP (ORM reads/writes) | SQLite via SQLAlchemy | `data/investor.db` |
-| Analytics (Phase 1+) | DuckDB directly (`import duckdb`) | `data/bars/*.parquet` |
+| Alembic `DDLImpl` | required a hand-written stub | built-in `SQLiteImpl` |
+| `--autogenerate` | failed (`pg_collation` missing) | works |
+| `render_as_batch` | needed for column changes | needed for column changes |
+| `pool.NullPool` in env.py | required (single-writer lock) | not needed |
 
-SQLite is built into Python's stdlib, has full native Alembic support (including `--autogenerate`), and supports all window functions used today (`ROW_NUMBER() OVER`) since version 3.25 (2018).
+## `render_as_batch=True`
 
-DuckDB is retained as a direct Python dependency (not via SQLAlchemy / `duckdb-engine`) for Phase 1+ analytical workloads that genuinely benefit from it.
+SQLite cannot `ALTER COLUMN` or `DROP COLUMN` directly. Alembic's batch mode works around this by:
 
-## Why SQLite for OLTP
+1. Creating a new table with the desired schema
+2. Copying all data
+3. Dropping the old table
+4. Renaming the new table
 
-- Zero extra dependency (`sqlite3` is in stdlib; `duckdb-engine` removed)
-- Native Alembic dialect: `SQLiteImpl` is built-in; no stub required
-- `--autogenerate` works
-- `render_as_batch=True` in `migrations/env.py` handles column renames/drops transparently
-- `check_same_thread=False` replaces the `pool_size=1` workaround — APScheduler and FastAPI can share the connection without risk
-
-## Why keep DuckDB for analytics
-
-Phase 1+ introduces Parquet-based daily OHLCV bars (`data/bars/*.parquet`). Analytical queries over years of daily data — moving averages, support/resistance scans, backtesting — are exactly the workload DuckDB's vectorized engine is designed for:
+This is set once in `migrations/env.py` and applies to all future revisions:
 
 ```python
-import duckdb
-conn = duckdb.connect()
-conn.execute("SELECT ticker, AVG(close) OVER (...) FROM read_parquet('data/bars/*.parquet')")
+context.configure(
+    connection=connection,
+    target_metadata=target_metadata,
+    render_as_batch=True,   # required for SQLite column changes
+)
 ```
 
-SQLite has no native Parquet support. DuckDB's `read_parquet()` table function eliminates the need for a separate ETL pipeline.
+Column renames and type changes use the batch context:
 
-## How DuckDB will be used from Phase 1
+```python
+with op.batch_alter_table("broker_account") as batch_op:
+    batch_op.alter_column("old_name", new_column_name="new_name")
+```
 
-- Direct `import duckdb` in analytical service functions
-- **Not** via SQLAlchemy or `duckdb-engine`
-- Reads Parquet files; does not write to any shared DB file
-- Can join Parquet data with SQLite tables via DuckDB's SQLite scanner when needed:
-  ```python
-  conn.execute("ATTACH 'data/investor.db' AS sq (TYPE SQLITE)")
-  ```
+## Baseline strategy
+
+On every app startup, `init_db()` runs two operations in sequence:
+
+```python
+Base.metadata.create_all(_engine, checkfirst=True)   # idempotent: creates tables if missing
+alembic_command.upgrade(alembic_cfg, "head")          # applies any pending migrations
+```
+
+The two coexist safely: `create_all` is a no-op when tables already exist; the baseline revision (`0047fb7675f2`, the SQLite switchover marker) has an empty `upgrade()` so it also becomes a no-op on established databases.
+
+## Revision history
+
+| Revision | Description |
+|---|---|
+| `6c9b40ddd25c` | Phase 0 baseline — stamps the existing schema, no DDL |
+| `71b1bd302b7e` | Add `meta` table (stores YAML content hashes for idempotent target loading) |
+| `0047fb7675f2` | SQLite switchover marker — no-op DDL, stamps the migration point |
+
+## Policy: manual migration content, autogenerate for inspection only
+
+`--autogenerate` is available and correct with SQLite, but migration files must be reviewed before committing — autogenerate occasionally emits spurious column-type changes due to SQLite's loose affinity rules. The workflow:
+
+```bash
+# Inspect what autogenerate would do (review before using):
+uv run alembic revision --autogenerate -m "description"
+
+# Apply pending migrations:
+uv run alembic upgrade head
+
+# Roll back one step:
+uv run alembic downgrade -1
+```
 
 ## Consequences
 
-- `duckdb-engine` removed from `pyproject.toml`
-- `duckdb` kept as a runtime dependency
-- `DUCKDB_PATH` env var replaced by `SQLITE_PATH`
-- `data/investor.duckdb` archived; `data/investor.db` is the active database
-- Alembic revision `0047fb7675f2` marks the SQLite switchover point
-- Phase 5 path unchanged: SQLite → Postgres when multi-user scale requires it
+- All schema changes from Phase 0 onward are tracked as Alembic revisions
+- `render_as_batch=True` is permanent — never remove it; SQLite will always need it
+- The `meta` table (revision `71b1bd302b7e`) is used for YAML content hashes; new key/value pairs are added by the app, not by migrations
+- Phase 5 Postgres migration: swap `sqlite:///` for `postgresql://` in `SQLITE_PATH` (rename env var), generate a fresh Alembic revision — the revision history remains intact as documentation

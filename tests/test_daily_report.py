@@ -48,6 +48,32 @@ def _seed_targets(session: Session, ts: datetime) -> None:
     ])
 
 
+def test_account_snapshot_survives_session_close(tmp_path: object) -> None:
+    """Regression: AccountSnapshot fields must be readable after the session closes.
+
+    If compose_daily_report returned an ORM BrokerAccount instead of AccountSnapshot,
+    accessing its attributes here would raise sqlalchemy.orm.exc.DetachedInstanceError.
+    """
+    from sqlalchemy import create_engine as _ce
+    engine = _ce(f"sqlite:///{tmp_path}/t.db", poolclass=StaticPool, future=True)  # type: ignore[arg-type]
+    Base.metadata.create_all(engine)
+    override_engine_for_testing(engine)
+
+    ts = datetime(2026, 4, 27, 10, 0, 0, tzinfo=UTC)
+    with Session(engine) as session:
+        session.add(BrokerAccount(
+            broker="alpaca", mode="paper",
+            cash_usd=500.0, equity_usd=10_000.0, last_sync=ts,
+        ))
+        session.commit()
+        report = compose_daily_report(session)
+    # Session is now closed — ORM lazy-loads would raise DetachedInstanceError here.
+    assert report.account is not None
+    assert report.account.equity_usd == pytest.approx(10_000.0)
+    assert report.account.cash_usd == pytest.approx(500.0)
+    engine.dispose()
+
+
 class TestComposeDailyReport:
     def test_compose_report_empty_db(self, db_session: Session) -> None:
         report = compose_daily_report(db_session)
