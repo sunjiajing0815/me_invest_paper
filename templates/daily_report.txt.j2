@@ -1,0 +1,39 @@
+Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
+{% if report.account %}Equity: ${{ "{:,.0f}".format(report.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(report.account.cash_usd) }}  ({{ report.account.broker }} · {{ report.account.mode }}){% else %}No account data{% endif %}
+
+{% if report.drift_alerts %}
+=== DRIFT ALERTS — {{ report.drift_alerts|length }} ticker(s) outside band ===
+{% for r in report.drift_alerts %}
+  {{ r.ticker }}: {{ r.band_status | upper }}  gap {{ "{:+.1f}".format(r.gap_pct) }}%  (${{ "{:+,.0f}".format(r.gap_usd) }})
+{% endfor %}
+{% endif %}
+
+=== ALLOCATION ===
+{% set col_w = [6, 8, 10, 14, 10, 9, 8, 8] %}
+{{ "Ticker" | ljust(6) }}  {{ "Qty" | rjust(8) }}  {{ "AvgCost" | rjust(10) }}  {{ "MktVal" | rjust(14) }}  {{ "Curr%" | rjust(8) }}  {{ "Tgt%" | rjust(6) }}  {{ "Gap%" | rjust(7) }}  Band
+{{ "-" * 76 }}
+{% set gap_by_ticker = namespace(d={}) %}
+{% for g in report.gap_rows %}
+{% set _ = gap_by_ticker.d.update({g.ticker: g}) %}
+{% endfor %}
+{% for pos in report.positions %}
+{% set gap = gap_by_ticker.d.get(pos.ticker) %}
+{{ pos.ticker | ljust(6) }}  {{ "{:.2f}".format(pos.qty) | rjust(8) }}  {{ "${:,.2f}".format(pos.avg_cost) | rjust(10) }}  {{ "${:,.0f}".format(pos.market_value) | rjust(14) }}  {{ "{:.1f}%".format(pos.weight_pct) | rjust(8) }}  {{ ("{:.1f}%".format(gap.target_pct) if gap else "—") | rjust(6) }}  {{ ("{:+.1f}%".format(gap.gap_pct) if gap else "—") | rjust(7) }}  {{ (gap.band_status if gap else "—") }}
+{% else %}
+  (no positions)
+{% endfor %}
+
+=== GAP SUMMARY ===
+{% set underweight = report.gap_rows | selectattr('gap_pct', '>', 0) | list | sort(attribute='gap_pct', reverse=True) %}
+{% set overweight  = report.gap_rows | selectattr('gap_pct', '<', 0) | list | sort(attribute='gap_pct') %}
+Top underweight (buy):
+{% for r in underweight[:3] %}  {{ r.ticker }}: {{ "{:+.1f}%".format(r.gap_pct) }} (${{ "{:+,.0f}".format(r.gap_usd) }})
+{% else %}  None
+{% endfor %}
+Top overweight (trim):
+{% for r in overweight[:3] %}  {{ r.ticker }}: {{ "{:+.1f}%".format(r.gap_pct) }} (${{ "{:+,.0f}".format(r.gap_usd) }})
+{% else %}  None
+{% endfor %}
+
+---
+No orders are placed automatically. All execution is manual, in the broker's UI.

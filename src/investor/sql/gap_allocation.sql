@@ -15,7 +15,12 @@ SELECT
   COALESCE(c.weight_pct, 0)                                        AS current_pct,
   t.target_pct,
   t.target_pct - COALESCE(c.weight_pct, 0)                         AS gap_pct,
-  (t.target_pct - COALESCE(c.weight_pct, 0)) / 100 * a.equity_usd AS gap_usd
+  (t.target_pct - COALESCE(c.weight_pct, 0)) / 100 * a.equity_usd AS gap_usd,
+  CASE
+    WHEN COALESCE(c.weight_pct, 0) < t.band_low_pct  THEN 'under'
+    WHEN COALESCE(c.weight_pct, 0) > t.band_high_pct THEN 'over'
+    ELSE 'in_band'
+  END                                                               AS band_status
 FROM targets t
 LEFT JOIN current c USING (ticker)
 CROSS JOIN account a

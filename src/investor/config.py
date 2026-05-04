@@ -48,6 +48,13 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_app_password: str = ""
+    email_from: str = ""
+    email_to: str = ""
+
     @field_validator("broker")
     @classmethod
     def validate_broker(cls, v: str) -> str:
@@ -56,7 +63,7 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def validate_alpaca_keys(self) -> "Settings":
+    def validate_alpaca_keys(self) -> Settings:
         if self.broker.startswith("alpaca"):
             if not self.alpaca_api_key:
                 raise ValueError("ALPACA_API_KEY is required when BROKER starts with 'alpaca'")

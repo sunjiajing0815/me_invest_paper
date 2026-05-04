@@ -153,3 +153,29 @@ class TestComputeGap:
         db_session.commit()
         rows = compute_gap(db_session)
         assert all(isinstance(r, GapRow) for r in rows)
+
+    def test_band_status_under(self, db_session: Session) -> None:
+        ts = _seed_account(db_session, equity=10_000.0)
+        _seed_targets(db_session, ts)
+        # VOO target=40, band=[35,45] — weight 20% is below band_low 35
+        db_session.add(PositionsSnapshot(
+            ts=ts, ticker="VOO", qty=5.0,
+            avg_cost=400.0, market_value=2_000.0, weight_pct=20.0,
+        ))
+        db_session.commit()
+
+        voo = {r.ticker: r for r in compute_gap(db_session)}["VOO"]
+        assert voo.band_status == "under"
+
+    def test_band_status_over(self, db_session: Session) -> None:
+        ts = _seed_account(db_session, equity=10_000.0)
+        _seed_targets(db_session, ts)
+        # VOO target=40, band=[35,45] — weight 50% is above band_high 45
+        db_session.add(PositionsSnapshot(
+            ts=ts, ticker="VOO", qty=10.0,
+            avg_cost=500.0, market_value=5_000.0, weight_pct=50.0,
+        ))
+        db_session.commit()
+
+        voo = {r.ticker: r for r in compute_gap(db_session)}["VOO"]
+        assert voo.band_status == "over"

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio — {{ report.date.strftime('%Y-%m-%d') }}</title>
+</head>
+<body style="font-family: Arial, sans-serif; color: #222; max-width: 700px; margin: 0 auto; padding: 16px;">
+
+<!-- Header -->
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1a2e; color:#fff; border-radius:6px; margin-bottom:20px;">
+  <tr>
+    <td style="padding:20px;">
+      <h1 style="margin:0 0 6px 0; font-size:20px;">Portfolio Report</h1>
+      <p style="margin:0; font-size:14px; opacity:0.8;">{{ report.date.strftime('%A, %B %-d, %Y') }}</p>
+    </td>
+    <td style="padding:20px; text-align:right;">
+      {% if report.account %}
+      <p style="margin:0 0 4px 0; font-size:22px; font-weight:bold;">${{ "{:,.0f}".format(report.account.equity_usd) }}</p>
+      <p style="margin:0; font-size:13px; opacity:0.8;">Equity &nbsp;|&nbsp; Cash ${{ "{:,.0f}".format(report.account.cash_usd) }}</p>
+      <p style="margin:4px 0 0 0; font-size:11px; opacity:0.6;">{{ report.account.broker }} · {{ report.account.mode }}</p>
+      {% else %}
+      <p style="margin:0; font-size:14px; opacity:0.7;">No account data</p>
+      {% endif %}
+    </td>
+  </tr>
+</table>
+
+<!-- Drift alerts -->
+{% if report.drift_alerts %}
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#fff3cd; border:1px solid #ffc107; border-radius:6px; margin-bottom:20px;">
+  <tr>
+    <td style="padding:12px 16px;">
+      <strong style="color:#856404;">⚠ Drift Alert — {{ report.drift_alerts|length }} ticker(s) outside band</strong>
+      <ul style="margin:8px 0 0 0; padding-left:20px; color:#856404;">
+        {% for r in report.drift_alerts %}
+        <li style="margin-bottom:4px;">
+          <strong>{{ r.ticker }}</strong> — {{ r.band_status | upper }}
+          ({{ "{:+.1f}".format(r.gap_pct) }}% / ${{ "{:+,.0f}".format(r.gap_usd) }})
+        </li>
+        {% endfor %}
+      </ul>
+    </td>
+  </tr>
+</table>
+{% endif %}
+
+<!-- Allocation table -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Allocation</h2>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:24px;">
+  <thead>
+    <tr style="background:#f0f0f0; color:#555;">
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Qty</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Avg Cost</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Market Value</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Current %</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Target %</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Gap %</th>
+      <th style="padding:8px 10px; text-align:center; border-bottom:2px solid #ddd;">Band</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% set gap_by_ticker = {} %}
+    {% for g in report.gap_rows %}
+      {% if gap_by_ticker.update({g.ticker: g}) %}{% endif %}
+    {% endfor %}
+    {% for pos in report.positions %}
+    {% set gap = gap_by_ticker.get(pos.ticker) %}
+    {% set bg = '#fff8f8' if gap and gap.band_status != 'in_band' else '#fff' %}
+    <tr style="border-bottom:1px solid #eee; background:{{ bg }};">
+      <td style="padding:7px 10px; font-weight:bold;">{{ pos.ticker }}</td>
+      <td style="padding:7px 10px; text-align:right;">{{ "{:.2f}".format(pos.qty) }}</td>
+      <td style="padding:7px 10px; text-align:right;">${{ "{:,.2f}".format(pos.avg_cost) }}</td>
+      <td style="padding:7px 10px; text-align:right;">${{ "{:,.0f}".format(pos.market_value) }}</td>
+      <td style="padding:7px 10px; text-align:right;">{{ "{:.1f}".format(pos.weight_pct) }}%</td>
+      <td style="padding:7px 10px; text-align:right;">{{ "{:.1f}".format(gap.target_pct) if gap else '—' }}%</td>
+      <td style="padding:7px 10px; text-align:right; color:{{ '#c0392b' if gap and gap.gap_pct < 0 else '#27ae60' }};">
+        {{ "{:+.1f}".format(gap.gap_pct) if gap else '—' }}%
+      </td>
+      <td style="padding:7px 10px; text-align:center;">
+        {% if gap %}
+          {% if gap.band_status == 'in_band' %}
+            <span style="color:#27ae60;">✓</span>
+          {% elif gap.band_status == 'under' %}
+            <span style="color:#e67e22;">⚠ under</span>
+          {% else %}
+            <span style="color:#c0392b;">⚠ over</span>
+          {% endif %}
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="8" style="padding:16px 10px; text-align:center; color:#999;">No positions</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<!-- Gap summary -->
+{% if report.gap_rows %}
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Gap Summary</h2>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:24px;">
+  {% set underweight = report.gap_rows | selectattr('gap_pct', '>', 0) | list | sort(attribute='gap_pct', reverse=True) %}
+  {% set overweight  = report.gap_rows | selectattr('gap_pct', '<', 0) | list | sort(attribute='gap_pct') %}
+  <tr>
+    <td width="50%" style="padding-right:8px; vertical-align:top;">
+      <strong style="font-size:12px; color:#27ae60;">▲ Top Underweight (buy)</strong>
+      <ul style="margin:6px 0 0 0; padding-left:18px; font-size:12px;">
+        {% for r in underweight[:3] %}
+        <li>{{ r.ticker }}: {{ "{:+.1f}".format(r.gap_pct) }}% (${{ "{:,.0f}".format(r.gap_usd) }})</li>
+        {% else %}
+        <li style="color:#999;">None</li>
+        {% endfor %}
+      </ul>
+    </td>
+    <td width="50%" style="padding-left:8px; vertical-align:top;">
+      <strong style="font-size:12px; color:#c0392b;">▼ Top Overweight (trim)</strong>
+      <ul style="margin:6px 0 0 0; padding-left:18px; font-size:12px;">
+        {% for r in overweight[:3] %}
+        <li>{{ r.ticker }}: {{ "{:+.1f}".format(r.gap_pct) }}% (${{ "{:,.0f}".format(r.gap_usd) }})</li>
+        {% else %}
+        <li style="color:#999;">None</li>
+        {% endfor %}
+      </ul>
+    </td>
+  </tr>
+</table>
+{% endif %}
+
+<!-- Footer -->
+<p style="font-size:11px; color:#999; border-top:1px solid #eee; padding-top:12px; margin-top:24px;">
+  No orders are placed automatically. All execution is manual, in the broker's UI.<br>
+  Generated by Investor Assistant · {{ report.date.strftime('%Y-%m-%d') }}
+</p>
+
+</body>
+</html>

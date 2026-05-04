@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ class GapRow:
     target_pct: float
     gap_pct: float
     gap_usd: float
+    band_status: Literal["under", "in_band", "over"]
 
 
 def compute_gap(session: Session) -> list[GapRow]:
@@ -34,6 +36,7 @@ def compute_gap(session: Session) -> list[GapRow]:
             target_pct=float(row.target_pct),
             gap_pct=float(row.gap_pct),
             gap_usd=float(row.gap_usd),
+            band_status=row.band_status,
         )
         for row in result
     ]

@@ -6,8 +6,8 @@ Tests call override_engine_for_testing() with an in-memory StaticPool engine.
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig

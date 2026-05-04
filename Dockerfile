@@ -15,6 +15,7 @@ COPY migrations/ ./migrations/
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
+COPY templates/ ./templates/
 
 RUN uv sync --frozen --no-dev
 

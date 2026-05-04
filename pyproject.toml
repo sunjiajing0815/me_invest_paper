@@ -13,6 +13,7 @@ dependencies = [
     "fastapi>=0.115",
     "jinja2>=3.1.6",
     "pandas>=2.2",
+    "pyarrow>=18.0",
     "pandas-ta>=0.4.71b0",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -49,3 +50,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: tests that require live Alpaca API keys (deselect with '-m not integration')",
+]

@@ -61,33 +61,31 @@ Your constraints (**US equities + ETFs only, suggest-only, self-hosted**) change
 - **APScheduler** (in-process cron) is enough for Phases 1–4.
 - Move to Celery Beat + Redis only if you add interactive webhooks or multi-user load.
 
-### Database — DuckDB vs SQLite vs Postgres
+### Database — three-tier split (decided in Phase 0; see ADR-0002)
 
-You asked whether **DuckDB** is a good alternative. Short answer: **yes, and it's actually a better fit here than SQLite** for this app, with one caveat.
+The original recommendation here was "DuckDB as the single store." Phase 0's implementation evaluated that against the maturity of `duckdb-engine` + Alembic and landed on a different split that's now the architecture of record:
 
-| | DuckDB | SQLite | Postgres |
+| Tier | Engine | Where it lives | What it owns |
 |---|---|---|---|
-| Analytics on OHLCV bars (window fns, aggregations) | ⭐⭐⭐ vectorized columnar | ⭐ row-based, slow on big scans | ⭐⭐ |
-| Small OLTP (inserting a suggestion, an alert) | ⭐⭐ fine | ⭐⭐⭐ best | ⭐⭐⭐ |
-| Read Parquet/CSV directly | ⭐⭐⭐ native | ✗ | extension |
-| pandas/Arrow zero-copy | ⭐⭐⭐ | ✗ | via driver |
-| Concurrent writers | single writer | single writer | many |
-| Embedded single-file | ✓ | ✓ | ✗ |
-| SQLAlchemy/Alembic maturity | OK (`duckdb-engine`) | excellent | excellent |
+| **OLTP** | SQLite via SQLAlchemy + Alembic | `data/investor.db` | `target_allocation`, `broker_account`, `positions_snapshot`, `meta`, `alembic_version` — everything transactional |
+| **Analytics** | DuckDB as a Python-level engine — **no DB file** | in-memory connection per query | `price_bar` view over Parquet bars; window functions for indicators |
+| **Bars** | Parquet | `data/bars/<TICKER>.parquet` | One file per ticker; written by `backfill_bars.py`; read by DuckDB |
 
-Why DuckDB wins for this app:
+Why this beat the DuckDB-everywhere plan:
 
-- Your dominant workload is **analytical**: scan N tickers × years of daily bars, compute rolling stats, detect swing highs/lows, aggregate weekly PnL. DuckDB chews through this roughly an order of magnitude faster than SQLite.
-- Window functions (`OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN ...)`) are first-class and fast — great for computing SMAs, RSI, and drift metrics in SQL instead of pulling everything into pandas.
-- You can keep raw bars as Parquet on disk and `SELECT * FROM 'bars/*.parquet'` directly. Excellent for backfill + backtests.
-- Same single-file, zero-ops property as SQLite.
+- **Alembic + SQLite is bulletproof** — `--autogenerate` works, batch mode handles SQLite's missing ALTER COLUMN, the migration story is the same one a million projects already use. `duckdb-engine` + Alembic was workable but accumulated friction.
+- **The analytical workload doesn't need a DB file.** DuckDB's killer feature for this app is `read_parquet('data/bars/*.parquet')` — a fresh in-memory connection costs microseconds, has no locks, and can be opened from anywhere in the codebase without touching the SQLAlchemy session. Treating DuckDB as a per-query engine rather than a persistent store removes a whole class of concerns (lock contention, schema migrations on the analytics tier, single-writer constraints).
+- **OLTP and analytics never compete for a write lock** because they touch different files. `backfill_bars.py` can run while the FastAPI server is up; under the DuckDB-everywhere design that would have contended.
 
-Caveat: DuckDB is single-writer. For your Phases 1–4 (one cron process, one FastAPI process reading) this is fine — just do all writes through the same process, or serialize via a small queue. It becomes a real constraint only at Phase 5 with a web UI + multiple concurrent users, at which point you'd move the **transactional tables** (suggestions, alerts, user accounts) to Postgres while keeping DuckDB for **analytical tables** (bars, snapshots, backtests). That split is a 2-day job in SQLAlchemy.
+| | SQLite (OLTP) | DuckDB (analytics, in-memory) | Postgres (Phase 5+) |
+|---|---|---|---|
+| Analytics on OHLCV bars (window fns, aggregations) | ⭐ row-based | ⭐⭐⭐ vectorized columnar | ⭐⭐ |
+| Small OLTP (inserting a suggestion, an alert) | ⭐⭐⭐ best | n/a | ⭐⭐⭐ |
+| Read Parquet/CSV directly | ✗ | ⭐⭐⭐ native | extension |
+| Concurrent writers | serialised | n/a (read-only, in-memory) | many |
+| SQLAlchemy/Alembic maturity | excellent | n/a (we don't use it through SQLAlchemy) | excellent |
 
-**Recommendation:**
-- Phases 0–4: **DuckDB as the single store**, via `duckdb-engine` + SQLAlchemy + Alembic.
-- Phase 5: split — Postgres for OLTP/auth, DuckDB (or MotherDuck) for analytics.
-- Keep bars in Parquet files so they survive DB migrations painlessly.
+**Migration path at Phase 5:** swap the OLTP tier from SQLite to Postgres (a one-day SQLAlchemy + Alembic job because the abstraction is already in place). Analytics tier stays as-is, or moves to MotherDuck if the bars dataset grows large or needs to be shared across processes.
 
 ### Notifications
 
@@ -109,15 +107,16 @@ Caveat: DuckDB is single-writer. For your Phases 1–4 (one cron process, one Fa
 │  │   jobs)     │   │   services)  │   └──────────────┘    │
 │  └─────────────┘   └──────┬───────┘                       │
 │                           │                               │
-│         ┌─────────────────┼─────────────────┐             │
-│         ▼                 ▼                 ▼             │
-│  ┌────────────┐   ┌──────────────┐   ┌─────────────┐      │
-│  │  DuckDB    │   │  LLM client  │   │ BrokerAdapter│     │
-│  │ (single    │   │  (Claude API)│   │  interface   │     │
-│  │  file +    │   └──────────────┘   └─────┬────────┘     │
-│  │  Parquet)  │                            │              │
-│  └────────────┘                            │              │
-└──────────────────────────────────────────── │ ────────────┘
+│         ┌──────────┬──────┴──────┬───────────────┐        │
+│         ▼          ▼             ▼               ▼        │
+│  ┌──────────┐ ┌──────────┐ ┌─────────────┐ ┌───────────┐  │
+│  │ SQLite   │ │ DuckDB   │ │  LLM client │ │BrokerAdptr│  │
+│  │ (OLTP,   │ │ (in-mem, │ │ (Claude API)│ │ interface │  │
+│  │ Alembic) │ │ Parquet) │ └─────────────┘ └─────┬─────┘  │
+│  └──────────┘ └────┬─────┘                       │        │
+│  data/investor.db  │                             │        │
+│              data/bars/*.parquet                 │        │
+└──────────────────────────────────────────────────│────────┘
                                               ▼
               ┌─────────────────────────────────────────┐
               │  Alpaca (v1 — paper, then live)         │
@@ -162,7 +161,7 @@ Why `target_allocation` is time-versioned (`effective_from`/`effective_to`) and 
 
 - **Language:** Python 3.12
 - **Framework:** FastAPI (API + health checks) + APScheduler (cron)
-- **DB:** **DuckDB** (v1) + Parquet for bars, via `duckdb-engine` + SQLAlchemy + Alembic → add Postgres for OLTP at Phase 5
+- **DB:** three-tier — **SQLite** for OLTP (`data/investor.db`, via SQLAlchemy + Alembic) + **DuckDB** as an in-memory analytical engine (no DB file) + **Parquet** for bars (`data/bars/*.parquet`). Phase 5 swaps SQLite → Postgres; analytics tier stays put. See ADR-0002.
 - **Indicators:** `pandas-ta` (easier than TA-Lib to install) + SQL window functions in DuckDB
 - **Broker:** `alpaca-py` (v1); `moomoo-api` (later, with OpenD running on host Mac)
 - **LLM:** `anthropic` SDK (Haiku 4.5 for triage, Sonnet 4.6 for review summaries)
@@ -177,29 +176,31 @@ Why `target_allocation` is time-versioned (`effective_from`/`effective_to`) and 
 
 Each phase ships something useful on its own. Total MVP: roughly **6–10 weeks of evenings**, plus a 4–6 week paper-trading soak before real money.
 
-### Phase 0 — Foundation (3–5 days)
-- Open Alpaca paper account, get API keys, verify you can pull positions.
-- Define the config file format (YAML):
-  ```yaml
-  watchlist: [VOO, QQQ, AAPL, MSFT, GOOGL]
-  targets:
-    VOO: { pct: 40, band: [35, 45] }
-    QQQ: { pct: 20, band: [17, 23] }
-    AAPL: { pct: 15, band: [12, 18] }
-    ...
-  cash_buffer_pct: 5
-  alert_thresholds_pct: [5, 10, 15]
-  ```
-- Scaffold: Python project (uv or poetry), FastAPI, SQLAlchemy, APScheduler, Dockerfile, compose file.
-- `BrokerAdapter` interface + Alpaca implementation (read-only first).
-- Deliverable: `docker compose up` runs, `/health` responds, `python scripts/sync_positions.py` writes a snapshot row.
+### Phase 0 — Foundation ✅ Complete (2026-04-28, tag `v0.0.1-phase-0`)
+- Alpaca paper account live; API keys in `.env`.
+- `targets.yaml` loaded: VOO 40 / QQQ 25 / SCHD 15 / AMZN 5 / AAPL 5 / MSFT 5 / cash 5.
+- Python 3.13 actually shipped (CLAUDE.md says 3.12 — needs reconciling).
+- FastAPI + APScheduler (one-shot `DateTrigger` 30 s after start) + DuckDB + Alpaca read-only adapter.
+- `/health`, `/positions`, `/gap`, `/admin/run-sync` endpoints; `scripts/sync_positions.py`, `scripts/load_targets.py`.
+- All inline SQL extracted to `src/investor/sql/*.sql` (architectural improvement beyond plan).
+- `broker_account` time-versioned and `account_id` propagated everywhere (improvement beyond plan).
+- 16 unit tests passing; no integration tests yet.
 
-### Phase 1 — Portfolio & gap (1 week)
-- Daily job: pull positions + account equity, write `positions_snapshot`.
-- Gap engine: for each target ticker, compute `(target_weight – current_weight) × total_equity` in dollars and shares.
-- Flag drift: is a ticker outside its band?
-- Email: "Daily Portfolio Snapshot" — 1 table, 1 chart inline (matplotlib → PNG → inline CID).
-- Deliverable: you get an email every weekday morning with the current allocation and the dollar/share gap per ticker.
+**Phase 0 deviations and follow-ups (carried into Phase 1):**
+- **Alembic was skipped.** Schema changes are handled inline via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in `init_db()`. This needs a real ADR-0002 in Phase 1, ideally adopting Alembic before schema churn picks up.
+- **`load_targets.py` has an intermittent dedup bug** — duplicate `target_allocation` rows have appeared. Hardened to `round(float(x), 6)` but not fully tested. Phase 1 must add a regression test and stop running this on every container start.
+- **`ALPACA_BASE_URL` is stored but ignored** — `alpaca-py` uses `paper=True` instead. Either remove the env var or wire it; don't leave it as a footgun.
+- **Python version drift** — actual runtime is 3.13, docs say 3.12. Pick one, update everywhere.
+
+### Phase 1 — Portfolio & gap (1–2 weeks) — current
+- Recurring daily sync (`CronTrigger`, Mon–Fri 16:15 ET).
+- Daily portfolio email: positions table + gap table + drift band flags + summary.
+- Drift band detection (under/in/over) wired into both the gap engine and the email.
+- 2-year OHLCV backfill from Alpaca → `data/bars/*.parquet`, queryable directly via DuckDB.
+- `price_bar` view (or table) — unblocks Phase 2 indicators.
+- Resolve Phase 0 carryovers: ADR-0002 (Alembic), `load_targets.py` regression test, `ALPACA_BASE_URL` cleanup, Python version alignment.
+- First integration test against Alpaca paper.
+- Deliverable: scheduled daily email with allocation + gap + drift, received reliably for 5 consecutive trading days.
 
 ### Phase 2 — Technical levels (1–2 weeks)
 - Fetch OHLCV bars (Alpaca), backfill 2 years.
@@ -284,6 +285,7 @@ Deliverable: you can add funds (even $1,000) and within 24 h get an email saying
 7. **Backtesting infrastructure.** Not in v1, but plan the data model so bars + suggestions can be replayed. DuckDB + Parquet makes this almost free to add later.
 8. **Target drift tolerance before prompting a review.** Separate from rebalancing bands — this is "when to *ask* if you want to rebalance" (e.g., any ticker > 1.5× its band for 4 consecutive weeks) vs. when to *act*. Start conservative.
 9. **AUD ⇄ USD FX cadence.** If using Alpaca, funds convert via Rapyd at transfer time — no FX automation needed. Moomoo AU handles it in-app. Just record the FX rate at time of deposit in `funds_event` for accurate performance attribution.
+10. **Alembic vs inline migrations** *(carried over from Phase 0)*. Phase 0 shipped without Alembic, using inline `ALTER TABLE IF NOT EXISTS` in `init_db()`. This works for adding columns but breaks down for renames, type changes, and table moves. Phase 1 should write ADR-0002 and ideally adopt Alembic before Phase 2 brings substantial schema churn.
 
 ---
 

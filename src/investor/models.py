@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import DateTime, Double, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -24,7 +23,7 @@ class TargetAllocation(Base):
     band_low_pct: Mapped[float] = mapped_column(Double, nullable=False)
     band_high_pct: Mapped[float] = mapped_column(Double, nullable=False)
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    effective_to: Mapped[Optional[datetime]] = mapped_column(
+    effective_to: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
 
@@ -35,7 +34,7 @@ class PositionsSnapshot(Base):
     __tablename__ = "positions_snapshot"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     qty: Mapped[float] = mapped_column(Double, nullable=False)
@@ -59,15 +58,15 @@ class BrokerAccount(Base):
     __tablename__ = "broker_account"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)
     cash_usd: Mapped[float] = mapped_column(Double, nullable=False)
     equity_usd: Mapped[float] = mapped_column(Double, nullable=False)
     last_sync: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    effective_from: Mapped[Optional[datetime]] = mapped_column(
+    effective_from: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    effective_to: Mapped[Optional[datetime]] = mapped_column(
+    effective_to: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )

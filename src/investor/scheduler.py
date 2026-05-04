@@ -1,33 +1,34 @@
-"""APScheduler bootstrap for Phase 0.
+"""APScheduler bootstrap — Phase 1.
 
-Phase 0: one-off DateTrigger runs 30s after startup to validate wiring.
-Phase 1: replace DateTrigger with CronTrigger for recurring daily schedule.
+Runs run_daily_report Mon–Fri at 16:15 ET after market close.
+misfire_grace_time=1800 means: if the box was offline at 16:15, run within 30 min on next start.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 logger = logging.getLogger(__name__)
 
 
-def make_scheduler(sync_job_func: Callable[[], None]) -> BackgroundScheduler:
+def make_scheduler(daily_report_func: Callable[[], None]) -> BackgroundScheduler:
     """Create and configure the scheduler. Does not start it."""
     sched = BackgroundScheduler(timezone="America/New_York")
-    run_at = datetime.now(UTC) + timedelta(seconds=30)
     sched.add_job(
-        sync_job_func,
-        trigger=DateTrigger(run_date=run_at),
-        id="phase0_initial_sync",
+        daily_report_func,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=16,
+            minute=15,
+            timezone="America/New_York",
+        ),
+        id="daily_report",
         replace_existing=True,
+        misfire_grace_time=60 * 30,
     )
-    logger.info(
-        "APScheduler created. Initial sync scheduled for %s UTC",
-        run_at.strftime("%H:%M:%S"),
-    )
+    logger.info("APScheduler created. Daily report scheduled Mon–Fri at 16:15 ET")
     return sched
