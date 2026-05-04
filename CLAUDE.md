@@ -101,6 +101,20 @@ uv run mypy src/
 
 8. **All timestamps are UTC at rest.** Convert to `America/New_York` only for display or for cron triggers.
 
+9. **ORM objects never leave the service layer.** Convert SQLAlchemy model instances to plain frozen dataclasses before returning from any `services/` function. Templates, jobs, and API response builders must only ever see ordinary Python values — never ORM objects. This prevents SQLAlchemy's "detached instance" error, which occurs when a lazy-load is attempted after the session closes. The pattern:
+
+   ```python
+   # Inside compose_daily_report(), while session is still open:
+   account = AccountSnapshot(
+       broker=orm_row.broker,
+       cash_usd=orm_row.cash_usd,
+       ...
+   )
+   # Return the plain dataclass, not the ORM object
+   ```
+
+   `GapRow`, `AccountSnapshot`, `Position` (Phase 2+) all follow this pattern. If you find yourself passing an ORM model instance to a template or a job function, stop and introduce a frozen dataclass.
+
 ## Code style
 
 - Strict mypy on `src/`. Keep it green.
