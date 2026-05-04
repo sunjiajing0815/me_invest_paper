@@ -4,6 +4,7 @@
 **Owner:** Jane  
 **Phase:** 1 — Portfolio Email & Bar Backfill  
 **Code complete:** 2026-05-04  
+**Pre-tag cleanup:** 2026-05-05  
 **Git tag:** `v0.1.0-phase-1` — deferred until 5 consecutive trading-day emails received (earliest 2026-05-09 per phase_1_guide §11 row 14)
 
 ---
@@ -104,6 +105,26 @@ class AccountSnapshot:
 
 ## 4. Architecture decisions made in Phase 1
 
+### ADR-0002 — Three-Tier Storage Architecture
+
+Rewrote the foundational storage ADR (previously titled "Schema Migrations with Alembic + DuckDB", which was stale). The new content documents the permanent three-tier split:
+
+| Tier | Technology | Purpose |
+|---|---|---|
+| OLTP | SQLite via SQLAlchemy + Alembic | Transactional tables: targets, positions, account, suggestions |
+| Analytics | DuckDB (direct Python, not via SQLAlchemy) | Vectorized queries over Parquet bars |
+| Cold storage | Parquet under `data/bars/` | Survives DB migrations; queryable via DuckDB `read_parquet()` |
+
+DuckDB's SQLite scanner allows cross-tier joins in a single query: `ATTACH 'investor.db' AS sq (TYPE SQLITE)`. Phase 5 path: SQLite → Postgres for OLTP; DuckDB/MotherDuck stays for analytics.
+
+### ADR-0003 — Schema Migrations with Alembic + SQLite
+
+Rewrote the migrations ADR (previously titled "SQLite OLTP + DuckDB Analytics", which duplicated ADR-0002's content). New content covers:
+- `SQLiteImpl` is built-in to Alembic — no stub required (contrast with old stale DuckDB-era content)
+- `render_as_batch=True` in `migrations/env.py` — SQLite cannot `ALTER COLUMN`/`DROP COLUMN` directly; batch mode recreates the table transparently
+- Baseline strategy: `Base.metadata.create_all(checkfirst=True)` + `alembic upgrade head` on startup; coexist because `create_all` is idempotent and the baseline revision is a no-op
+- Revision history table via `meta` table added in revision `71b1bd302b7e`
+
 ### ADR-0004 — Parquet files + DuckDB `read_parquet()` for bars
 
 Bar data lives in `data/bars/<TICKER>.parquet`. Queried via `import duckdb` directly:
@@ -147,7 +168,8 @@ The scheduled job and the manual endpoint both retrieve from `app.state`, ensuri
 
 **Symptom:** `Instance <BrokerAccount> is not bound to a Session; attribute refresh operation cannot proceed`  
 **Root cause:** `compose_daily_report()` returned the ORM `BrokerAccount` object inside `DailyReport`. The session closed when the `with session_scope()` block exited. When the Jinja2 template later accessed `report.account.equity_usd`, SQLAlchemy attempted a lazy reload but had no open connection.  
-**Fix:** Introduced `AccountSnapshot` — a plain frozen dataclass populated inside the session before it closes.
+**Fix:** Introduced `AccountSnapshot` — a plain frozen dataclass populated inside the session before it closes.  
+**Regression test added (2026-05-05):** `test_account_snapshot_survives_session_close` in `tests/test_daily_report.py` — closes the session after `compose_daily_report()` and asserts fields are still readable. Catches any future regression where an ORM object is accidentally returned instead of the dataclass.
 
 ---
 
@@ -159,14 +181,23 @@ The scheduled job and the manual endpoint both retrieve from `app.state`, ensuri
 | `tests/test_gap.py` | 10 | All Phase 0 gap tests + 2 new `band_status` tests (under / over) |
 | `tests/test_load_targets.py` | 5 | Hash-based target dedup (unchanged from Phase 0) |
 | `tests/test_email.py` | 3 | `FakeEmailer` records, `SMTPEmailer` raises on empty credentials |
-| `tests/test_daily_report.py` | 2 | Empty DB report, drift alerts populated correctly |
+| `tests/test_daily_report.py` | 3 | Empty DB report, drift alerts populated correctly, session-close regression (added 2026-05-05) |
 | `tests/test_integration_alpaca.py` | 1 | Full chain against live Alpaca paper account (skips without API keys) |
 
-**Total: 28 unit tests** (+ 1 integration). All pass on `sqlite:///:memory:`.
+**Total: 29 unit tests** (+ 1 integration). All pass on `sqlite:///:memory:`.
 
 ---
 
 ## 8. Known issues and limitations
+
+### Cash-buffer denominator — evaluated, no bug
+
+Phase 1 uses `weight_pct = market_value / equity_usd * 100`. Targets are validated to sum to `100 - cash_buffer_pct` (= 95%). Both sides of the gap formula use total equity as the denominator — there is no systematic under-target bias when fully allocated. A comment was added to `gap_allocation.sql` to document this invariant and prevent a future "fix" that would introduce an actual bug:
+
+```sql
+-- weight_pct is stored as pct of total equity (incl. cash).
+-- Targets sum to 100 - cash_buffer_pct, so both sides share the same denominator — no scaling needed.
+```
 
 ### Bar data not yet wired into the scheduler
 
@@ -192,7 +223,7 @@ There is no inbound check (e.g., "did the email actually arrive?"). The definiti
 
 ## 9. Environment and dependencies
 
-- **Python:** 3.12 (runtime: 3.13.12 on host — minor version drift acceptable until Phase 2)
+- **Python:** 3.12 (`.python-version` pinned to `3.12` via `uv python pin 3.12` on 2026-05-05; CPython 3.12.13 installed on host — version drift from earlier 3.13 host default eliminated)
 - **Key new runtime deps:** `pyarrow>=18.0` (Parquet I/O for pandas)
 - **Key new dev usage:** `jinja2` (was already a transitive FastAPI dep, now used directly)
 - **Docker base image:** `python:3.12-slim`
@@ -223,3 +254,18 @@ Based on the product plan and current state, Phase 2 should deliver:
 | `templates/daily_report.html.j2` | Add indicators table and suggestions section |
 | `migrations/` | New Alembic revision for `order_suggestion` table |
 | `scripts/update_bars.py` | Already written; just wire it in |
+
+---
+
+## 11. Pre-tag cleanup (2026-05-05)
+
+Before tagging `v0.1.0-phase-1`, six issues were identified and resolved. Changes are committed to `main`.
+
+| # | Issue | Resolution |
+|---|---|---|
+| 1 | ADR-0002 and ADR-0003 had swapped/stale content from the DuckDB-era OLTP experiment | Full rewrites in place: ADR-0002 → "Three-Tier Storage Architecture"; ADR-0003 → "Schema Migrations with Alembic + SQLite" |
+| 2 | ADR-0004 cross-reference pointed to wrong ADR after the swap | One-line fix: `ADR-0003` → `ADR-0002` in `docs/adr/0004-bar-storage.md` |
+| 3 | Cash-buffer denominator logic was not documented; future agent might add a "fix" that introduces a bug | Evaluated — no bug exists (both sides of gap formula use total equity). Added 2-line comment to `gap_allocation.sql` |
+| 4 | Bug 2 (detached instance) had no regression test | Added `test_account_snapshot_survives_session_close` to `tests/test_daily_report.py` (total tests: 29) |
+| 5 | `DailyReport.positions` annotation comment was ambiguous about session-safety | Comment updated to `# Raw SQL named-tuple rows (not ORM objects) — session-safe.` |
+| 6 | `.python-version` was `3.13` (host default); `pyproject.toml` and Docker target `3.12` | Pinned to `3.12` via `uv python pin 3.12`; host now runs CPython 3.12.13 |

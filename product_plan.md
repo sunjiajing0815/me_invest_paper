@@ -192,26 +192,39 @@ Each phase ships something useful on its own. Total MVP: roughly **6–10 weeks 
 - **`ALPACA_BASE_URL` is stored but ignored** — `alpaca-py` uses `paper=True` instead. Either remove the env var or wire it; don't leave it as a footgun.
 - **Python version drift** — actual runtime is 3.13, docs say 3.12. Pick one, update everywhere.
 
-### Phase 1 — Portfolio & gap (1–2 weeks) — current
-- Recurring daily sync (`CronTrigger`, Mon–Fri 16:15 ET).
-- Daily portfolio email: positions table + gap table + drift band flags + summary.
-- Drift band detection (under/in/over) wired into both the gap engine and the email.
-- 2-year OHLCV backfill from Alpaca → `data/bars/*.parquet`, queryable directly via DuckDB.
-- `price_bar` view (or table) — unblocks Phase 2 indicators.
-- Resolve Phase 0 carryovers: ADR-0002 (Alembic), `load_targets.py` regression test, `ALPACA_BASE_URL` cleanup, Python version alignment.
-- First integration test against Alpaca paper.
-- Deliverable: scheduled daily email with allocation + gap + drift, received reliably for 5 consecutive trading days.
+### Phase 1 — Portfolio & gap ⚙️ Code complete (2026-05-04) + pre-tag cleanup (2026-05-05); tag `v0.1.0-phase-1` deferred until 5-day email streak observed (earliest 2026-05-09)
+- Recurring daily sync (`CronTrigger`, Mon–Fri 16:15 ET) ✓
+- Daily portfolio email: positions, gap, drift alerts, top-3 over/under summary, HTML + plain-text MIME ✓
+- `band_status` (under/in/over) wired into `/gap` and surfaced as `/drift` ✓
+- 2-year OHLCV backfill (`scripts/backfill_bars.py`) and update script (`scripts/update_bars.py`, not yet wired into scheduler) ✓
+- DuckDB-on-Parquet analytics layer in `services/analytics.py` ✓
+- `AccountSnapshot` frozen dataclass + verified `positions` returned as session-safe SQL Row tuples ✓
+- 29 unit tests (incl. session-close regression) + 1 integration test against Alpaca paper ✓
+- Two bugs caught and fixed during deployment: templates dir absent from Docker image; detached SQLAlchemy instance in `compose_daily_report` ✓
+- Pre-tag cleanup pass on 2026-05-05 closed six of seven flagged carryovers (see below).
 
-### Phase 2 — Technical levels (1–2 weeks)
-- Fetch OHLCV bars (Alpaca), backfill 2 years.
-- Compute per ticker:
-  - **Pivot points** (daily, weekly, monthly classical formulas).
-  - **Moving averages**: 20 / 50 / 200 SMA, plus 21 EMA.
-  - **Swing S/R**: detect local pivots (fractal method, N-bar lookback).
-  - **RSI(14)**, **MACD** for context.
-- Merge into a "levels" view per ticker: 3 nearest supports below price, 3 resistances above.
-- Weekly job (Sun evening): generate `order_suggestion` rows for the coming week — for each under-weight ticker in the gap list, suggest a **limit buy at the nearest support**, sized to move halfway toward target in one trade (configurable). For over-weight tickers outside upper band, suggest trims at nearest resistance.
-- Deliverable: Sunday evening email titled "Orders for the week of Mon DD" with a clean table: ticker, side, qty, limit price, reason ("buying at 50-SMA support $182.40, closes the 8 % under-weight to target").
+**Phase 1 cleanup status (post-2026-05-05):**
+
+| Carryover | Status | Resolution |
+|---|---|---|
+| ADR-0002 (storage architecture) | ✅ Closed | Rewrote `docs/adr/0002-*.md` as "Three-Tier Storage Architecture" |
+| ADR-0003 (schema migrations) | ✅ Closed | Rewrote `docs/adr/0003-*.md` as "Schema Migrations with Alembic + SQLite" |
+| Bug 2 regression test | ✅ Closed | `test_account_snapshot_survives_session_close` added |
+| `AccountSnapshot` pattern generalized | ✅ Closed | Verified — positions are SQL Row tuples (already session-safe); annotation comment clarified |
+| Cash-buffer scaling | ✅ Closed | Evaluated; no bug exists (targets sum to 95 = 100 − cash_buffer_pct; same denominator both sides). Invariant comment added to `gap_allocation.sql` |
+| Python 3.12 host pin | ✅ Closed | `uv python pin 3.12`; host now runs CPython 3.12.13 |
+| `/admin/*` endpoint auth | 🔓 **Open — carries to Phase 2** | Localhost binding mitigates today; Phase 4 mutations will need a token |
+| `update_bars.py` not wired into scheduler | 🔧 Phase 2 work | Script exists; just needs scheduling |
+
+### Phase 2 — Technical levels & weekly order suggestions (1.5–2 weeks) — current
+- Resolve Phase 1 carryovers above (~1 evening): write ADRs 0002–0003, verify cash-buffer fix, add Bug 2 regression test, sweep `AccountSnapshot` pattern, pin Python 3.12 on host, add admin-token auth.
+- Wire `update_bars.py` into the daily report job so bars stay fresh.
+- Compute indicators from Parquet bars via DuckDB: SMA-20 / 50 / 200, EMA-21, RSI-14, MACD. Expose on `/indicators`.
+- Compute support/resistance levels per ticker: classical pivots (daily/weekly/monthly), MA bands as dynamic S/R, swing highs/lows via fractal method. Persist to `sr_level` table.
+- Build `order_suggestion` table + the suggestion engine: gap engine + nearest support → limit-buy suggestion sized to close half the gap; over-band tickers get trim suggestions at nearest resistance. Apply guards (cash sufficiency, min share, wash-sale stub).
+- New weekly cron Sunday 18:00 ET: `run_weekly_suggestions` — update bars, compute indicators + levels, generate suggestions, email "Orders for the week of Mon DD."
+- Add a compact "Levels at a glance" section to the daily email (current price, distance from 50/200-SMA, RSI-14, nearest S/R).
+- Deliverable: a Sunday evening email titled "Orders for the week of Mon DD" with concrete suggestions you read and feel are sensible — not "what?" Phase 2 done = first credible weekly email lands.
 
 ### Phase 3 — Daily monitor + LLM news (1–2 weeks)
 - EOD job: for every watchlist ticker, compute `pct_vs_last_week_close`.
