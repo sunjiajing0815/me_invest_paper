@@ -8,7 +8,7 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
-from ..queries import gap_allocation
+from ..queries import gap_allocation, untracked_positions
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,28 @@ class GapRow:
     gap_pct: float
     gap_usd: float
     band_status: Literal["under", "in_band", "over"]
+
+
+@dataclass(frozen=True)
+class UntrackedPosition:
+    ticker: str
+    qty: float
+    market_value: float
+    weight_pct: float
+
+
+def get_untracked_positions(session: Session) -> list[UntrackedPosition]:
+    """Return positions that exist in the portfolio but have no active target allocation."""
+    result = session.execute(untracked_positions).fetchall()
+    return [
+        UntrackedPosition(
+            ticker=row.ticker,
+            qty=float(row.qty),
+            market_value=float(row.market_value),
+            weight_pct=float(row.weight_pct),
+        )
+        for row in result
+    ]
 
 
 def compute_gap(session: Session) -> list[GapRow]:

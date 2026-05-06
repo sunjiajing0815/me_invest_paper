@@ -8,6 +8,14 @@ Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
 {% endfor %}
 {% endif %}
 
+{% if report.untracked_positions %}
+=== UNTRACKED POSITIONS — NO TARGET ALLOCATION ===
+{% for p in report.untracked_positions %}
+  {{ p.ticker }}: {{ "{:.2f}".format(p.qty) }} shares  ${{ "{:,.0f}".format(p.market_value) }}  ({{ "{:.1f}".format(p.weight_pct) }}% of portfolio)
+{% endfor %}
+  Action: add {{ report.untracked_positions | map(attribute='ticker') | join(', ') }} to targets.yaml or trim the position.
+
+{% endif %}
 === ALLOCATION ===
 {% set col_w = [6, 8, 10, 14, 10, 9, 8, 8] %}
 {{ "Ticker" | ljust(6) }}  {{ "Qty" | rjust(8) }}  {{ "AvgCost" | rjust(10) }}  {{ "MktVal" | rjust(14) }}  {{ "Curr%" | rjust(8) }}  {{ "Tgt%" | rjust(6) }}  {{ "Gap%" | rjust(7) }}  Band
@@ -34,6 +42,18 @@ Top overweight (trim):
 {% for r in overweight[:3] %}  {{ r.ticker }}: {{ "{:+.1f}%".format(r.gap_pct) }} (${{ "{:+,.0f}".format(r.gap_usd) }})
 {% else %}  None
 {% endfor %}
+
+{% if report.indicators %}
+=== LEVELS AT A GLANCE ===
+{{ "Ticker" | ljust(6) }}  {{ "Last" | rjust(9) }}  {{ "%Δ50SMA" | rjust(8) }}  {{ "%Δ200SMA" | rjust(9) }}  {{ "RSI14" | rjust(6) }}  {{ "Support" | ljust(20) }}  Resistance
+{{ "-" * 85 }}
+{% for ind in report.indicators %}
+{% set lvl = report.nearby_levels.get(ind.ticker) %}
+{% set sup = lvl.supports[0] if lvl and lvl.supports else None %}
+{% set res = lvl.resistances[0] if lvl and lvl.resistances else None %}
+{{ ind.ticker | ljust(6) }}  {{ "${:,.2f}".format(ind.close) | rjust(9) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else "—") | rjust(8) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else "—") | rjust(9) }}  {{ ("{:.0f}".format(ind.rsi_14) if ind.rsi_14 else "—") | rjust(6) }}  {{ (("$" + "{:,.2f}".format(sup.price) + " (" + sup.method + ")") if sup else "—") | ljust(20) }}  {{ ("$" + "{:,.2f}".format(res.price) + " (" + res.method + ")") if res else "—" }}
+{% endfor %}
+{% endif %}
 
 ---
 No orders are placed automatically. All execution is manual, in the broker's UI.

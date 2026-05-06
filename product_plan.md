@@ -1,12 +1,12 @@
 # Long-Term Investor Assistant — Product Plan (v1)
 
-**Owner:** Jane · **Date:** 2026-04-24 · **Stage:** Ideation
+**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-06) · **Stage:** Building — Phase 2 code-complete; first Sunday weekly suggestion email pending (earliest 2026-05-10)
 
 ---
 
 ## 1. Product in one paragraph
 
-A self-hosted, always-on assistant for a long-term investor. The user declares a watchlist and a target allocation. The system pulls positions and prices daily, computes the gap between current and target, identifies support/resistance levels on each ticker, and emails a weekly order suggestion plus daily news/price alerts (anything ±5 %, ±10 % vs. last week's close). The user places orders themselves — the product never touches the send-order button in v1. Designed for one user (Jane) first, with a clean path to becoming a multi-tenant product later.
+A self-hosted, always-on assistant for a long-term investor. The user declares a watchlist and a target allocation. The system pulls positions and prices daily, computes the gap between current and target, identifies support/resistance levels on each ticker, and emails a weekly order suggestion plus daily news/price alerts (anything ±5 %, ±10 % vs. last week's close). It also surfaces **untracked positions** — anything held in the broker without a matching entry in `targets.yaml` — as a deliberate red banner so paper trades, legacy holdings, or accidental buys can never silently distort the gap math. The user places orders themselves — the product never touches the send-order button in v1. Designed for one user (Jane) first, with a clean path to becoming a multi-tenant product later.
 
 ---
 
@@ -216,39 +216,88 @@ Each phase ships something useful on its own. Total MVP: roughly **6–10 weeks 
 | `/admin/*` endpoint auth | 🔓 **Open — carries to Phase 2** | Localhost binding mitigates today; Phase 4 mutations will need a token |
 | `update_bars.py` not wired into scheduler | 🔧 Phase 2 work | Script exists; just needs scheduling |
 
-### Phase 2 — Technical levels & weekly order suggestions (1.5–2 weeks) — current
-- Resolve Phase 1 carryovers above (~1 evening): write ADRs 0002–0003, verify cash-buffer fix, add Bug 2 regression test, sweep `AccountSnapshot` pattern, pin Python 3.12 on host, add admin-token auth.
-- Wire `update_bars.py` into the daily report job so bars stay fresh.
-- Compute indicators from Parquet bars via DuckDB: SMA-20 / 50 / 200, EMA-21, RSI-14, MACD. Expose on `/indicators`.
-- Compute support/resistance levels per ticker: classical pivots (daily/weekly/monthly), MA bands as dynamic S/R, swing highs/lows via fractal method. Persist to `sr_level` table.
-- Build `order_suggestion` table + the suggestion engine: gap engine + nearest support → limit-buy suggestion sized to close half the gap; over-band tickers get trim suggestions at nearest resistance. Apply guards (cash sufficiency, min share, wash-sale stub).
-- New weekly cron Sunday 18:00 ET: `run_weekly_suggestions` — update bars, compute indicators + levels, generate suggestions, email "Orders for the week of Mon DD."
-- Add a compact "Levels at a glance" section to the daily email (current price, distance from 50/200-SMA, RSI-14, nearest S/R).
-- Deliverable: a Sunday evening email titled "Orders for the week of Mon DD" with concrete suggestions you read and feel are sensible — not "what?" Phase 2 done = first credible weekly email lands.
+### Phase 2 — Technical levels & weekly suggestions ⚙️ Code complete (2026-05-06); tag `v0.2.0-phase-2` deferred until first Sunday weekly suggestions email is received and read for sensibility (earliest 2026-05-10)
+- All `/admin/*` routes protected by `X-Admin-Token` (Phase 1 carryover) ✓
+- `update_bars()` wired into both daily and weekly jobs, plus lifespan startup ✓
+- Smart bar sync (incremental from last bar date for existing tickers; 2-year backfill only for new tickers) — improvement beyond the guide's "tolerate failure" guidance ✓
+- Indicators service (`/indicators` endpoint): SMA-20/50/200 via DuckDB window functions, EMA-21/RSI-14/MACD via pandas-ta, returned as `IndicatorRow` frozen dataclass ✓
+- Support/resistance levels: classical pivots (weekly + monthly), MA bands as dynamic S/R, fractal swing highs/lows with unconfirmed-recent-bars excluded; persisted to `sr_level` with `UniqueConstraint(ticker, method, as_of)` ✓
+- Suggestion engine (`/suggestions`, `/admin/run-weekly-suggestions`): `HALF_THE_GAP` sizing rule + 8% distance guard + $100 cash floor; `persist_suggestions()` enforces the never-overwrite-non-pending-rows audit-trail discipline ✓
+- New Sunday 18:00 ET cron `run_weekly_suggestions` with 6-hour misfire grace ✓
+- Daily email gains "Levels at a Glance" section + "Untracked Positions" red banner ✓
+- Untracked-position detection — SQL anti-join surfaces positions held in broker but absent from `targets.yaml` as a deliberate warning in both daily and weekly emails (added when a TQQQ paper-trade was found to be silently invisible to the gap engine) ✓
+- Tests grew 29 → 58 (indicators 6, levels 8, suggest 11; persist insert/update/no-overwrite/no-duplicate covered) ✓
+- ADR-0006 (S/R methodology) and ADR-0007 (position sizing) shipped, both explicitly marked **⚠ Pending LLM Review** — the current "nearest level" anchor is mechanical and not a finished algorithm ✓
+- Three bugs caught and fixed during build: (1) job named `weekly_orders` was renamed `weekly_suggestions` to honour the suggest-only product principle; (2) bar backfill was unconditionally re-fetching 2 years on every run, rewritten as smart sync; (3) untracked positions were silently ignored, now surfaced via warning banner ✓
 
-### Phase 3 — Daily monitor + LLM news (1–2 weeks)
+**Phase 2 cleanup status:**
+
+| Carryover / Item | Status | Notes |
+|---|---|---|
+| Admin-token auth (Phase 1 carryover) | ✅ Closed | All five `/admin/*` routes protected via `X-Admin-Token` dependency |
+| `update_bars` wiring | ✅ Closed | Wired into lifespan startup, daily report, weekly suggestions |
+| Indicators / levels / suggest services | ✅ Closed | 25 new tests; all dataclasses frozen; SQL anti-join for untracked |
+| ADRs 0006 + 0007 | ✅ Written | Both flagged ⚠ Pending LLM Review for Phase 3 |
+| `weekly_orders` → `weekly_suggestions` rename | ✅ Closed | Three replacement passes (snake / kebab / title-case) |
+| Smart `update_bars()` (incremental backfill) | ✅ Closed | Beyond guide spec — was a real performance bug |
+| Untracked-position banner | ✅ Closed | New first-class product behavior; promoted to §1 |
+| First Sunday email observed | ⏳ Pending | Definition of done; earliest 2026-05-10 |
+| Smoke-test row 14 (cash-buffer invariant assertion) | ❓ Verify | Pre-tag checklist verified rows 4–8 explicitly; row 14 not called out — confirm assertion exists in `test_gap.py` before tag |
+| Suggestion accept/reject endpoint | 🔧 Phase 3 work | `order_suggestion.status` column supports the workflow but no `PATCH /suggestions/{id}` exists yet |
+
+### Phase 3 — LLM-scored levels, accept/reject workflow, and news triage (2–3 weeks) — current
+
+Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifying S/R level. That's a placeholder — "nearest" does not mean "most meaningful." Phase 3 closes this gap before adding news, and also lands the missing audit-trail mutation endpoint that real-capital use depends on. News triage ships as the third workstream.
+
+**Workstream A — LLM level scoring + confidence-weighted anchor selection (~1 week, biggest correctness lift)**
+
+- Add `confidence` column (0.0–1.0) to `sr_level` via Alembic.
+- New service `services/llm_levels.py`: pass each ticker's computed `sr_level` rows (with `method`, `price`, distance-from-current-price, recent OHLCV context) to Claude Sonnet 4.6; return per-level confidence + brief rationale stored in a new `sr_level_review` table.
+- Update `services/suggest.py` to prefer **highest-confidence anchor within distance band** rather than literal nearest. Fallback to nearest if all confidences are below a threshold.
+- Update ADR-0006 (S/R methodology) and ADR-0007 (position sizing) — remove the ⚠ Pending flags once the LLM scoring is in place and the prompts are stable.
+- Hard guardrail: the LLM is allowed to score and rationalise existing computed levels, never to invent prices or fundamental claims. Any output that violates the JSON schema is rejected.
+
+**Workstream B — Suggestion accept/reject endpoint (~2 days, blocking for real-capital trust)**
+
+- `PATCH /suggestions/{id}` with `{ "status": "accepted" | "rejected" | "expired" }`, requires `X-Admin-Token`.
+- Email's "Suggestions" table gains signed-URL accept/reject buttons (`mailto:` or HMAC-signed link back to FastAPI).
+- Accept/reject mutates `order_suggestion.status` only — never calls the broker. Fills are a Phase 4 reconciliation problem.
+- Without this, the audit trail "what I suggested vs. what I acted on" can't be honest, which undermines every retrospective the rest of the system would produce.
+
+**Workstream C — News triage (~1 week, can run in parallel with A)**
+
 - EOD job: for every watchlist ticker, compute `pct_vs_last_week_close`.
 - Triage buckets: |∆| ≥ 5 %, ≥ 10 %, ≥ 15 %.
 - For every flagged ticker, pull news from Alpaca News (+ Finnhub fallback) for last 24 h.
-- Pass the news batch to Claude with a prompt like:
+- Pass the news batch to Claude Haiku 4.5 with a prompt like:
   ```
   For each headline, classify: material / noise.
   If material, write a 1-sentence summary and a bullish/bearish/neutral label.
   Return JSON.
   ```
 - De-dupe by headline hash. Store in `news_event`.
-- Email: "Movers — 2026-04-24" with ticker cards: ∆, last week close, today, top 3 material headlines with LLM summary.
-- Deliverable: one email per trading day EOD (around 16:30 ET) covering only flagged tickers. No mail if nothing moved — keep the signal-to-noise high.
+- Email: "Movers — YYYY-MM-DD" with ticker cards: ∆, last week close, today, top 3 material headlines with LLM summary.
+- No mail if nothing moved — signal-to-noise.
 
-### Phase 4 — Weekly review workflow (1 week)
+**Deliverables:**
+
+- A weekly suggestions email where each `limit_price` is the highest-confidence S/R level within the distance band, and the `reason` string includes a one-line rationale from the LLM ("buy at 50-SMA support $182.40 — confluence with prior weekly pivot S1; high confidence").
+- Click "Accept" or "Reject" in any suggestions email and see `order_suggestion.status` mutate (verifiable via `/suggestions`).
+- One movers email per trading day EOD when something moved ≥ 5 %, with material headlines summarised.
+- ADRs 0006 and 0007 refreshed (no longer ⚠ Pending).
+
+**Out of scope for Phase 3:** Moomoo adapter (deferred to Phase 4 or 5; suggestion engine still mechanical-leaning during Phase 3 and Moomoo holds real capital — too risky to wire up before LLM-scoring soaks for a few weeks). Web UI (Phase 5).
+
+### Phase 4 — Weekly review workflow + Moomoo adapter (1.5–2 weeks)
 - Friday EOD job: build the weekly review:
   - Realized PnL for the week.
-  - Orders suggested vs. filled (did you place them?).
+  - **Orders suggested vs. filled reconciliation** — pull `account/activities` from the broker, match against `order_suggestion` rows by ticker + side + week, write to a new `order_execution` table. Did you actually place the suggested order? At what price? When?
   - New gap vs. target after this week's moves.
   - Big events flagged by the daily monitor.
-  - **Proposed orders for next week** (same engine as Phase 2, refreshed).
-- Email with two buttons: "Accept all" / "Review each" — these are `mailto:` or signed URLs back to your FastAPI endpoints that mark suggestions as accepted/rejected. No orders are placed — just bookkeeping for post-mortems.
-- Deliverable: Friday 5 PM ET weekly review, plus an audit trail of "what I suggested vs. what actually happened."
+  - **Proposed orders for next week** (Phase 2 engine, refreshed with Phase 3 LLM-scored levels).
+- (Accept/reject endpoint already ships in Phase 3; Phase 4 only adds the weekly digest of which suggestions were accepted, rejected, expired, or filled.)
+- **Moomoo adapter** (`brokers/moomoo.py`): implements `BrokerAdapter` against OpenD on `host.docker.internal:11111`. Switchover via `BROKER` env var. Run for 2–4 weeks in parallel against Alpaca (read-only) before flipping primary. See ADR-0001.
+- Deliverable: Friday 5 PM ET weekly review email containing the suggested-vs-filled reconciliation, plus an honest audit trail of "what I suggested vs. what I accepted vs. what actually filled." Optional second deliverable: Moomoo running side-by-side with Alpaca, both reporting consistent positions before the switchover.
 
 ### Phase 4.5 — Target adjustment & rebalance reviews (3–5 days)
 The product needs to help you **evolve** the target allocation over time, not treat it as frozen.

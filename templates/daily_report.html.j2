@@ -45,6 +45,36 @@
 </table>
 {% endif %}
 
+<!-- Untracked positions -->
+{% if report.untracked_positions %}
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#fde8e8; border:1px solid #e74c3c; border-radius:6px; margin-bottom:20px;">
+  <tr>
+    <td style="padding:12px 16px;">
+      <strong style="color:#922b21;">⚠ Untracked Position{{ 's' if report.untracked_positions|length > 1 else '' }} — {{ report.untracked_positions|length }} ticker(s) with no target allocation</strong>
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px; font-size:12px; border-collapse:collapse;">
+        <tr style="color:#922b21; opacity:0.8;">
+          <th style="text-align:left; padding:2px 8px;">Ticker</th>
+          <th style="text-align:right; padding:2px 8px;">Qty</th>
+          <th style="text-align:right; padding:2px 8px;">Market Value</th>
+          <th style="text-align:right; padding:2px 8px;">Portfolio %</th>
+        </tr>
+        {% for p in report.untracked_positions %}
+        <tr style="color:#922b21;">
+          <td style="padding:2px 8px; font-weight:bold;">{{ p.ticker }}</td>
+          <td style="padding:2px 8px; text-align:right;">{{ "{:.2f}".format(p.qty) }}</td>
+          <td style="padding:2px 8px; text-align:right;">${{ "{:,.0f}".format(p.market_value) }}</td>
+          <td style="padding:2px 8px; text-align:right;">{{ "{:.1f}".format(p.weight_pct) }}%</td>
+        </tr>
+        {% endfor %}
+      </table>
+      <p style="margin:8px 0 0 0; font-size:11px; color:#922b21;">
+        Action required: add {{ report.untracked_positions | map(attribute='ticker') | join(', ') }} to <code>targets.yaml</code> with a target allocation, or trim the position in your broker.
+      </p>
+    </td>
+  </tr>
+</table>
+{% endif %}
+
 <!-- Allocation table -->
 <h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Allocation</h2>
 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:24px;">
@@ -126,6 +156,51 @@
       </ul>
     </td>
   </tr>
+</table>
+{% endif %}
+
+<!-- Levels at a glance -->
+{% if report.indicators %}
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Levels at a Glance</h2>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:24px;">
+  <thead>
+    <tr style="background:#f0f0f0; color:#555;">
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">Last</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">%Δ50SMA</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">%Δ200SMA</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">RSI14</th>
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Nearest Support</th>
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Nearest Resist.</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ind in report.indicators %}
+    {% set lvl = report.nearby_levels.get(ind.ticker) %}
+    {% set sup = lvl.supports[0] if lvl and lvl.supports else None %}
+    {% set res = lvl.resistances[0] if lvl and lvl.resistances else None %}
+    {% set rsi_color = '#c0392b' if ind.rsi_14 and ind.rsi_14 > 70 else ('#27ae60' if ind.rsi_14 and ind.rsi_14 < 30 else '#333') %}
+    <tr style="border-bottom:1px solid #eee;">
+      <td style="padding:6px 10px; font-weight:bold;">{{ ind.ticker }}</td>
+      <td style="padding:6px 10px; text-align:right;">${{ "{:,.2f}".format(ind.close) }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ '#27ae60' if ind.pct_from_sma_50 and ind.pct_from_sma_50 > 0 else '#c0392b' }};">
+        {{ "{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else '—' }}
+      </td>
+      <td style="padding:6px 10px; text-align:right; color:{{ '#27ae60' if ind.pct_from_sma_200 and ind.pct_from_sma_200 > 0 else '#c0392b' }};">
+        {{ "{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else '—' }}
+      </td>
+      <td style="padding:6px 10px; text-align:right; color:{{ rsi_color }};">
+        {{ "{:.0f}".format(ind.rsi_14) if ind.rsi_14 else '—' }}
+      </td>
+      <td style="padding:6px 10px; font-size:11px; color:#555;">
+        {% if sup %}${{ "{:,.2f}".format(sup.price) }} <span style="opacity:0.6;">({{ sup.method }})</span>{% else %}—{% endif %}
+      </td>
+      <td style="padding:6px 10px; font-size:11px; color:#555;">
+        {% if res %}${{ "{:,.2f}".format(res.price) }} <span style="opacity:0.6;">({{ res.method }})</span>{% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
 </table>
 {% endif %}
 

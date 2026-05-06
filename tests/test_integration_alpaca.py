@@ -60,7 +60,7 @@ def test_alpaca_paper_full_chain(_settings: Settings, _tmp_session: Session) -> 
     take_snapshot(adapter, _tmp_session, _settings)
     _tmp_session.commit()
 
-    # Compose report and render both templates
+    # Compose report and render both templates (no bars_dir in CI — indicators will be empty)
     report = compose_daily_report(_tmp_session)
     html = render_template("daily_report.html.j2", report=report)
     text = render_template("daily_report.txt.j2", report=report)

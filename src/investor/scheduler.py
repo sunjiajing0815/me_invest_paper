@@ -1,7 +1,8 @@
-"""APScheduler bootstrap — Phase 1.
+"""APScheduler bootstrap — Phase 2.
 
-Runs run_daily_report Mon–Fri at 16:15 ET after market close.
-misfire_grace_time=1800 means: if the box was offline at 16:15, run within 30 min on next start.
+Jobs:
+  daily_report  — Mon–Fri 16:15 ET, grace 30 min
+  weekly_suggestions — Sun 18:00 ET, grace 6 h
 """
 
 from __future__ import annotations
@@ -15,9 +16,13 @@ from apscheduler.triggers.cron import CronTrigger
 logger = logging.getLogger(__name__)
 
 
-def make_scheduler(daily_report_func: Callable[[], None]) -> BackgroundScheduler:
+def make_scheduler(
+    daily_report_func: Callable[[], None],
+    weekly_suggestions_func: Callable[[], None],
+) -> BackgroundScheduler:
     """Create and configure the scheduler. Does not start it."""
     sched = BackgroundScheduler(timezone="America/New_York")
+
     sched.add_job(
         daily_report_func,
         trigger=CronTrigger(
@@ -30,5 +35,21 @@ def make_scheduler(daily_report_func: Callable[[], None]) -> BackgroundScheduler
         replace_existing=True,
         misfire_grace_time=60 * 30,
     )
-    logger.info("APScheduler created. Daily report scheduled Mon–Fri at 16:15 ET")
+
+    sched.add_job(
+        weekly_suggestions_func,
+        trigger=CronTrigger(
+            day_of_week="sun",
+            hour=18,
+            minute=0,
+            timezone="America/New_York",
+        ),
+        id="weekly_suggestions",
+        replace_existing=True,
+        misfire_grace_time=60 * 60 * 6,
+    )
+
+    logger.info(
+        "APScheduler created. Daily report Mon–Fri 16:15 ET; Weekly suggestions Sun 18:00 ET"
+    )
     return sched

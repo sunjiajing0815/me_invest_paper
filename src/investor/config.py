@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     email_from: str = ""
     email_to: str = ""
 
+    admin_token: str = ""
+    bars_dir: str = "data/bars"
+
     @field_validator("broker")
     @classmethod
     def validate_broker(cls, v: str) -> str:

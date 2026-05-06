@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, date, datetime
 
-from sqlalchemy import DateTime, Double, Integer, String
+from sqlalchemy import Date, DateTime, Double, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -69,4 +69,46 @@ class BrokerAccount(Base):
     )
     effective_to: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
+    )
+
+
+class SRLevel(Base):
+    """Support/resistance level computed for a ticker on a specific date."""
+
+    __tablename__ = "sr_level"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String, nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)    # "support" | "resistance"
+    price: Mapped[float] = mapped_column(Double, nullable=False)
+    method: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "pivot_weekly_S1", "sma_50"
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    __table_args__ = (
+        UniqueConstraint("ticker", "method", "as_of", name="uq_sr_per_method_per_day"),
+    )
+
+
+class OrderSuggestion(Base):
+    """Weekly suggestion. Status tracks accept/reject lifecycle."""
+
+    __tablename__ = "order_suggestion"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    week_of: Mapped[date] = mapped_column(Date, nullable=False)         # Monday of the week
+    ticker: Mapped[str] = mapped_column(String, nullable=False)
+    side: Mapped[str] = mapped_column(String, nullable=False)           # "buy" | "sell"
+    qty: Mapped[float] = mapped_column(Double, nullable=False)
+    limit_price: Mapped[float] = mapped_column(Double, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    target_allocation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
     )

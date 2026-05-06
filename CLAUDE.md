@@ -10,7 +10,9 @@ Owner: Jane (solo developer, primary user). Multi-tenant productization is Phase
 
 ## Current phase
 
-See `docs/phase_0_guide.md` (or the project-root copy) for the active build plan. The repo's git tag (e.g., `v0.0.1-phase-0`) reflects the last completed phase.
+Phase 2 is code-complete. See `phase_2_guide.md` for the build plan. The repo's git tag reflects the last completed phase.
+
+Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions).
 
 ## Tech stack and why
 
@@ -42,8 +44,21 @@ src/investor/
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
     moomoo.py         (future) MoomooAdapter — talks to OpenD on host
-  services/           pure functions: snapshot, gap, levels, suggest, news
-  jobs/               APScheduler-registered job functions; thin wrappers over services
+  services/
+    snapshot.py       position + account ingestion
+    gap.py            target-vs-actual gap computation
+    analytics.py      DuckDB context manager (price_bar view over Parquet)
+    indicators.py     IndicatorRow + compute_indicators() — SMA/EMA/RSI/MACD
+    levels.py         SRLevelRow + compute_levels() / persist_levels() / build_nearby_levels()
+    suggest.py        OrderSuggestionRow + generate_suggestions() / persist_suggestions()
+    daily_report.py   DailyReport dataclass + compose_daily_report()
+    bars.py           update_bars() — Alpaca IEX → Parquet append
+    targets.py        load_targets_into_db()
+    render.py         Jinja2 template rendering
+    email.py          SMTPEmailer + FakeEmailer
+  jobs/
+    daily_report.py   Mon-Fri 16:15 ET — sync, indicators, compose, email
+    weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
 config/targets.yaml   user's target allocation (hand-edited or via /targets API)
 migrations/           Alembic revisions
 scripts/              standalone CLIs (sync_positions, show_gap, load_targets)
