@@ -362,7 +362,7 @@ Before tagging `v0.2.0-phase-2`, the following should be verified and resolved.
 
 | # | Issue | Status |
 |---|---|---|
-| 1 | First Sunday suggestions email received and reviewed | ⏳ Pending — earliest 2026-05-10 |
+| 1 | First Sunday suggestions email received and reviewed | ✅ Done — 2026-05-11 (triggered manually after fixing /health 500) |
 | 2 | `ruff check src/ tests/` — clean | ✅ Done |
 | 3 | `mypy src/` — no new errors in Phase 2 files | ✅ Done |
 | 4 | Smoke test: 58 unit tests passing | ✅ Done |
