@@ -22,6 +22,7 @@ from ..models import OrderSuggestion
 from .daily_report import AccountSnapshot
 from .gap import GapRow
 from .levels import NearbyLevels
+from .llm_levels import ScoredLevel
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class OrderSuggestionRow:
     limit_price: float
     reason: str
     expires_at: datetime
+    confidence_at_creation: float | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,37 @@ def _round_qty(dollars: float, price: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Anchor selection
+# ---------------------------------------------------------------------------
+
+def select_anchor(
+    levels: list[ScoredLevel],
+    current_price: float,
+    *,
+    max_distance_pct: float = 8.0,
+    min_confidence: float = 0.4,
+) -> ScoredLevel | None:
+    """Return the best S/R anchor for limit-price selection.
+
+    First filters to levels within *max_distance_pct* of *current_price*.
+    Among those, prefers the level with the highest confidence score (if any
+    meet *min_confidence*).  Falls back to the nearest level by absolute
+    distance when none meet the confidence threshold.  Returns None when no
+    levels are within the distance band at all.
+    """
+    in_band = [
+        lv for lv in levels
+        if abs((lv.price / current_price - 1) * 100) <= max_distance_pct
+    ]
+    if not in_band:
+        return None
+    scored = [lv for lv in in_band if lv.confidence >= min_confidence]
+    if scored:
+        return max(scored, key=lambda lv: lv.confidence)
+    return min(in_band, key=lambda lv: abs(lv.price - current_price))  # fallback
+
+
+# ---------------------------------------------------------------------------
 # Core engine
 # ---------------------------------------------------------------------------
 
@@ -84,12 +117,21 @@ def generate_suggestions(
     nearby_levels: dict[str, NearbyLevels],
     account: AccountSnapshot,
     sizing_rule: SizingRule = HALF_THE_GAP,
+    scored_levels: dict[str, list[ScoredLevel]] | None = None,
     cash_floor: float = 100.0,
     max_distance_pct: float = 8.0,
 ) -> list[OrderSuggestionRow]:
     """Pure function: return a list of order suggestions.
 
     Processes gap_rows in order (already sorted by abs gap desc).
+
+    When *scored_levels* is provided and contains a non-empty list for a
+    ticker, ``select_anchor`` is used to choose the limit price and
+    ``confidence_at_creation`` is populated on the resulting row.  When
+    *scored_levels* is absent, empty, or ``select_anchor`` returns None,
+    the function falls back to the Phase 2 nearest-distance logic
+    (``nearby_levels[ticker].supports[0]`` / ``.resistances[0]``) and
+    sets ``confidence_at_creation`` to None.
     """
     out: list[OrderSuggestionRow] = []
     cash_remaining = account.cash_usd
@@ -103,19 +145,40 @@ def generate_suggestions(
             continue
 
         if g.gap_pct > 0:  # underweight → buy at nearest support
-            levels = nearby.supports
-            if not levels:
-                continue
-            level = levels[0]
+            # --- Scored-levels path ---
+            confidence_at_creation: float | None = None
+            anchor_price: float | None = None
+            anchor_method: str | None = None
+            ticker_scored = (scored_levels or {}).get(g.ticker)
+            if ticker_scored:
+                anchor = select_anchor(
+                    ticker_scored,
+                    nearby.current_price or 0.0,
+                    max_distance_pct=max_distance_pct,
+                )
+                if anchor is not None:
+                    anchor_price = anchor.price
+                    anchor_method = anchor.method
+                    confidence_at_creation = anchor.confidence
+
+            # --- Phase 2 fallback ---
+            if anchor_price is None:
+                levels = nearby.supports
+                if not levels:
+                    continue
+                level = levels[0]
+                anchor_price = level.price
+                anchor_method = level.method
+
             distance_pct = (
-                abs(level.price / nearby.current_price - 1) * 100
+                abs(anchor_price / nearby.current_price - 1) * 100
                 if nearby.current_price
                 else 999
             )
             if distance_pct > max_distance_pct:
                 logger.debug(
                     "generate_suggestions: %s support %.2f is %.1f%% away — skipping",
-                    g.ticker, level.price, distance_pct,
+                    g.ticker, anchor_price, distance_pct,
                 )
                 continue
 
@@ -123,8 +186,8 @@ def generate_suggestions(
             if sizing_rule.max_dollars is not None:
                 dollars = min(dollars, sizing_rule.max_dollars)
 
-            qty = _round_qty(dollars, level.price)
-            cost = qty * level.price
+            qty = _round_qty(dollars, anchor_price)
+            cost = qty * anchor_price
             if qty < 1 or cost > cash_remaining - cash_floor:
                 continue
 
@@ -134,28 +197,50 @@ def generate_suggestions(
                 ticker=g.ticker,
                 side="buy",
                 qty=qty,
-                limit_price=round(level.price, 2),
+                limit_price=round(anchor_price, 2),
                 reason=(
-                    f"underweight {g.gap_pct:+.1f}% — buy at {level.method} "
-                    f"${level.price:,.2f}, closes ~{gap_closed_pct:.0f}% of gap"
+                    f"underweight {g.gap_pct:+.1f}% — buy at {anchor_method} "
+                    f"${anchor_price:,.2f}, closes ~{gap_closed_pct:.0f}% of gap"
                 ),
                 expires_at=_next_friday_eod(),
+                confidence_at_creation=confidence_at_creation,
             ))
 
         elif g.band_status == "over":  # overweight → trim at nearest resistance
-            levels = nearby.resistances
-            if not levels:
-                continue
-            level = levels[0]
+            # --- Scored-levels path ---
+            confidence_at_creation_sell: float | None = None
+            anchor_price_sell: float | None = None
+            anchor_method_sell: str | None = None
+            ticker_scored_sell = (scored_levels or {}).get(g.ticker)
+            if ticker_scored_sell:
+                anchor_sell = select_anchor(
+                    ticker_scored_sell,
+                    nearby.current_price or 0.0,
+                    max_distance_pct=max_distance_pct,
+                )
+                if anchor_sell is not None:
+                    anchor_price_sell = anchor_sell.price
+                    anchor_method_sell = anchor_sell.method
+                    confidence_at_creation_sell = anchor_sell.confidence
+
+            # --- Phase 2 fallback ---
+            if anchor_price_sell is None:
+                levels = nearby.resistances
+                if not levels:
+                    continue
+                level = levels[0]
+                anchor_price_sell = level.price
+                anchor_method_sell = level.method
+
             distance_pct = (
-                abs(level.price / nearby.current_price - 1) * 100
+                abs(anchor_price_sell / nearby.current_price - 1) * 100
                 if nearby.current_price
                 else 999
             )
             if distance_pct > max_distance_pct:
                 logger.debug(
                     "generate_suggestions: %s resistance %.2f is %.1f%% away — skipping",
-                    g.ticker, level.price, distance_pct,
+                    g.ticker, anchor_price_sell, distance_pct,
                 )
                 continue
 
@@ -163,7 +248,7 @@ def generate_suggestions(
             if sizing_rule.max_dollars is not None:
                 trim_usd = min(trim_usd, sizing_rule.max_dollars)
 
-            qty = _round_qty(trim_usd, level.price)
+            qty = _round_qty(trim_usd, anchor_price_sell)
             if qty < 1:
                 continue
 
@@ -172,12 +257,13 @@ def generate_suggestions(
                 ticker=g.ticker,
                 side="sell",
                 qty=qty,
-                limit_price=round(level.price, 2),
+                limit_price=round(anchor_price_sell, 2),
                 reason=(
-                    f"overweight {g.gap_pct:+.1f}% — trim at {level.method} "
-                    f"${level.price:,.2f}, closes ~{gap_closed_pct:.0f}% of gap"
+                    f"overweight {g.gap_pct:+.1f}% — trim at {anchor_method_sell} "
+                    f"${anchor_price_sell:,.2f}, closes ~{gap_closed_pct:.0f}% of gap"
                 ),
                 expires_at=_next_friday_eod(),
+                confidence_at_creation=confidence_at_creation_sell,
             ))
 
     return out
@@ -192,8 +278,13 @@ def persist_suggestions(
     rows: list[OrderSuggestionRow],
     targets_id: int | None,
     week_of: date,
-) -> None:
-    """Upsert suggestions for week_of. Never overwrites accepted/rejected rows."""
+) -> list[int]:
+    """Upsert suggestions for week_of. Never overwrites accepted/rejected rows.
+
+    Returns a list of suggestion IDs (inserted or pre-existing) for this week,
+    which callers can use to generate HMAC tokens or build action links.
+    """
+    ids: list[int] = []
     for r in rows:
         existing = session.scalars(
             select(OrderSuggestion).where(
@@ -209,9 +300,10 @@ def persist_suggestions(
                 existing.limit_price = r.limit_price
                 existing.reason = r.reason
             # accepted/rejected rows are never touched
+            ids.append(existing.id)
             continue
 
-        session.add(OrderSuggestion(
+        new_row = OrderSuggestion(
             week_of=week_of,
             ticker=r.ticker,
             side=r.side,
@@ -222,6 +314,10 @@ def persist_suggestions(
             target_allocation_id=targets_id,
             created_at=datetime.now(UTC),
             expires_at=r.expires_at,
-        ))
+            confidence_at_creation=r.confidence_at_creation,
+        )
+        session.add(new_row)
+        session.flush()
+        ids.append(new_row.id)
 
-    session.flush()
+    return ids
