@@ -90,12 +90,19 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         from_addr=_settings.email_from,
     )
 
+    from .services.llm import LLMClient
+    llm = LLMClient(
+        api_key=_settings.anthropic_api_key,
+        daily_cost_cap_usd=_settings.llm_daily_cost_cap_usd,
+    )
+
     app.state.settings = _settings
     app.state.adapter = adapter
     app.state.emailer = emailer
+    app.state.llm = llm
 
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
-    weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer)
+    weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
     scheduler = make_scheduler(daily_fn, weekly_fn)
     scheduler.start()
     app.state.scheduler = scheduler
@@ -330,7 +337,7 @@ def admin_run_weekly_suggestions(request: Request) -> dict[str, str]:
     emailer = request.app.state.emailer
     logger.info("Weekly suggestions triggered via POST /admin/run-weekly-suggestions")
     try:
-        run_weekly_suggestions(settings, adapter, emailer)
+        run_weekly_suggestions(settings, adapter, emailer, request.app.state.llm)
     except Exception as exc:
         logger.error("Weekly suggestions failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly suggestions failed: {exc}") from exc

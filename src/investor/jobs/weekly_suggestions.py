@@ -19,6 +19,8 @@ from ..services.levels import (
     get_active_targets_id,
     persist_levels,
 )
+from ..services.llm import LLMClient
+from ..services.llm_levels import ScoredLevel, score_levels_for_ticker
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.suggest import (
@@ -32,17 +34,18 @@ logger = logging.getLogger(__name__)
 
 
 def run_weekly_suggestions(
-    settings: Settings, adapter: BrokerAdapter, emailer: EmailSender
+    settings: Settings, adapter: BrokerAdapter, emailer: EmailSender, llm: LLMClient
 ) -> None:
     """Compute indicators + levels, generate suggestions, persist, and email.
 
     Order of operations:
       1. update_bars (tolerates failure — stale bars are better than no email)
       2. compute_indicators (DuckDB, no session needed)
-      3. snapshot + gap + levels inside session scope
-      4. generate suggestions (pure function)
-      5. persist suggestions inside session scope
-      6. render + email outside session scope
+      3. LLM level scoring (separate session scope)
+      4. snapshot + gap + levels inside session scope
+      5. generate suggestions (pure function)
+      6. persist suggestions inside session scope
+      7. render + email outside session scope
     Re-raises on email failure (matches ADR-0005).
     """
     logger.info("run_weekly_suggestions started")
@@ -63,6 +66,23 @@ def run_weekly_suggestions(
     indicators = compute_indicators(tickers, settings.bars_dir)
     sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
     week_of = _next_monday()
+
+    # Score all levels per ticker via LLM
+    scored: dict[str, list[ScoredLevel]] = {}
+    with session_scope() as session:
+        for ticker in tickers:
+            ticker_levels = [r for r in sr_rows if r.ticker == ticker]
+            try:
+                scored[ticker] = score_levels_for_ticker(
+                    llm=llm,
+                    session=session,
+                    ticker=ticker,
+                    computed_levels=ticker_levels,
+                    bars_dir=settings.bars_dir,
+                )
+            except Exception as exc:
+                logger.warning("level scoring failed for %s: %s", ticker, exc)
+                scored[ticker] = []
 
     with session_scope() as session:
         take_snapshot(adapter, session, settings)
@@ -94,6 +114,7 @@ def run_weekly_suggestions(
             nearby_levels=nearby,
             account=account,
             sizing_rule=HALF_THE_GAP,
+            scored_levels=scored,
         )
 
         persist_suggestions(session, suggestions, targets_id, week_of)
