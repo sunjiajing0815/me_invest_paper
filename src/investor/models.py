@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Date, DateTime, Double, Integer, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, Double, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -86,6 +86,11 @@ class SRLevel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    llm_rationale: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    scored_by_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     __table_args__ = (
         UniqueConstraint("ticker", "method", "as_of", name="uq_sr_per_method_per_day"),
     )
@@ -109,6 +114,9 @@ class OrderSuggestion(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confidence_at_creation: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     __table_args__ = (
         UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
     )
