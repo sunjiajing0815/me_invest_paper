@@ -146,6 +146,7 @@ uv run mypy src/
 - **Never make `BrokerAdapter` async without an ADR.** APScheduler jobs and FastAPI endpoints are both happy with sync; mixing async/sync brokers complicates testing without buying anything.
 - **Never store secrets in the database.** Keys live in `.env` only. Phase 5 introduces envelope-encrypted credential storage when needed.
 - **Never silently UPDATE a `target_allocation` row.** Use the time-versioned close-and-insert pattern.
+- **Never let LLM output flow into the suggestion engine without schema validation and explicit deterministic fallback.** If `score_levels_for_ticker()` fails or returns `[]`, `generate_suggestions()` falls back to Phase 2 nearest-distance logic automatically. Do not short-circuit this fallback.
 
 ## Common gotchas
 
@@ -156,6 +157,7 @@ uv run mypy src/
 5. **`alpaca-py` returns strings for numeric fields.** Wrap in `float()` at the adapter boundary.
 6. **APScheduler timezones.** `BackgroundScheduler(timezone="America/New_York")` is the right default for cron triggers, but `DateTrigger(run_date=...)` interprets naive datetimes in scheduler-local time — pass `datetime.now(UTC)` explicitly to avoid surprises.
 7. **Alembic batch mode for SQLite column changes.** SQLite can't `ALTER COLUMN` or `DROP COLUMN` directly. Use `render_as_batch=True` (already set in `migrations/env.py`) — Alembic recreates the table transparently.
+8. **HMAC secret rotation invalidates all magic links already in inboxes.** If you rotate `MAGIC_LINK_SECRET`, any Accept/Reject links from the previous weekly email will return 400. Rotate only after the current week's suggestions have been acted on or expired.
 
 ## Required env vars
 
@@ -166,6 +168,8 @@ See `.env.example` for the canonical list. The app **fails to start** if any of 
 - `TARGETS_PATH`
 
 Phase 1+ adds: `SMTP_*`, `EMAIL_*`, `ANTHROPIC_API_KEY`. They're declared as Optional in `config.py` but the relevant features won't work without them.
+
+Phase 3a adds: `ANTHROPIC_API_KEY` (Sonnet scoring), `MAGIC_LINK_SECRET` (HMAC for email buttons, distinct from ADMIN_TOKEN), `APP_BASE_URL` (magic-link URL base).
 
 ## Where to find more
 

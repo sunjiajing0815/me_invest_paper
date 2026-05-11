@@ -56,3 +56,15 @@ A fractal high/low at bar `i` is only confirmed once bars `i+1` through `i+n` ha
 - `services/levels.py` owns the full S/R pipeline.
 - Adding a new level class means implementing a private `_xxx_levels()` function and wiring it into `compute_levels()` — no structural changes needed.
 - Monthly pivots require at least 2 calendar months of bar history. Tickers with fewer than 2 months of data silently produce no monthly pivots (weekly pivots still fire if 2 weeks are present).
+
+## Scoring Pass (Phase 3a — partial update)
+
+Phase 3a adds a confidence-scoring pass after `compute_levels()`. Claude Sonnet 4.6 receives
+the computed levels plus 60 days of OHLCV context and assigns a confidence score [0.0, 1.0]
+per level. `select_anchor()` then prefers the highest-confidence level within 8 % of the
+current price (min_confidence = 0.4) over the naive nearest-distance selection.
+
+Anchor selection for buy orders uses only support levels; sell orders use only resistance levels.
+
+This ADR remains ⚠ Pending final close until Phase 3c completes the full suggestion review
+pipeline, at which point the scoring methodology will be finalized.

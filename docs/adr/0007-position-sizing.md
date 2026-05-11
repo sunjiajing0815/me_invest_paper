@@ -74,3 +74,13 @@ Using a known support (for buys) or resistance (for sells) as the limit price se
 - Tickers with no nearby S/R level within `max_distance_pct` produce no suggestion. This is intentional — it is preferable to skip a week than to suggest a trade anchored at an arbitrary price.
 - The `SizingRule` abstraction means a Phase 3 agent could replace `HALF_THE_GAP` with a volatility-scaled rule without touching the engine's control flow.
 - The cash floor guard means the system will not suggest orders that would leave the account below a minimum operating balance.
+
+## Phase 3a Update — Confidence-Weighted Anchor
+
+`OrderSuggestion.limit_price` is now set by `select_anchor()` (Phase 3a) rather than the
+nearest support/resistance level. The anchor selection prefers the highest-confidence LLM-scored
+level within 8 % of the current price. `confidence_at_creation` records the anchor's confidence
+at order generation time for audit purposes.
+
+This ADR remains ⚠ Pending until Phase 3c where the full review pipeline and sizing rules will
+be finalized.
