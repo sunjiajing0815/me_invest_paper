@@ -15,12 +15,14 @@ from investor.models import Base, OrderSuggestion
 from investor.services.daily_report import AccountSnapshot
 from investor.services.gap import GapRow
 from investor.services.levels import NearbyLevels, SRLevelRow
+from investor.services.llm_levels import ScoredLevel
 from investor.services.suggest import (
     OrderSuggestionRow,
     _next_friday_eod,
     _next_monday,
     generate_suggestions,
     persist_suggestions,
+    select_anchor,
 )
 
 # ---------------------------------------------------------------------------
@@ -236,3 +238,117 @@ class TestDateHelpers:
         assert dt.weekday() == 4  # Friday = 4
         assert dt.hour == 21
         assert dt.tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# select_anchor tests
+# ---------------------------------------------------------------------------
+
+def _make_scored(method: str, price: float, level_type: str, confidence: float) -> ScoredLevel:
+    return ScoredLevel(method=method, price=price, type=level_type, confidence=confidence, rationale="test")
+
+
+class TestSelectAnchor:
+    def test_returns_highest_confidence_in_band(self) -> None:
+        levels = [
+            _make_scored("sma_50", 95.0, "support", 0.8),
+            _make_scored("sma_200", 97.0, "support", 0.5),
+        ]
+        anchor = select_anchor(levels, 100.0)
+        assert anchor is not None
+        assert anchor.price == 95.0  # higher confidence wins
+
+    def test_falls_back_to_nearest_when_all_below_threshold(self) -> None:
+        levels = [
+            _make_scored("sma_50", 95.0, "support", 0.2),   # below min_confidence=0.4
+            _make_scored("sma_200", 98.0, "support", 0.1),  # below min_confidence=0.4
+        ]
+        anchor = select_anchor(levels, 100.0)
+        assert anchor is not None
+        assert anchor.price == 98.0  # nearest to 100.0
+
+    def test_returns_none_when_no_levels_in_band(self) -> None:
+        levels = [
+            _make_scored("sma_200", 50.0, "support", 0.9),  # >8% from 100.0
+        ]
+        anchor = select_anchor(levels, 100.0)
+        assert anchor is None
+
+    def test_returns_none_for_empty_list(self) -> None:
+        assert select_anchor([], 100.0) is None
+
+    def test_exactly_at_max_distance_is_included(self) -> None:
+        # 8% below 100.0 = 92.0 → exactly at the boundary
+        levels = [_make_scored("sma_50", 92.0, "support", 0.6)]
+        anchor = select_anchor(levels, 100.0)
+        assert anchor is not None
+        assert anchor.price == 92.0
+
+    def test_just_outside_max_distance_is_excluded(self) -> None:
+        # 8.1% below 100.0 — should be excluded
+        levels = [_make_scored("sma_50", 91.9, "support", 0.9)]
+        anchor = select_anchor(levels, 100.0)
+        assert anchor is None
+
+    def test_selects_highest_confidence_among_multiple_qualifying(self) -> None:
+        levels = [
+            _make_scored("sma_50",  95.0, "support", 0.6),
+            _make_scored("sma_150", 96.0, "support", 0.9),
+            _make_scored("sma_200", 97.0, "support", 0.7),
+        ]
+        anchor = select_anchor(levels, 100.0)
+        assert anchor is not None
+        assert anchor.price == 96.0  # highest confidence = 0.9
+
+
+# ---------------------------------------------------------------------------
+# generate_suggestions scored_levels fallback regression test
+# ---------------------------------------------------------------------------
+
+class TestGenerateSuggestionsWithScoredLevels:
+    def test_generate_suggestions_falls_back_when_scored_levels_empty(self) -> None:
+        """generate_suggestions with scored_levels={} falls back to nearby_levels — Phase 2 regression."""
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
+        result = generate_suggestions(
+            gap_rows=gap,
+            nearby_levels=nearby,
+            account=_account(cash=2_000.0),
+            scored_levels={},  # empty dict → fallback
+        )
+        assert len(result) == 1
+        s = result[0]
+        assert s.ticker == "VOO"
+        assert s.side == "buy"
+        # confidence_at_creation must be None when using fallback path
+        assert s.confidence_at_creation is None
+
+    def test_generate_suggestions_populates_confidence_when_scored_levels_provided(self) -> None:
+        """generate_suggestions uses scored_levels when non-empty and populates confidence."""
+        scored = {
+            "VOO": [_make_scored("sma_50", 196.0, "support", 0.75)]
+        }
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
+        result = generate_suggestions(
+            gap_rows=gap,
+            nearby_levels=nearby,
+            account=_account(cash=2_000.0),
+            scored_levels=scored,
+        )
+        assert len(result) == 1
+        s = result[0]
+        assert s.confidence_at_creation == 0.75
+
+    def test_generate_suggestions_falls_back_when_scored_levels_none(self) -> None:
+        """generate_suggestions with scored_levels=None falls back to nearby_levels."""
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
+        result = generate_suggestions(
+            gap_rows=gap,
+            nearby_levels=nearby,
+            account=_account(cash=2_000.0),
+            scored_levels=None,  # None → fallback
+        )
+        assert len(result) == 1
+        assert result[0].confidence_at_creation is None
