@@ -135,7 +135,7 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "broker": settings.broker,
-        "last_sync_ts": last_sync.isoformat() if last_sync else None,
+        "last_sync_ts": str(last_sync) if last_sync else None,
         "target_count": target_count,
     }
 
@@ -153,7 +153,7 @@ def positions() -> list[dict[str, Any]]:
     return [
         {
             "ticker": r.ticker,
-            "ts": r.ts.isoformat() if r.ts else None,
+            "ts": str(r.ts) if r.ts else None,
             "qty": r.qty,
             "avg_cost": r.avg_cost,
             "market_value": r.market_value,
