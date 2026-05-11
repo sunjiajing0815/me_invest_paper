@@ -150,9 +150,10 @@ def generate_suggestions(
             anchor_price: float | None = None
             anchor_method: str | None = None
             ticker_scored = (scored_levels or {}).get(g.ticker)
-            if ticker_scored:
+            buy_levels = [lv for lv in (ticker_scored or []) if lv.type == "support"]
+            if buy_levels:
                 anchor = select_anchor(
-                    ticker_scored,
+                    buy_levels,
                     nearby.current_price or 0.0,
                     max_distance_pct=max_distance_pct,
                 )
@@ -212,9 +213,10 @@ def generate_suggestions(
             anchor_price_sell: float | None = None
             anchor_method_sell: str | None = None
             ticker_scored_sell = (scored_levels or {}).get(g.ticker)
-            if ticker_scored_sell:
+            sell_levels = [lv for lv in (ticker_scored_sell or []) if lv.type == "resistance"]
+            if sell_levels:
                 anchor_sell = select_anchor(
-                    ticker_scored_sell,
+                    sell_levels,
                     nearby.current_price or 0.0,
                     max_distance_pct=max_distance_pct,
                 )
