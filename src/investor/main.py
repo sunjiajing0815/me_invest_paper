@@ -1,27 +1,31 @@
-"""FastAPI application — Phase 2.
+"""FastAPI application — Phase 3a.
 
 Endpoints:
-  GET  /health                    — status, broker, last sync ts, target count
-  GET  /positions                 — latest portfolio snapshot rows
-  GET  /gap                       — current allocation vs targets (% and USD, band_status)
-  GET  /drift                     — only out-of-band gap rows
-  GET  /indicators                — technical indicators per ticker (SMA, RSI, MACD)
-  GET  /suggestions               — pending order suggestions for current week
-  POST /admin/run-sync            — ad-hoc sync trigger (requires X-Admin-Token)
-  POST /admin/run-daily-report    — manual trigger for daily report job (requires X-Admin-Token)
-  POST /admin/run-weekly-suggestions   — manual weekly suggestions trigger (requires X-Admin-Token)
-  POST /admin/reload-targets      — reload targets from targets.yaml (requires X-Admin-Token)
+  GET   /health                        — status, broker, last sync ts, target count
+  GET   /positions                     — latest portfolio snapshot rows
+  GET   /gap                           — current allocation vs targets (% and USD, band_status)
+  GET   /drift                         — only out-of-band gap rows
+  GET   /indicators                    — technical indicators per ticker (SMA, RSI, MACD)
+  GET   /suggestions                   — pending order suggestions for current week
+  PATCH /suggestions/{sid}             — accept or reject a suggestion (requires X-Admin-Token)
+  GET   /suggestions/{sid}/{action}    — magic-link accept/reject from weekly email
+  POST  /admin/run-sync                — ad-hoc sync trigger (requires X-Admin-Token)
+  POST  /admin/run-daily-report        — manual trigger for daily report job (requires X-Admin-Token)
+  POST  /admin/run-weekly-suggestions  — manual weekly suggestions trigger (requires X-Admin-Token)
+  POST  /admin/reload-targets          — reload targets from targets.yaml (requires X-Admin-Token)
 """
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from .brokers import make_adapter
 from .config import Settings, load_targets
@@ -37,6 +41,13 @@ from .services.targets import load_targets_into_db, yaml_hash
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class SuggestionActionRequest(BaseModel):
+    """Request body for PATCH /suggestions/{sid}."""
+
+    action: str  # "accept" | "reject"
+    note: str | None = None
 
 _settings: Settings | None = None
 
@@ -272,6 +283,76 @@ def suggestions() -> list[dict[str, Any]]:
         raise HTTPException(status_code=500, detail="Suggestions query failed") from exc
 
     return result
+
+
+@app.patch(
+    "/suggestions/{sid}",
+    summary="Accept or reject a suggestion",
+    dependencies=[Depends(admin_auth)],
+)
+def patch_suggestion(sid: int, body: SuggestionActionRequest) -> dict[str, Any]:
+    """Accept or reject a pending order suggestion by ID."""
+    from .models import OrderSuggestion
+
+    if body.action not in ("accept", "reject"):
+        raise HTTPException(status_code=400, detail="action must be 'accept' or 'reject'")
+
+    new_status: str
+    with session_scope() as session:
+        row = session.get(OrderSuggestion, sid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        if row.status != "pending":
+            raise HTTPException(status_code=409, detail=f"suggestion already {row.status}")
+        row.status = body.action + "ed"  # "accepted" | "rejected"
+        row.acted_at = datetime.now(UTC)
+        if body.note:
+            row.note = body.note
+        session.flush()
+        new_status = row.status
+
+    return {"status": "ok", "id": sid, "new_status": new_status}
+
+
+@app.get(
+    "/suggestions/{sid}/{action}",
+    summary="Magic-link accept/reject",
+    response_class=HTMLResponse,
+)
+def suggestion_magic_link(
+    sid: int,
+    action: str,
+    token: str,
+    request: Request,
+) -> HTMLResponse:
+    """Handle magic-link accept/reject from the weekly email."""
+    from .models import OrderSuggestion
+    from .services.magic_link import verify_action
+
+    settings = request.app.state.settings
+
+    if action not in ("accept", "reject"):
+        raise HTTPException(status_code=400, detail="invalid action")
+
+    if not verify_action(sid, action, token, settings.magic_link_secret):
+        raise HTTPException(status_code=400, detail="invalid or expired token")
+
+    new_status: str
+    with session_scope() as session:
+        row = session.get(OrderSuggestion, sid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        if row.status != "pending":
+            raise HTTPException(status_code=409, detail=f"suggestion already {row.status}")
+        row.status = action + "ed"
+        row.acted_at = datetime.now(UTC)
+        session.flush()
+        new_status = row.status
+
+    return HTMLResponse(
+        content=f"<h2>Suggestion #{sid} {new_status}.</h2>",
+        status_code=200,
+    )
 
 
 @app.post("/admin/run-sync", summary="Ad-hoc sync trigger", dependencies=[Depends(admin_auth)])
