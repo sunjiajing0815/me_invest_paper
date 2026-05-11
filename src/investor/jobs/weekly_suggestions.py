@@ -23,6 +23,7 @@ from ..services.llm import LLMClient
 from ..services.llm_levels import ScoredLevel, score_levels_for_ticker
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
+from ..services.magic_link import sign_action
 from ..services.suggest import (
     HALF_THE_GAP,
     _next_monday,
@@ -117,8 +118,20 @@ def run_weekly_suggestions(
             scored_levels=scored,
         )
 
-        persist_suggestions(session, suggestions, targets_id, week_of)
+        suggestion_ids = persist_suggestions(session, suggestions, targets_id, week_of)
         untracked = get_untracked_positions(session)
+
+    # Build token context list for Accept/Reject buttons
+    suggestion_items = []
+    for suggestion, sid in zip(suggestions, suggestion_ids):
+        accept_token = sign_action(sid, "accept", settings.magic_link_secret)
+        reject_token = sign_action(sid, "reject", settings.magic_link_secret)
+        suggestion_items.append({
+            "suggestion": suggestion,
+            "sid": sid,
+            "accept_token": accept_token,
+            "reject_token": reject_token,
+        })
 
     # Email outside session scope — session safety rule
     subject = f"Orders for the week of {week_of:%b %d}"
@@ -126,7 +139,8 @@ def run_weekly_suggestions(
         "weekly_suggestions.html.j2",
         week_of=week_of,
         account=account,
-        suggestions=suggestions,
+        suggestion_items=suggestion_items,
+        base_url=settings.app_base_url,
         indicators=indicators,
         nearby=nearby,
         untracked=untracked,

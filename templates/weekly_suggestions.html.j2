@@ -58,7 +58,7 @@
 
 <!-- Suggestions table -->
 <h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Suggested Orders</h2>
-{% if suggestions %}
+{% if suggestion_items %}
 {% set total_buy_usd = namespace(v=0) %}
 {% set total_sell_usd = namespace(v=0) %}
 {% set buy_count = namespace(n=0) %}
@@ -73,10 +73,12 @@
       <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Current</th>
       <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">~$</th>
       <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Reason</th>
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Actions</th>
     </tr>
   </thead>
   <tbody>
-    {% for s in suggestions %}
+    {% for item in suggestion_items %}
+    {% set s = item.suggestion %}
     {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
     {% set current = ind.close if ind else 0 %}
     {% set dist_pct = ((s.limit_price / current - 1) * 100) if current else 0 %}
@@ -98,6 +100,12 @@
       <td style="padding:7px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
       <td style="padding:7px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
       <td style="padding:7px 10px; font-size:12px; color:#555;">{{ s.reason }}</td>
+      <td style="white-space:nowrap;">
+        <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}"
+           style="background:#28a745;color:white;padding:4px 10px;text-decoration:none;border-radius:3px;font-size:11px;margin-right:4px;">Accept</a>
+        <a href="{{ base_url }}/suggestions/{{ item.sid }}/reject?token={{ item.reject_token }}"
+           style="background:#6c757d;color:white;padding:4px 10px;text-decoration:none;border-radius:3px;font-size:11px;">Reject</a>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
