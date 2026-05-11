@@ -112,3 +112,24 @@ class OrderSuggestion(Base):
     __table_args__ = (
         UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
     )
+
+
+class LLMCallLog(Base):
+    """Audit log for every Anthropic API call made by the app."""
+
+    __tablename__ = "llm_call_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    purpose: Mapped[str] = mapped_column(String, nullable=False)       # e.g. "score_levels"
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Double, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    # "ok" | "schema_error" | "api_error"
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    error: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
