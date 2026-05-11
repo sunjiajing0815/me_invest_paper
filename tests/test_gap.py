@@ -179,3 +179,56 @@ class TestComputeGap:
 
         voo = {r.ticker: r for r in compute_gap(db_session)}["VOO"]
         assert voo.band_status == "over"
+
+    def test_cash_buffer_invariant(self, db_session: Session) -> None:
+        """When every ticker is exactly at its target weight and targets sum to
+        (100 - cash_buffer_pct), both gap_pct and gap_usd must be zero for all rows.
+
+        Closes Phase 2 carryover: verifies the SQL denominator is consistent —
+        weight_pct uses total equity (incl. cash) as denominator, targets sum to
+        100 - cash_buffer_pct, so no scaling is required.
+        """
+        equity = 100_000.0
+        cash = 5_000.0
+        ts = datetime(2026, 4, 27, 10, 0, 0, tzinfo=UTC)
+
+        # Targets sum to exactly 95% (= 100 - 5% cash buffer)
+        tickers = [
+            ("VOO",  25.0, 20.0, 30.0),
+            ("QQQ",  20.0, 15.0, 25.0),
+            ("AAPL", 15.0, 10.0, 20.0),
+            ("MSFT", 15.0, 10.0, 20.0),
+            ("NVDA", 10.0,  5.0, 15.0),
+            ("BND",  10.0,  5.0, 15.0),
+        ]
+        assert sum(t for _, t, *_ in tickers) == 95.0  # sanity-check targets sum
+
+        db_session.add(
+            BrokerAccount(
+                broker="alpaca", mode="paper",
+                cash_usd=cash, equity_usd=equity, last_sync=ts,
+            )
+        )
+        for ticker, target_pct, band_low, band_high in tickers:
+            db_session.add(TargetAllocation(
+                ticker=ticker, target_pct=target_pct,
+                band_low_pct=band_low, band_high_pct=band_high,
+                effective_from=ts,
+            ))
+            market_value = target_pct / 100.0 * equity
+            db_session.add(PositionsSnapshot(
+                ts=ts, ticker=ticker,
+                qty=1.0, avg_cost=market_value, market_value=market_value,
+                weight_pct=target_pct,   # pct of total equity, matches target exactly
+            ))
+        db_session.commit()
+
+        rows = compute_gap(db_session)
+        assert len(rows) == len(tickers)
+        for row in rows:
+            assert row.gap_pct == pytest.approx(0.0, abs=0.01), (
+                f"{row.ticker}: expected gap_pct=0, got {row.gap_pct}"
+            )
+            assert row.gap_usd == pytest.approx(0.0, abs=0.01), (
+                f"{row.ticker}: expected gap_usd=0, got {row.gap_usd}"
+            )

@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     admin_token: str = ""
     bars_dir: str = "data/bars"
 
+    anthropic_api_key: str = ""
+    magic_link_secret: str = ""
+    app_base_url: str = "http://localhost:8000"
+    level_prompt_version: int = 1
+    llm_daily_cost_cap_usd: float = 5.0
+
     @field_validator("broker")
     @classmethod
     def validate_broker(cls, v: str) -> str:
