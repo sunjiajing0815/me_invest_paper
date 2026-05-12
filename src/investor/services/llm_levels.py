@@ -79,6 +79,14 @@ def score_levels_for_ticker(
 
     current_price = float(recent_bars[-1]["close"]) if recent_bars else 0.0  # type: ignore[arg-type]
 
+    # Only score levels within 30% of current price — distant levels are never chosen
+    # by select_anchor() (8% band) and generating rationales for them wastes tokens.
+    nearby_levels = (
+        [lv for lv in computed_levels
+         if current_price > 0 and abs(lv.price / current_price - 1) <= 0.30]
+        or computed_levels  # fallback: send all if current_price unknown
+    )
+
     user = json.dumps(
         {
             "ticker": ticker,
@@ -91,7 +99,7 @@ def score_levels_for_ticker(
                     "type": lv.type,
                     "as_of": str(lv.as_of),
                 }
-                for lv in computed_levels
+                for lv in nearby_levels
             ],
         },
         default=str,
@@ -105,15 +113,22 @@ def score_levels_for_ticker(
             model=SONNET,
             system=system,
             user=user,
-            max_tokens=1500,
+            max_tokens=8192,
             response_schema=_LevelScoreSchema,
         )
     except Exception as exc:
         logger.warning("score_levels_for_ticker: LLM call failed for %s: %s", ticker, exc)
         return []
 
+    error_msg: str | None = None
+    if parsed is None:
+        from .llm import _strip_fences
+        try:
+            _LevelScoreSchema.model_validate_json(_strip_fences(resp.content))
+        except Exception as exc:
+            error_msg = str(exc)[:500]
     status = "ok" if parsed is not None else "schema_error"
-    persist_llm_call_log(session, resp, purpose="score_levels", status=status)
+    persist_llm_call_log(session, resp, purpose="score_levels", status=status, error=error_msg)
 
     if parsed is None:
         logger.warning("level scoring failed for %s; engine will fall back to nearest", ticker)

@@ -3,7 +3,31 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.investor.services.llm import LLMClient, LLMResponse, _calc_cost, HAIKU, SONNET
+from src.investor.services.llm import LLMClient, LLMResponse, _calc_cost, _strip_fences, HAIKU, SONNET
+
+
+class TestStripFences:
+    def test_plain_json_unchanged(self):
+        s = '{"key": "value"}'
+        assert _strip_fences(s) == s
+
+    def test_strips_json_fences(self):
+        s = '```json\n{"key": "value"}\n```'
+        assert _strip_fences(s) == '{"key": "value"}'
+
+    def test_strips_plain_fences(self):
+        s = '```\n{"key": "value"}\n```'
+        assert _strip_fences(s) == '{"key": "value"}'
+
+    def test_strips_leading_trailing_whitespace(self):
+        s = '  ```json\n{"key": "value"}\n```  '
+        assert _strip_fences(s) == '{"key": "value"}'
+
+    def test_no_closing_fence(self):
+        # Truncated response — don't crash, return what we have
+        s = '```json\n{"key": "value"}'
+        result = _strip_fences(s)
+        assert result == '{"key": "value"}'
 
 
 class TestCalcCost:

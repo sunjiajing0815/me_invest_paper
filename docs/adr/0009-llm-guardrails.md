@@ -34,7 +34,7 @@ The prompt explicitly states that the model must not reference earnings, revenue
 
 ### Cost cap
 
-`Settings.llm_daily_cost_cap_usd` (default `5.0`) is checked before each scoring batch. If the running total for the UTC day already exceeds the cap, `score_levels_for_ticker()` returns `[]` immediately without making an API call. This prevents a runaway loop from exhausting the budget overnight.
+`Settings.llm_daily_cost_cap_usd` (default `1.0`) is checked before each scoring batch. If the running total for the UTC day already exceeds the cap, `score_levels_for_ticker()` returns `[]` immediately without making an API call. This prevents a runaway loop from exhausting the budget overnight.
 
 ### Model pinning
 

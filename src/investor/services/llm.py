@@ -36,7 +36,7 @@ class LLMResponse(BaseModel):
 class LLMClient:
     """Cost-guarded Anthropic client. One instance per app lifetime (stored on app.state)."""
 
-    def __init__(self, api_key: str, daily_cost_cap_usd: float = 5.0) -> None:
+    def __init__(self, api_key: str, daily_cost_cap_usd: float = 1.0) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._daily_cap = daily_cost_cap_usd
         self._spent_today: float = 0.0
@@ -99,7 +99,7 @@ class LLMClient:
         parsed: T | None = None
         if response_schema is not None:
             try:
-                parsed = response_schema.model_validate_json(content)
+                parsed = response_schema.model_validate_json(_strip_fences(content))
             except (ValidationError, ValueError) as exc:
                 log.warning(
                     "LLM output failed schema validation: %s; raw=%r",
@@ -107,6 +107,23 @@ class LLMClient:
                     content[:500],
                 )
         return resp, parsed
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences and extract the outermost JSON object."""
+    text = text.strip()
+    if text.startswith("```"):
+        newline = text.find("\n")
+        if newline != -1:
+            text = text[newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+    # Fallback: locate the outermost { ... } so stray prefix/suffix chars don't break parsing.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text.strip()
 
 
 def _calc_cost(model: str, in_toks: int, out_toks: int) -> float:

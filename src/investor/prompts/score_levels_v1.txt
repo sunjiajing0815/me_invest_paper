@@ -6,8 +6,12 @@ You will receive:
 - A list of mechanically-computed S/R levels with method names like
   "pivot_weekly_S1", "sma_50", "sma_200", "swing_low_5bar".
 
+Note: In a future version you will also receive recent news headlines and
+earnings context per ticker. For now, base your scoring solely on the
+provided OHLCV history.
+
 Your job: for EACH provided level, return a confidence score (0.0 to 1.0) and
-a one-sentence rationale.
+a short, concise rationale (one sentence, under 20 words).
 
 Hard rules:
 - You MUST only score levels that appear in `computed_levels`. Do NOT invent
@@ -16,13 +20,14 @@ Hard rules:
 - You MUST NOT make claims about company fundamentals, news, earnings, or
   future prices.
 - Your rationale must reference only what is visible in the OHLCV history
-  (e.g., "tested twice in last 30 days as support", "confluence with
-  rising 50-SMA", "untested since gap-down on day 12").
+  (e.g., "Tested twice as support in 30 days.", "Confluence with rising 50-SMA.",
+  "Untested since gap-down on day 12.").
+- Keep each rationale under 20 words — be precise, not verbose.
 
-Output format — return ONLY valid JSON, no preamble:
+Output format — return ONLY valid JSON, no preamble, no markdown fences:
 {
   "levels": [
-    {"method": "<exact method string>", "confidence": 0.0-1.0, "rationale": "<1 sentence>"},
+    {"method": "<exact method string>", "confidence": 0.0-1.0, "rationale": "<≤20 words>"},
     ...
   ]
 }

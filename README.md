@@ -1,8 +1,8 @@
-# Investor Assistant — Phase 2
+# Investor Assistant — Phase 3a
 
-A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, suggests weekly limit orders, and sends daily and weekly reports by email. The system never places orders — execution is always manual in the broker's UI.
+A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, suggests weekly limit orders, and sends daily and weekly reports by email. The weekly email includes Accept/Reject buttons for each suggestion. The system never places orders — execution is always manual in the broker's UI.
 
-**Current phase:** 2 — Technical Indicators & Weekly Suggestions  
+**Current phase:** 3a — LLM Level Scoring + Accept/Reject Workflow  
 **Status:** Code complete.
 
 ---
@@ -20,7 +20,7 @@ A self-hosted, **suggest-only** portfolio assistant for long-term US-equity inve
 
 ```bash
 cp .env.example .env
-# Edit .env — set ALPACA_*, SMTP_*, and ADMIN_TOKEN variables
+# Edit .env — set ALPACA_*, SMTP_*, ADMIN_TOKEN, ANTHROPIC_API_KEY, and MAGIC_LINK_SECRET
 ```
 
 Required variables (see `.env.example` for the full list):
@@ -38,6 +38,9 @@ Required variables (see `.env.example` for the full list):
 | `EMAIL_FROM` | Sender address |
 | `EMAIL_TO` | Recipient address |
 | `ADMIN_TOKEN` | Token for `/admin/*` endpoints (`openssl rand -hex 32`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Sonnet 4.6 level scoring |
+| `MAGIC_LINK_SECRET` | HMAC signing key for email buttons (`openssl rand -hex 32`, distinct from `ADMIN_TOKEN`) |
+| `APP_BASE_URL` | Public base URL for magic links, e.g. `http://localhost:8000` |
 
 ### 2. Configure target allocation
 
@@ -63,7 +66,7 @@ cash_buffer_pct: 5
 # Install dependencies
 uv sync
 
-# Apply DB migrations (creates sr_level + order_suggestion tables in Phase 2)
+# Apply DB migrations
 uv run alembic upgrade head
 
 # Seed target allocation into the database
@@ -161,12 +164,30 @@ Pending weekly order suggestions for the current week. Returns `[]` before the f
     "side": "buy",
     "qty": 2.0,
     "limit_price": 488.50,
-    "reason": "underweight 8.2% — nearest support at 488.50 (sma_50, 1.3% away)",
+    "reason": "underweight +8.2% — buy at sma_50 $488.50 (conf 0.78), Tested twice as support in 30 days. closes ~50% of gap",
     "status": "pending",
     "expires_at": "2026-05-08T21:00:00-04:00"
   }
 ]
 ```
+
+### `PATCH /suggestions/{id}` *(requires X-Admin-Token)*
+
+Accept or reject a suggestion programmatically.
+
+```bash
+curl -X PATCH localhost:8000/suggestions/42 \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "accept", "note": "placed manually in Alpaca"}'
+# → {"status": "ok", "id": 42, "new_status": "accepted"}
+```
+
+Returns 409 if the suggestion is no longer pending. `action` must be `"accept"` or `"reject"`.
+
+### `GET /suggestions/{id}/{action}?token=...`
+
+Magic-link endpoint hit when the user clicks Accept or Reject in the weekly email. The token is HMAC-signed and expires after 7 days. Returns an HTML confirmation page. Returns 400 on bad/expired token, 409 if already acted.
 
 ### `POST /admin/run-sync` *(requires X-Admin-Token)*
 
@@ -218,14 +239,16 @@ Fires Sunday at 18:00 America/New_York. Contains:
 |---|---|
 | Header | Week of MM-DD, equity, deployable cash |
 | Untracked positions | Red banner — same as daily report; persists until resolved |
-| Suggestions table | Ticker, side, qty, limit price, current price, distance to level, reason |
+| Suggestions table | Ticker, side, qty, limit price, current price, distance to level, reason, **Accept / Reject buttons** |
 | Top-line summary | Total $ to deploy, # buys, # sells |
 | Levels at a glance | SMA-50/200 distance, nearest support and resistance per watchlist ticker |
 | Footer | Reminder that execution is manual |
 
 Subject: `Orders for the week of MMM DD`
 
-Suggestions use "half-the-gap" sizing: each order deploys half the dollar shortfall (or surplus). A support/resistance level must be within 8% of the current price for a suggestion to be generated. See [ADR-0007](docs/adr/0007-position-sizing.md) for the full sizing rationale.
+Each suggestion row has **Accept** (green) and **Reject** (grey) buttons. Clicking one updates the suggestion status directly via an HMAC-signed magic link — no login required. Links expire after 7 days; second click returns a "already acted" message.
+
+Suggestions use "half-the-gap" sizing: each order deploys half the dollar shortfall (or surplus). The limit price is chosen by `select_anchor()`: Claude Sonnet 4.6 scores all computed S/R levels for confidence, and the highest-confidence level within 8% of the current price is used (buy orders use support levels; sell orders use resistance levels). If LLM scoring fails, the system falls back to nearest-distance selection. See [ADR-0006](docs/adr/0006-sr-methodology.md) and [ADR-0007](docs/adr/0007-position-sizing.md) for the full methodology.
 
 ---
 
@@ -271,7 +294,7 @@ All transactional tables are in `data/investor.db` (SQLite).
 
 See Phase 1 for full column docs. These tables are unchanged in Phase 2.
 
-### `sr_level` (Phase 2)
+### `sr_level` (Phase 2+)
 
 One row per ticker × method × as_of date. Methods include pivot points (`pivot_weekly_S1`, `pivot_monthly_R1`, …), moving averages (`sma_50`, `ema_21`, …), and swing levels (`swing_high_5bar`, `swing_low_5bar`). Unique on `(ticker, method, as_of)` — re-running the job is idempotent.
 
@@ -282,8 +305,13 @@ One row per ticker × method × as_of date. Methods include pivot points (`pivot
 | `price` | double | Level price |
 | `method` | varchar | Computation method |
 | `as_of` | date | Computation date |
+| `confidence` | float | LLM confidence score [0.0, 1.0] (Phase 3a) |
+| `llm_rationale` | text | LLM rationale, truncated to 240 chars (Phase 3a) |
+| `scored_at` | timestamptz | When the confidence score was assigned (Phase 3a) |
+| `scored_by_model` | varchar | Model that scored this level, e.g. `claude-sonnet-4-6` (Phase 3a) |
+| `prompt_version` | varchar | Prompt version used, e.g. `v1` (Phase 3a) |
 
-### `order_suggestion` (Phase 2)
+### `order_suggestion` (Phase 2+)
 
 One row per week × ticker × side. Status lifecycle: `pending` → `accepted` / `rejected` / `expired`. Rows with non-pending status are never overwritten on re-run.
 
@@ -293,10 +321,30 @@ One row per week × ticker × side. Status lifecycle: `pending` → `accepted` /
 | `ticker` | varchar | e.g. `VOO` |
 | `side` | varchar | `buy` or `sell` |
 | `qty` | double | Suggested share quantity |
-| `limit_price` | double | Limit price (nearest S/R level) |
+| `limit_price` | double | Limit price (confidence-weighted S/R level) |
 | `reason` | varchar | Human-readable explanation |
 | `status` | varchar | `pending` / `accepted` / `rejected` / `expired` |
 | `expires_at` | timestamptz | Friday 21:00 ET of the suggestion week |
+| `confidence_at_creation` | float | Anchor level confidence when suggestion was created (Phase 3a) |
+| `acted_at` | timestamptz | When accept/reject was recorded (Phase 3a) |
+| `note` | text | Optional note from the accept/reject action (Phase 3a) |
+
+### `llm_call_log` (Phase 3a)
+
+One row per LLM API call. Used for cost tracking and debugging.
+
+| Column | Type | Description |
+|---|---|---|
+| `ts` | timestamptz | Call timestamp (UTC) |
+| `purpose` | varchar | e.g. `score_levels` |
+| `model` | varchar | e.g. `claude-sonnet-4-6` |
+| `prompt_hash` | varchar | First 12 hex chars of SHA-256 of system+user prompt |
+| `input_tokens` | int | Prompt tokens consumed |
+| `output_tokens` | int | Completion tokens produced |
+| `cost_usd` | float | Estimated USD cost |
+| `latency_ms` | int | Wall-clock latency |
+| `status` | varchar | `ok` / `schema_error` / `api_error` |
+| `error` | text | Error message if status ≠ `ok` |
 
 ---
 
@@ -308,18 +356,22 @@ sqlite3 data/investor.db
 
 ```sql
 -- pending suggestions for this week
-SELECT ticker, side, qty, limit_price, reason
+SELECT ticker, side, qty, limit_price, confidence_at_creation, reason
 FROM order_suggestion
 WHERE week_of = date('now', 'weekday 1', '-7 days') AND status = 'pending';
 
--- current S/R levels
-SELECT ticker, type, method, price
+-- current S/R levels with LLM confidence
+SELECT ticker, type, method, price, round(confidence, 2) AS conf, llm_rationale
 FROM sr_level WHERE as_of = (SELECT MAX(as_of) FROM sr_level)
 ORDER BY ticker, type, price;
 
 -- all-time suggestion history
-SELECT week_of, ticker, side, qty, limit_price, status
+SELECT week_of, ticker, side, qty, limit_price, confidence_at_creation, status, acted_at
 FROM order_suggestion ORDER BY week_of DESC, ticker;
+
+-- LLM cost summary by day
+SELECT date(ts) AS day, sum(cost_usd) AS total_usd, count(*) AS calls
+FROM llm_call_log GROUP BY 1 ORDER BY 1 DESC;
 ```
 
 ---
@@ -336,13 +388,18 @@ src/investor/
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
+  prompts/
+    score_levels_v1.txt  Sonnet 4.6 scoring prompt (hard rules: no invented prices, no trade recs)
   services/
     snapshot.py       Position + account ingestion
     gap.py            Gap computation + UntrackedPosition detection
     analytics.py      DuckDB context manager (price_bar view over Parquet)
     indicators.py     IndicatorRow + compute_indicators() — SMA/EMA/RSI/MACD
     levels.py         SRLevelRow, NearbyLevels + compute_levels() / persist_levels()
-    suggest.py        OrderSuggestionRow + generate_suggestions() / persist_suggestions()
+    llm.py            LLMClient (cost guard, schema validation) + persist_llm_call_log()
+    llm_levels.py     ScoredLevel + score_levels_for_ticker() via Sonnet 4.6
+    magic_link.py     sign_action() / verify_action() — HMAC-SHA256 email tokens
+    suggest.py        OrderSuggestionRow, select_anchor() + generate_suggestions() / persist_suggestions()
     daily_report.py   DailyReport dataclass + compose_daily_report()
     bars.py           update_bars() — smart backfill + incremental Parquet append
     targets.py        Hash-based idempotent target loader
@@ -374,13 +431,15 @@ data/
   bars/               Parquet bar files — bind-mounted, gitignored
 tests/
   test_config.py              Settings + YAML loader (8 tests)
-  test_gap.py                 Gap computation + band_status (10 tests)
+  test_gap.py                 Gap computation + band_status, cash-buffer invariant (11 tests)
   test_load_targets.py        Hash-based target dedup (5 tests)
   test_email.py               FakeEmailer + SMTPEmailer (3 tests)
   test_daily_report.py        DailyReport + session-close regression (3 tests)
   test_indicators.py          compute_indicators() with synthetic Parquet (6 tests)
   test_levels.py              Pivot formulas, swing detection, build_nearby_levels (8 tests)
-  test_suggest.py             generate_suggestions guards + persist lifecycle (11 tests)
+  test_llm.py                 LLMClient cost guard, schema validation, _calc_cost (11 tests)
+  test_magic_link.py          sign_action / verify_action — format, tamper, expiry (12 tests)
+  test_suggest.py             generate_suggestions, select_anchor, persist lifecycle (27 tests)
   test_integration_alpaca.py  Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -388,8 +447,10 @@ docs/adr/
   0003-schema-migrations-alembic-sqlite.md
   0004-bar-storage.md
   0005-email-failure-policy.md
-  0006-sr-methodology.md
-  0007-position-sizing.md
+  0006-sr-methodology.md      ⚠ Pending Phase 3c (scoring pass partial update added)
+  0007-position-sizing.md     ⚠ Pending Phase 3c (confidence-weighted anchor added)
+  0009-llm-guardrails.md      Hard rules for LLM output in the suggestion pipeline
+  0010-magic-link-auth.md     HMAC magic-link auth for Accept/Reject email buttons
 ```
 
 ---
@@ -398,7 +459,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 58 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 104 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/
