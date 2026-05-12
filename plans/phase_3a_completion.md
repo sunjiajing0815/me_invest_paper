@@ -202,9 +202,9 @@ Short 60-day OHLCV windows give Sonnet limited context for swing levels that wer
 
 If Anthropic returns a 529 (overloaded) or 5xx, `score_levels_for_ticker()` logs a warning and returns `[]` immediately. The Phase 2 nearest-distance fallback activates, so suggestions still generate — but without LLM scoring. A simple retry with backoff would improve reliability at the cost of latency.
 
-### `sr_level.llm_rationale` is populated by `score_levels_for_ticker()` but not yet by `persist_levels()`
+### `prompt_version` is hardcoded to `"v1"` in `score_levels_for_ticker()`
 
-The rationale is stored on the in-memory `ScoredLevel` object and used in the `reason` string, but it is not written back to `sr_level.llm_rationale` in the database. This is a minor audit-trail gap; the `llm_call_log` contains the full raw response for reconstruction.
+When `score_levels_v1.txt` is replaced by `v2`, the hardcoded string must be updated. A future improvement is to derive the version from the filename or pass it as a parameter.
 
 ### Magic-link HMAC secret rotation invalidates all in-flight links
 

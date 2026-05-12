@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import pandas as pd
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ..models import SRLevel as SRLevelORM
 from .analytics import duckdb_conn
 from .levels import SRLevelRow
 from .llm import SONNET, LLMClient, LLMResponse, load_prompt, persist_llm_call_log
@@ -154,4 +156,22 @@ def score_levels_for_ticker(
                 rationale=entry.rationale[:240],
             )
         )
+
+    # --- Write scores back to sr_level rows so Phase 3c can query them from the DB ---
+    scored_at = datetime.now(UTC)
+    for scored in out:
+        original = method_map[scored.method]
+        orm_row = (
+            session.query(SRLevelORM)
+            .filter_by(ticker=ticker, method=scored.method, as_of=original.as_of)
+            .first()
+        )
+        if orm_row is not None:
+            orm_row.confidence = scored.confidence
+            orm_row.llm_rationale = scored.rationale
+            orm_row.scored_at = scored_at
+            orm_row.scored_by_model = SONNET
+            orm_row.prompt_version = "v1"
+    session.flush()
+
     return out
