@@ -88,7 +88,9 @@ class SRLevel(Base):
     )
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     llm_rationale: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
-    scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    scored_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     scored_by_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     prompt_version: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     __table_args__ = (
@@ -115,7 +117,9 @@ class OrderSuggestion(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confidence_at_creation: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
-    acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    acted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     __table_args__ = (
         UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
@@ -141,3 +145,41 @@ class LLMCallLog(Base):
     # "ok" | "schema_error" | "api_error"
     status: Mapped[str] = mapped_column(String, nullable=False)
     error: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
+
+class NewsEvent(Base):
+    """News article fetched from Alpaca or Finnhub, optionally scored by LLM."""
+
+    __tablename__ = "news_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    ticker: Mapped[str] = mapped_column(String, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)       # "alpaca" | "finnhub"
+    headline: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    url_hash: Mapped[str] = mapped_column(String, nullable=False)     # sha256(normalised_url)[:16]
+    llm_material: Mapped[bool | None] = mapped_column(nullable=True, default=None)
+    llm_sentiment: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    llm_summary: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    llm_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    llm_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    arbitrated: Mapped[bool] = mapped_column(nullable=False, default=False)
+    __table_args__ = (UniqueConstraint("url_hash", name="uq_news_url_hash"),)
+
+
+class MoverState(Base):
+    """Per-ticker threshold state for the tiered intraday-mover alert logic."""
+
+    __tablename__ = "mover_state"
+
+    ticker: Mapped[str] = mapped_column(String, primary_key=True)
+    last_triggered_threshold: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    # 0.0 = never triggered (or reset); 5.0 = 5% threshold last triggered; increments by 5.0
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    last_pct_change: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
