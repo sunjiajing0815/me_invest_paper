@@ -13,6 +13,7 @@ Endpoints:
   POST  /admin/run-daily-report        — manual trigger for daily report job (requires X-Admin-Token)
   POST  /admin/run-weekly-suggestions  — manual weekly suggestions trigger (requires X-Admin-Token)
   POST  /admin/reload-targets          — reload targets from targets.yaml (requires X-Admin-Token)
+  POST  /admin/run-movers             — trigger movers email job (requires X-Admin-Token)
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from .brokers import make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.daily_report import run_daily_report
+from .jobs.movers import run_movers_email
 from .jobs.sync import run_sync_job
 from .jobs.weekly_suggestions import run_weekly_suggestions
 from .queries import account_last_sync, positions_latest, targets_active_count
@@ -101,11 +103,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
         from_addr=_settings.email_from,
     )
 
-    from .services.llm import LLMClient
-    llm = LLMClient(
-        api_key=_settings.anthropic_api_key,
-        daily_cost_cap_usd=_settings.llm_daily_cost_cap_usd,
-    )
+    from .services.llm import make_llm_client
+    llm = make_llm_client(_settings)
 
     app.state.settings = _settings
     app.state.adapter = adapter
@@ -114,7 +113,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
 
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
     weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
-    scheduler = make_scheduler(daily_fn, weekly_fn)
+    movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
+    scheduler = make_scheduler(daily_fn, weekly_fn, movers_fn)
     scheduler.start()
     app.state.scheduler = scheduler
 
@@ -423,3 +423,19 @@ def admin_run_weekly_suggestions(request: Request) -> dict[str, str]:
         logger.error("Weekly suggestions failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly suggestions failed: {exc}") from exc
     return {"status": "ok", "message": "Weekly suggestions email sent"}
+
+
+@app.post(
+    "/admin/run-movers",
+    summary="Manual movers email trigger",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_run_movers(request: Request) -> dict[str, str]:
+    """Trigger the movers email job — fetches top movers, triages news, and emails."""
+    run_movers_email(
+        request.app.state.settings,
+        request.app.state.adapter,
+        request.app.state.emailer,
+        request.app.state.llm,
+    )
+    return {"status": "ok"}

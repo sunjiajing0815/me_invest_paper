@@ -10,7 +10,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from investor.models import Base  # noqa: E402
 
 config = context.config
-if config.config_file_name is not None:
+# Skip fileConfig when called programmatically (db.py sets configure_logger=False
+# so alembic.ini's [logger_root] level=WARNING doesn't clobber the app's log level).
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata

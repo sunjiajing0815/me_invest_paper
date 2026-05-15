@@ -1,9 +1,11 @@
-watchlist: [VOO, QQQ, SCHD, AAPL, MSFT, AMZN]
+watchlist: [VOO, QQQ, SCHD, TQQQ, AAPL, MSFT, AMZN, MU]
 targets:
-  VOO:  { pct: 40, band: [35, 45] }
+  VOO:  { pct: 30, band: [25, 35] }
   QQQ:  { pct: 25, band: [21, 29] }
-  SCHD: { pct: 15, band: [12, 18] }
+  SCHD: { pct: 10, band: [7,  13] }
+  TQQQ: { pct: 10, band: [7,  13] }
   AMZN: { pct: 5,  band: [3,  8]  }
   AAPL: { pct: 5,  band: [3,  8]  }
   MSFT: { pct: 5,  band: [3,  8]  }
+  MU:   { pct: 5,  band: [3,  8]  }
 cash_buffer_pct: 5

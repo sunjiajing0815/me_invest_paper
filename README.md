@@ -1,8 +1,8 @@
-# Investor Assistant — Phase 3a
+# Investor Assistant — Phase 3b
 
-A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, suggests weekly limit orders, and sends daily and weekly reports by email. The weekly email includes Accept/Reject buttons for each suggestion. The system never places orders — execution is always manual in the broker's UI.
+A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, suggests weekly limit orders, and sends daily and weekly reports by email. When a watchlist ticker moves ≥5% vs. last week, a movers email is sent with AI-triaged news headlines. The weekly email includes Accept/Reject buttons for each suggestion. The system never places orders — execution is always manual in the broker's UI.
 
-**Current phase:** 3a — LLM Level Scoring + Accept/Reject Workflow  
+**Current phase:** 3b — LangGraph News Triage + Movers Email  
 **Status:** Code complete.
 
 ---
@@ -20,7 +20,7 @@ A self-hosted, **suggest-only** portfolio assistant for long-term US-equity inve
 
 ```bash
 cp .env.example .env
-# Edit .env — set ALPACA_*, SMTP_*, ADMIN_TOKEN, ANTHROPIC_API_KEY, and MAGIC_LINK_SECRET
+# Edit .env — set ALPACA_*, SMTP_*, ADMIN_TOKEN, ANTHROPIC_API_KEY, MAGIC_LINK_SECRET, and FINNHUB_API_KEY
 ```
 
 Required variables (see `.env.example` for the full list):
@@ -38,9 +38,13 @@ Required variables (see `.env.example` for the full list):
 | `EMAIL_FROM` | Sender address |
 | `EMAIL_TO` | Recipient address |
 | `ADMIN_TOKEN` | Token for `/admin/*` endpoints (`openssl rand -hex 32`) |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Sonnet 4.6 level scoring |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Haiku + Sonnet news triage and level scoring |
 | `MAGIC_LINK_SECRET` | HMAC signing key for email buttons (`openssl rand -hex 32`, distinct from `ADMIN_TOKEN`) |
 | `APP_BASE_URL` | Public base URL for magic links, e.g. `http://localhost:8000` |
+| `FINNHUB_API_KEY` | Finnhub API key for news fallback ([free tier](https://finnhub.io), 60 req/min) |
+| `LLM_DAILY_COST_CAP_USD` | Daily LLM spend cap in USD (default `3.0`) |
+| `LLM_BACKEND` | `anthropic_api` (default) or `agent_sdk` (routes calls through `claude-agent-sdk`) |
+| `LLM_CLI_PATH` | Path to system `claude` CLI for `agent_sdk` backend; empty = use SDK-bundled binary |
 
 ### 2. Configure target allocation
 
@@ -84,6 +88,7 @@ The API is available at `http://localhost:8000`. Interactive docs at `http://loc
 The scheduler starts automatically with the server and fires:
 - **Daily report**: Mon–Fri at 16:15 America/New_York (30-minute misfire grace)
 - **Weekly suggestions**: Sunday at 18:00 America/New_York (6-hour misfire grace)
+- **Movers email**: Mon–Fri at 16:30 America/New_York (1-hour misfire grace)
 
 ### Updating targets
 
@@ -209,6 +214,14 @@ Manually triggers the weekly suggestions job (indicators → levels → suggesti
 curl -H "X-Admin-Token: $ADMIN_TOKEN" -X POST localhost:8000/admin/run-weekly-suggestions
 ```
 
+### `POST /admin/run-movers` *(requires X-Admin-Token)*
+
+Manually triggers the movers email job (detect threshold crossings → fetch news → triage → email).
+
+```bash
+curl -H "X-Admin-Token: $ADMIN_TOKEN" -X POST localhost:8000/admin/run-movers
+```
+
 Interactive docs: `http://localhost:8000/docs`
 
 ---
@@ -249,6 +262,45 @@ Subject: `Orders for the week of MMM DD`
 Each suggestion row has **Accept** (green) and **Reject** (grey) buttons. Clicking one updates the suggestion status directly via an HMAC-signed magic link — no login required. Links expire after 7 days; second click returns a "already acted" message.
 
 Suggestions use "half-the-gap" sizing: each order deploys half the dollar shortfall (or surplus). The limit price is chosen by `select_anchor()`: Claude Sonnet 4.6 scores all computed S/R levels for confidence, and the highest-confidence level within 8% of the current price is used (buy orders use support levels; sell orders use resistance levels). If LLM scoring fails, the system falls back to nearest-distance selection. See [ADR-0006](docs/adr/0006-sr-methodology.md) and [ADR-0007](docs/adr/0007-position-sizing.md) for the full methodology.
+
+---
+
+## Movers email
+
+Fires Mon–Fri at 16:30 America/New_York (15 min after bars are updated). Sends only when a watchlist ticker crosses a **new** threshold milestone — not every day the same move persists.
+
+### Tiered threshold logic
+
+| Scenario | Outcome |
+|---|---|
+| Ticker at +6%, no prior state | Crosses 5% milestone → email sent, threshold stored as 5.0 |
+| Ticker still at +6% next day | Next milestone is 10% — not crossed → no email |
+| Ticker climbs to +11% | Crosses 10% milestone → email sent, threshold stored as 10.0 |
+| Ticker drops back to +2% | abs(pct) < 5% → threshold reset to 0.0 |
+| Ticker moves to +6% again | Crosses 5% milestone again → email sent |
+
+The `mover_state` table tracks `last_triggered_threshold` per ticker. No email is sent if no ticker crossed a new milestone that day.
+
+### News triage graph (LangGraph)
+
+For each mover, recent news (last 24h) is fetched from Alpaca News (primary) or Finnhub (fallback) and run through a three-node LangGraph:
+
+```
+classify (Haiku) → critic (Haiku) → [conditional] arbitrate (Sonnet)
+```
+
+- **classify**: Batch-classifies up to 20 most-recent headlines as `is_material`, `sentiment`, and `summary`
+- **critic**: Reviews classifier output; flags items with suspicious `is_material=true`, unsupported sentiment, or hallucinated entities
+- **arbitrate**: Only invoked when the critic flags items; Sonnet re-evaluates flagged items for a final decision
+
+Graph state is held in memory (`MemorySaver`) — ephemeral per invocation, no SQLite write contention. Target critic-flagging rate: 10–30%.
+
+### Email content
+
+One card per mover showing:
+- Ticker, % change, today's close vs. last week's close
+- Top 3 `llm_material=true` headlines with LLM summary and sentiment badge (bullish/bearish/neutral)
+- "No material news in the last 24h" when nothing material is found
 
 ---
 
@@ -336,8 +388,8 @@ One row per LLM API call. Used for cost tracking and debugging.
 | Column | Type | Description |
 |---|---|---|
 | `ts` | timestamptz | Call timestamp (UTC) |
-| `purpose` | varchar | e.g. `score_levels` |
-| `model` | varchar | e.g. `claude-sonnet-4-6` |
+| `purpose` | varchar | `score_levels`, `news_classify`, `news_critic`, or `news_arbitrate` |
+| `model` | varchar | e.g. `claude-haiku-4-5`, `claude-sonnet-4-6` |
 | `prompt_hash` | varchar | First 12 hex chars of SHA-256 of system+user prompt |
 | `input_tokens` | int | Prompt tokens consumed |
 | `output_tokens` | int | Completion tokens produced |
@@ -345,6 +397,38 @@ One row per LLM API call. Used for cost tracking and debugging.
 | `latency_ms` | int | Wall-clock latency |
 | `status` | varchar | `ok` / `schema_error` / `api_error` |
 | `error` | text | Error message if status ≠ `ok` |
+
+### `news_event` (Phase 3b)
+
+One row per fetched news article. `url_hash` is unique — re-running the job is idempotent.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int | Primary key |
+| `ts` | timestamptz | Row insertion timestamp (UTC) |
+| `ticker` | varchar | e.g. `AAPL` |
+| `published_at` | timestamptz | Article publication time |
+| `source` | varchar | `alpaca` or `finnhub` |
+| `headline` | varchar | Article headline |
+| `url` | varchar | Article URL |
+| `url_hash` | varchar | SHA-256(normalised_url)[:16] — unique key for dedup |
+| `llm_material` | bool | Whether the article is material (from classify or arbitrate node) |
+| `llm_sentiment` | varchar | `bullish`, `bearish`, `neutral`, or null |
+| `llm_summary` | varchar | One-sentence factual summary (≤25 words) |
+| `llm_model` | varchar | Model that produced the classification |
+| `llm_cost_usd` | float | Estimated LLM cost for this article's share of the batch |
+| `arbitrated` | bool | `true` if Sonnet arbitrate node re-evaluated this article |
+
+### `mover_state` (Phase 3b)
+
+One row per watchlist ticker. Tracks the tiered threshold state for movers detection.
+
+| Column | Type | Description |
+|---|---|---|
+| `ticker` | varchar | Primary key |
+| `last_triggered_threshold` | float | Most recent milestone crossed (5.0, 10.0, 15.0, …); 0.0 = never or reset |
+| `last_triggered_at` | timestamptz | When the threshold was last crossed |
+| `last_pct_change` | float | % change at the time of the last trigger |
 
 ---
 
@@ -372,6 +456,22 @@ FROM order_suggestion ORDER BY week_of DESC, ticker;
 -- LLM cost summary by day
 SELECT date(ts) AS day, sum(cost_usd) AS total_usd, count(*) AS calls
 FROM llm_call_log GROUP BY 1 ORDER BY 1 DESC;
+
+-- recent movers with news triage results
+SELECT ne.ticker, ne.published_at, ne.headline, ne.llm_material,
+       ne.llm_sentiment, ne.llm_summary, ne.arbitrated
+FROM news_event ne
+WHERE ne.ts >= datetime('now', '-1 day')
+ORDER BY ne.ticker, ne.published_at DESC;
+
+-- mover threshold state per ticker
+SELECT ticker, last_triggered_threshold, last_pct_change, last_triggered_at
+FROM mover_state ORDER BY ticker;
+
+-- LLM cost by purpose (news triage breakdown)
+SELECT purpose, model, date(ts) AS day,
+       sum(cost_usd) AS total_usd, count(*) AS calls
+FROM llm_call_log GROUP BY 1, 2, 3 ORDER BY 3 DESC, 4 DESC;
 ```
 
 ---
@@ -383,22 +483,30 @@ src/investor/
   main.py             FastAPI app + lifespan
   config.py           pydantic-settings + targets.yaml loader
   db.py               SQLite engine + session factory
-  models.py           SQLAlchemy ORM models (Phase 2: SRLevel, OrderSuggestion)
-  scheduler.py        APScheduler bootstrap
+  models.py           SQLAlchemy ORM models (Phase 3b adds: NewsEvent, MoverState)
+  scheduler.py        APScheduler bootstrap (daily 16:15, weekly 18:00, movers 16:30)
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
+  graphs/
+    __init__.py       make_checkpointer() — MemorySaver (in-memory, avoids SQLite write contention)
+    _nodes.py         llm_node_call() — generic LLM node helper (Phase 3a lessons applied)
+    news_triage.py    Three-node triage graph: classify → critic → conditional arbitrate
   prompts/
-    score_levels_v1.txt  Sonnet 4.6 scoring prompt (hard rules: no invented prices, no trade recs)
+    score_levels_v1.txt   Sonnet 4.6 scoring prompt (hard rules: no invented prices, no trade recs)
+    news_classify_v1.txt  Haiku batch-classifier prompt
+    news_critic_v1.txt    Haiku critic prompt (flag 10–30% of items)
+    news_arbitrate_v1.txt Sonnet final-decision prompt for flagged items
   services/
     snapshot.py       Position + account ingestion
     gap.py            Gap computation + UntrackedPosition detection
     analytics.py      DuckDB context manager (price_bar view over Parquet)
     indicators.py     IndicatorRow + compute_indicators() — SMA/EMA/RSI/MACD
     levels.py         SRLevelRow, NearbyLevels + compute_levels() / persist_levels()
-    llm.py            LLMClient (cost guard, schema validation) + persist_llm_call_log()
+    llm.py            LLMClient Protocol + AnthropicAPIClient + AgentSDKClient + make_llm_client() factory + persist_llm_call_log()
     llm_levels.py     ScoredLevel + score_levels_for_ticker() via Sonnet 4.6
     magic_link.py     sign_action() / verify_action() — HMAC-SHA256 email tokens
+    news.py           NewsRaw, fetch_alpaca_news(), fetch_finnhub_news(), get_news_for_movers()
     suggest.py        OrderSuggestionRow, select_anchor() + generate_suggestions() / persist_suggestions()
     daily_report.py   DailyReport dataclass + compose_daily_report()
     bars.py           update_bars() — smart backfill + incremental Parquet append
@@ -406,15 +514,18 @@ src/investor/
     render.py         Jinja2 template rendering
     email.py          SMTPEmailer + FakeEmailer
   jobs/
-    daily_report.py   Mon-Fri 16:15 ET — sync, indicators, compose, email
+    daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
+    movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
 config/
   targets.yaml        Target allocation (hand-edited)
 templates/
-  daily_report.html.j2    Daily HTML email
-  daily_report.txt.j2     Daily plain-text email
-  weekly_suggestions.html.j2   Weekly suggestions HTML email
+  daily_report.html.j2         Daily HTML email
+  daily_report.txt.j2          Daily plain-text email
+  weekly_suggestions.html.j2   Weekly suggestions HTML email (Accept/Reject buttons)
   weekly_suggestions.txt.j2    Weekly suggestions plain-text email
+  movers.html.j2               Movers HTML email (one card per mover, top-3 material headlines)
+  movers.txt.j2                Movers plain-text fallback
 scripts/
   load_targets.py     Seed/update target_allocation from targets.yaml
   sync_positions.py   One-shot position sync
@@ -437,9 +548,11 @@ tests/
   test_daily_report.py        DailyReport + session-close regression (3 tests)
   test_indicators.py          compute_indicators() with synthetic Parquet (6 tests)
   test_levels.py              Pivot formulas, swing detection, build_nearby_levels (8 tests)
-  test_llm.py                 LLMClient cost guard, schema validation, _calc_cost (11 tests)
+  test_llm.py                 AnthropicAPIClient + AgentSDKClient + make_llm_client factory (41 tests)
   test_magic_link.py          sign_action / verify_action — format, tamper, expiry (12 tests)
   test_suggest.py             generate_suggestions, select_anchor, persist lifecycle (27 tests)
+  test_news.py                URL normalization, news fetch mocks, tiered threshold logic (27 tests)
+  test_news_triage.py         Per-node unit tests, graph integration, fence/parse regressions (12 tests)
   test_integration_alpaca.py  Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -451,6 +564,9 @@ docs/adr/
   0007-position-sizing.md     ⚠ Pending Phase 3c (confidence-weighted anchor added)
   0009-llm-guardrails.md      Hard rules for LLM output in the suggestion pipeline
   0010-magic-link-auth.md     HMAC magic-link auth for Accept/Reject email buttons
+  0011-news-source-priority.md  Alpaca-primary / Finnhub-fallback; URL normalization dedup
+  0012-langgraph-adoption.md    LangGraph decision rule, MemorySaver checkpointer, version-pinning
+  0016-llm-backend-abstraction.md  LLMClient Protocol, AnthropicAPIClient vs AgentSDKClient, LLM_BACKEND env var
 ```
 
 ---
@@ -459,7 +575,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 104 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 161 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/

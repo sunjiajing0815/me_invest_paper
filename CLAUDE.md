@@ -26,7 +26,7 @@ Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/
 | Bars (cold storage) | Parquet under `data/bars/` | Survives DB migrations; queryable directly by DuckDB |
 | Broker (v1) | Alpaca via `alpaca-py` | REST, no gateway, free paper, fractional shares, AU residents allowed |
 | Broker (later) | Moomoo via OpenD on host | Already-funded account for actual long-term capital |
-| LLM | Anthropic Claude (Haiku 4.5 triage, Sonnet 4.6 review) | Used in Phase 3+ for news triage |
+| LLM | Anthropic Claude (Haiku 4.5 triage, Sonnet 4.6 review) | Used in Phase 3+ for news triage. Access via `LLMClient` Protocol (`services/llm.py`): two backends — `AnthropicAPIClient` (default) and `AgentSDKClient` (`claude-agent-sdk`). See ADR-0016. |
 | Email | SMTP via Gmail App Password | Phase 1+; plain `smtplib` + Jinja2 templates |
 | Container | Single Dockerfile, one `docker-compose.yml` | Same image runs on Mac (Docker Desktop) or VPS |
 | Package manager | `uv` | Fast, single source of truth via `pyproject.toml` |
@@ -59,6 +59,7 @@ src/investor/
   jobs/
     daily_report.py   Mon-Fri 16:15 ET — sync, indicators, compose, email
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
+  graphs/           LangGraph graph definitions and node helpers
 config/targets.yaml   user's target allocation (hand-edited or via /targets API)
 migrations/           Alembic revisions
 scripts/              standalone CLIs (sync_positions, show_gap, load_targets)
@@ -147,6 +148,9 @@ uv run mypy src/
 - **Never store secrets in the database.** Keys live in `.env` only. Phase 5 introduces envelope-encrypted credential storage when needed.
 - **Never silently UPDATE a `target_allocation` row.** Use the time-versioned close-and-insert pattern.
 - **Never let LLM output flow into the suggestion engine without schema validation and explicit deterministic fallback.** If `score_levels_for_ticker()` fails or returns `[]`, `generate_suggestions()` falls back to Phase 2 nearest-distance logic automatically. Do not short-circuit this fallback.
+- **Never mutate LangGraph node state in place.** Always return `{**state, "new_key": value}`. Mutations work in tests but break checkpointing.
+- **Never call `session.commit()` inside a LangGraph node.** The `SqliteSaver` checkpointer and the OLTP engine share the SQLite write lock; committing inside a node causes deadlock. Persist after `graph.invoke()` returns.
+- **Never authenticate the Agent SDK with consumer OAuth tokens for automated/unattended use.** Anthropic's ToS prohibits using consumer Claude.ai OAuth for automated scripts. `ANTHROPIC_API_KEY` is always required, even when `LLM_BACKEND=agent_sdk`.
 
 ## Common gotchas
 
@@ -158,6 +162,12 @@ uv run mypy src/
 6. **APScheduler timezones.** `BackgroundScheduler(timezone="America/New_York")` is the right default for cron triggers, but `DateTrigger(run_date=...)` interprets naive datetimes in scheduler-local time — pass `datetime.now(UTC)` explicitly to avoid surprises.
 7. **Alembic batch mode for SQLite column changes.** SQLite can't `ALTER COLUMN` or `DROP COLUMN` directly. Use `render_as_batch=True` (already set in `migrations/env.py`) — Alembic recreates the table transparently.
 8. **HMAC secret rotation invalidates all magic links already in inboxes.** If you rotate `MAGIC_LINK_SECRET`, any Accept/Reject links from the previous weekly email will return 400. Rotate only after the current week's suggestions have been acted on or expired.
+9. **LangGraph/LangChain version pinning.** Pin `langgraph`, `langchain-core`, `langchain-anthropic`, `langgraph-checkpoint-sqlite` to specific minor versions; the ecosystem is historically version-churn-prone. The graph-integration test in `test_news_triage.py` is the canary after any upgrade.
+10. **News URL normalization.** Alpaca and Finnhub serve the same Benzinga articles with different `?utm_source=` params. `_normalise_url()` in `services/news.py` strips query params and lowercases the host before hashing — this is what prevents double-insertion into `news_event`.
+11. **Movers on holidays.** A ≥5% vs. last-week-close on Monday after a 3-day weekend can be noisy ("last week" lands inside the holiday window). Acceptable degradation; documented.
+12. **`SqliteSaver.from_conn_string` is a `@contextmanager`.** It cannot be used at module level. Use `SqliteSaver(sqlite3.connect(db_path, check_same_thread=False))` directly, as done in `graphs/__init__.py:make_checkpointer()`.
+13. **`AgentSDKClient.call()` uses `asyncio.run()` — APScheduler-safe, async-route-unsafe.** The sync bridge is fine in APScheduler job threads (each has no live event loop). Do NOT call `llm.call()` on an `AgentSDKClient` from inside an `async def` FastAPI route — it will raise `RuntimeError: This event loop is already running`.
+14. **`LLM_BACKEND` env var defaults to `anthropic_api`.** Set to `agent_sdk` to route LLM calls through `claude-agent-sdk`. Unknown values fall back to `anthropic_api` with a warning log. `LLMClient` is now a Protocol (`services/llm.py`); use `make_llm_client(settings)` factory, not `LLMClient(...)` directly. See ADR-0016.
 
 ## Required env vars
 
@@ -170,6 +180,8 @@ See `.env.example` for the canonical list. The app **fails to start** if any of 
 Phase 1+ adds: `SMTP_*`, `EMAIL_*`, `ANTHROPIC_API_KEY`. They're declared as Optional in `config.py` but the relevant features won't work without them.
 
 Phase 3a adds: `ANTHROPIC_API_KEY` (Sonnet scoring), `MAGIC_LINK_SECRET` (HMAC for email buttons, distinct from ADMIN_TOKEN), `APP_BASE_URL` (magic-link URL base).
+
+Phase 3b adds: `FINNHUB_API_KEY` (Finnhub free tier; optional but needed as Alpaca fallback). `LLM_DAILY_COST_CAP_USD=3.0` (updated from 1.0 in Phase 3a). `LLM_BACKEND=anthropic_api` (or `agent_sdk` to route through `claude-agent-sdk`; see ADR-0016).
 
 ## Where to find more
 

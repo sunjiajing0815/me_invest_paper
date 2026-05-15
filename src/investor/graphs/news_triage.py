@@ -31,7 +31,7 @@ class NewsTriageItem(BaseModel):
     url_hash: str
     is_material: bool
     sentiment: Literal["bullish", "bearish", "neutral"] | None = None
-    summary: str
+    summary: str | None = None
 
 
 class NewsTriageBatch(BaseModel):

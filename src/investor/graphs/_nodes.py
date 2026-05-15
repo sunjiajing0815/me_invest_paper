@@ -35,9 +35,8 @@ def llm_node_call[T: BaseModel](
     in one place. On schema-validation failure the Pydantic ValidationError message
     (not the raw fenced content) is stored in the log row — Phase 3a Bug 3 lesson.
 
-    The session must NOT be committed inside this function: the SqliteSaver
-    checkpointer and the OLTP engine share the SQLite write lock, so commits are
-    the caller's responsibility.
+    The session must NOT be committed inside this function; commits are the
+    caller's responsibility (session_scope() commits after graph.invoke() returns).
 
     Args:
         purpose: Short label written to the LLMCallLog row (e.g. "news_triage").

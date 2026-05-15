@@ -1,9 +1,22 @@
-"""Tests for LLMClient cost guard, schema validation, and _calc_cost."""
+"""Tests for AnthropicAPIClient, AgentSDKClient, make_llm_client, and helpers."""
 from __future__ import annotations
 
-import pytest
+from datetime import date
 from unittest.mock import MagicMock, patch
-from src.investor.services.llm import LLMClient, LLMResponse, _calc_cost, _strip_fences, HAIKU, SONNET
+
+import pytest
+
+from investor.services.llm import (
+    HAIKU,
+    SONNET,
+    AgentSDKClient,
+    AnthropicAPIClient,
+    LLMClient,
+    LLMResponse,
+    _calc_cost,
+    _strip_fences,
+    make_llm_client,
+)
 
 
 class TestStripFences:
@@ -59,9 +72,9 @@ class TestCalcCost:
         assert abs(cost - 3.0) < 0.001
 
 
-class TestLLMClientCostGuard:
-    def _make_client(self, cap: float = 5.0) -> LLMClient:
-        return LLMClient(api_key="test-key", daily_cost_cap_usd=cap)
+class TestAnthropicAPIClientCostGuard:
+    def _make_client(self, cap: float = 5.0) -> AnthropicAPIClient:
+        return AnthropicAPIClient(api_key="test-key", daily_cost_cap_usd=cap)
 
     def _make_mock_message(self, text: str = '{"result": "ok"}',
                            input_tokens: int = 100, output_tokens: int = 100):
@@ -155,7 +168,6 @@ class TestLLMClientCostGuard:
 
     def test_day_rollover_resets_spent(self):
         """_reset_if_new_day resets _spent_today when date changes."""
-        from datetime import date
         client = self._make_client(cap=1.0)
         client._spent_today = 4.99
         client._today = date(2020, 1, 1)  # Force stale date
@@ -164,7 +176,6 @@ class TestLLMClientCostGuard:
 
     def test_day_rollover_updates_today(self):
         """_reset_if_new_day updates _today to the current date."""
-        from datetime import date
         client = self._make_client(cap=1.0)
         client._spent_today = 3.50
         client._today = date(2020, 1, 1)
@@ -173,7 +184,6 @@ class TestLLMClientCostGuard:
 
     def test_no_rollover_when_same_day(self):
         """_reset_if_new_day does NOT reset when still the same day."""
-        from datetime import date
         client = self._make_client(cap=1.0)
         client._spent_today = 2.50
         client._today = date.today()  # Same as today
@@ -195,3 +205,253 @@ class TestLLMClientCostGuard:
         assert resp.cost_usd == _calc_cost(HAIKU, 200, 300)
         assert resp.latency_ms >= 0
         assert len(resp.prompt_hash) == 12
+
+    def test_daily_spent_usd_property(self):
+        client = self._make_client(cap=1.0)
+        assert client.daily_spent_usd == 0.0
+        client._spent_today = 0.5
+        assert client.daily_spent_usd == 0.5
+
+    def test_satisfies_llm_client_protocol(self):
+        client = self._make_client()
+        assert isinstance(client, LLMClient)
+
+
+def _make_mock_result_message(
+    result_text: str = '{"value": 1}',
+    input_tokens: int = 100,
+    output_tokens: int = 100,
+    total_cost_usd: float | None = None,
+    is_error: bool = False,
+):
+    """Build a mock ResultMessage for AgentSDKClient tests."""
+    from claude_agent_sdk import ResultMessage
+    msg = MagicMock(spec=ResultMessage)
+    msg.result = result_text
+    msg.is_error = is_error
+    msg.errors = None
+    msg.usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    msg.total_cost_usd = total_cost_usd
+    return msg
+
+
+class TestAgentSDKClient:
+    def _make_client(self, cap: float = 5.0) -> AgentSDKClient:
+        return AgentSDKClient(api_key="test-key", daily_cost_cap_usd=cap)
+
+    def test_happy_path(self):
+        """Returns LLMResponse with correct shape from a successful Agent SDK call."""
+        client = self._make_client()
+        result_msg = _make_mock_result_message(
+            result_text='{"value": 42}', input_tokens=100, output_tokens=50
+        )
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, parsed = client.call(model=HAIKU, system="sys", user="usr")
+
+        assert isinstance(resp, LLMResponse)
+        assert resp.content == '{"value": 42}'
+        assert resp.input_tokens == 100
+        assert resp.output_tokens == 50
+        assert resp.cost_usd == _calc_cost(HAIKU, 100, 50)
+        assert resp.model == HAIKU
+        assert len(resp.prompt_hash) == 12
+
+    def test_schema_parse_success(self):
+        """Parsed pydantic object returned when content matches schema."""
+        from pydantic import BaseModel
+
+        class MySchema(BaseModel):
+            value: int
+
+        client = self._make_client()
+        result_msg = _make_mock_result_message(result_text='{"value": 99}')
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, parsed = client.call(model=HAIKU, system="s", user="u", response_schema=MySchema)
+
+        assert parsed is not None
+        assert parsed.value == 99
+
+    def test_schema_error_returns_none(self):
+        """Returns (resp, None) when content doesn't match schema."""
+        from pydantic import BaseModel
+
+        class MySchema(BaseModel):
+            value: int
+
+        client = self._make_client()
+        result_msg = _make_mock_result_message(result_text="not valid json")
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, parsed = client.call(model=HAIKU, system="s", user="u", response_schema=MySchema)
+
+        assert isinstance(resp, LLMResponse)
+        assert parsed is None
+
+    def test_fence_regression(self):
+        """Fenced JSON is stripped; schema parse succeeds (not a schema_error)."""
+        from pydantic import BaseModel
+
+        class MySchema(BaseModel):
+            value: int
+
+        client = self._make_client()
+        result_msg = _make_mock_result_message(result_text='```json\n{"value": 7}\n```')
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, parsed = client.call(model=HAIKU, system="s", user="u", response_schema=MySchema)
+
+        assert parsed is not None
+        assert parsed.value == 7
+
+    def test_daily_cap_raises(self):
+        """RuntimeError raised when daily cap is already reached."""
+        client = self._make_client(cap=0.001)
+        client._spent_today = 0.001  # Already at cap
+
+        with pytest.raises(RuntimeError, match="daily LLM cost cap"):
+            client.call(model=HAIKU, system="s", user="u")
+
+    def test_day_rollover_resets_spent(self):
+        """_roll_day_if_needed resets when date changes."""
+        client = self._make_client(cap=1.0)
+        client._spent_today = 0.9
+        client._spent_date = date(2020, 1, 1)
+        client._roll_day_if_needed()
+        assert client._spent_today == 0.0
+        assert client._spent_date == date.today()
+
+    def test_no_rollover_same_day(self):
+        """_roll_day_if_needed does not reset when still the same day."""
+        client = self._make_client(cap=1.0)
+        client._spent_today = 0.5
+        client._spent_date = date.today()
+        client._roll_day_if_needed()
+        assert client._spent_today == 0.5
+
+    def test_cost_calculated_from_tokens(self):
+        """cost_usd uses _calc_cost when tokens are available."""
+        client = self._make_client()
+        result_msg = _make_mock_result_message(input_tokens=500, output_tokens=200)
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, _ = client.call(model=HAIKU, system="s", user="u")
+
+        assert abs(resp.cost_usd - _calc_cost(HAIKU, 500, 200)) < 1e-9
+
+    def test_cost_falls_back_to_total_cost_usd(self):
+        """cost_usd falls back to total_cost_usd when token counts are 0."""
+        client = self._make_client()
+        result_msg = _make_mock_result_message(
+            input_tokens=0, output_tokens=0, total_cost_usd=0.0042
+        )
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, _ = client.call(model=HAIKU, system="s", user="u")
+
+        assert abs(resp.cost_usd - 0.0042) < 1e-9
+
+    def test_prompt_hash_matches_anthropic_client(self):
+        """Same system+user produces identical prompt_hash across both backends."""
+        import hashlib
+        system, user = "test system", "test user"
+        expected_hash = hashlib.sha256((system + user).encode()).hexdigest()[:12]
+
+        api_client = AnthropicAPIClient(api_key="k", daily_cost_cap_usd=10.0)
+        sdk_client = self._make_client()
+
+        result_msg = _make_mock_result_message()
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        # AnthropicAPIClient hash
+        from anthropic.types import TextBlock
+        mock_msg = MagicMock()
+        mock_block = MagicMock(spec=TextBlock)
+        mock_block.text = "hello"
+        mock_msg.content = [mock_block]
+        mock_msg.usage.input_tokens = 10
+        mock_msg.usage.output_tokens = 10
+        with patch.object(api_client._client.messages, "create", return_value=mock_msg):
+            api_resp, _ = api_client.call(model=HAIKU, system=system, user=user)
+
+        with patch.object(sdk_client, "_async_call", fake_async_call):
+            sdk_resp, _ = sdk_client.call(model=HAIKU, system=system, user=user)
+
+        assert api_resp.prompt_hash == expected_hash
+        assert sdk_resp.prompt_hash == expected_hash
+
+    def test_no_result_message_raises(self):
+        """RuntimeError if Agent SDK yields no ResultMessage."""
+        client = self._make_client()
+
+        async def fake_async_call(*args, **kwargs):
+            raise RuntimeError("Agent SDK returned no ResultMessage")
+
+        with (
+            patch.object(client, "_async_call", fake_async_call),
+            pytest.raises(RuntimeError, match="Agent SDK returned no ResultMessage"),
+        ):
+            client.call(model=HAIKU, system="s", user="u")
+
+    def test_daily_spent_usd_property(self):
+        client = self._make_client()
+        assert client.daily_spent_usd == 0.0
+        client._spent_today = 1.23
+        assert client.daily_spent_usd == 1.23
+
+    def test_satisfies_llm_client_protocol(self):
+        client = self._make_client()
+        assert isinstance(client, LLMClient)
+
+
+class TestMakeLLMClient:
+    def _make_settings(self, backend: str) -> object:
+        class FakeSettings:
+            anthropic_api_key = "test-key"
+            llm_daily_cost_cap_usd = 3.0
+            llm_backend = backend
+        return FakeSettings()
+
+    def test_anthropic_api_returns_anthropic_client(self):
+        settings = self._make_settings("anthropic_api")
+        client = make_llm_client(settings)
+        assert isinstance(client, AnthropicAPIClient)
+
+    def test_agent_sdk_returns_agent_sdk_client(self):
+        settings = self._make_settings("agent_sdk")
+        client = make_llm_client(settings)
+        assert isinstance(client, AgentSDKClient)
+
+    def test_unknown_backend_falls_back_to_anthropic(self):
+        """Unknown backend value logs warning and returns AnthropicAPIClient."""
+        settings = self._make_settings("typo_backend")
+        client = make_llm_client(settings)
+        assert isinstance(client, AnthropicAPIClient)
+
+    def test_result_satisfies_protocol(self):
+        """Both backends satisfy the LLMClient Protocol."""
+        for backend in ("anthropic_api", "agent_sdk"):
+            settings = self._make_settings(backend)
+            client = make_llm_client(settings)
+            assert isinstance(client, LLMClient), f"{backend} should satisfy LLMClient"

@@ -32,6 +32,7 @@ def init_db(sqlite_path: str) -> Engine:
     Base.metadata.create_all(_engine, checkfirst=True)
     alembic_cfg = AlembicConfig("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", url)
+    alembic_cfg.attributes["configure_logger"] = False  # don't let alembic.ini reset our log level
     alembic_command.upgrade(alembic_cfg, "head")
     logger.info("Alembic migrations applied")
     _SessionLocal = sessionmaker(bind=_engine, autoflush=True, autocommit=False)

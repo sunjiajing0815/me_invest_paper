@@ -11,7 +11,7 @@ Today: ${{ "{:,.2f}".format(t.today_close) }}  |  7d ago: ${{ "{:,.2f}".format(t
 Material news (last 24 h):
 {% if material_news %}
 {% for item in material_news[:3] %}
-  [{{ (item.sentiment or 'neutral') | upper }}] {{ item.summary }}
+  [{{ (item.sentiment or 'neutral') | upper }}] {{ item.summary or '' }}
 {% endfor %}
 {% else %}
   No material news in the last 24 hours.

@@ -84,9 +84,11 @@ def run_movers_email(
         log.info("no price data; skipping movers email")
         return
 
-    # 2. Load MoverState for all known tickers
+    # 2. Load MoverState for all known tickers — extract plain floats before session closes
     with session_scope() as s:
-        states: dict[str, MoverState] = {ms.ticker: ms for ms in s.query(MoverState).all()}
+        states: dict[str, float] = {
+            ms.ticker: ms.last_triggered_threshold for ms in s.query(MoverState).all()
+        }
 
     # 3. Apply tiered threshold filter
     tickers_to_process: list[dict[str, Any]] = []  # list of {ticker, pct_change, threshold_hit}
@@ -95,11 +97,10 @@ def run_movers_email(
     for row in movers_df.itertuples(index=False):
         ticker: str = row.ticker
         pct: float = float(row.pct_change)
-        state = states.get(ticker)
-        last_triggered = state.last_triggered_threshold if state is not None else 0.0
+        last_triggered = states.get(ticker, 0.0)
 
         if abs(pct) < 5.0:
-            if state is not None and last_triggered > 0.0:
+            if last_triggered > 0.0:
                 tickers_to_reset.append(ticker)
         else:
             next_threshold = last_triggered + THRESHOLD_STEP
