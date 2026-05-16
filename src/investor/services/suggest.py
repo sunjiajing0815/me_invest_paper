@@ -38,6 +38,7 @@ class OrderSuggestionRow:
     reason: str
     expires_at: datetime
     confidence_at_creation: float | None = None
+    anchor_method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,7 @@ def generate_suggestions(
                 ),
                 expires_at=_next_friday_eod(),
                 confidence_at_creation=confidence_at_creation,
+                anchor_method=anchor_method,
             ))
 
         elif g.band_status == "over":  # overweight → trim at nearest resistance
@@ -274,6 +276,7 @@ def generate_suggestions(
                 ),
                 expires_at=_next_friday_eod(),
                 confidence_at_creation=confidence_at_creation_sell,
+                anchor_method=anchor_method_sell,
             ))
 
     return out
@@ -325,6 +328,7 @@ def persist_suggestions(
             created_at=datetime.now(UTC),
             expires_at=r.expires_at,
             confidence_at_creation=r.confidence_at_creation,
+            anchor_method=r.anchor_method,
         )
         session.add(new_row)
         session.flush()

@@ -117,6 +117,7 @@ class OrderSuggestion(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confidence_at_creation: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    anchor_method: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     acted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
