@@ -36,9 +36,10 @@ The edge from critic to arbitrate is conditional. This is precisely the case des
 
 | Convention | Detail |
 |---|---|
-| Checkpointing backend | `SqliteSaver(sqlite3.connect(db_path, check_same_thread=False))` — use direct constructor, not `SqliteSaver.from_conn_string` which is a `@contextmanager` and cannot be used at module level |
+| Checkpointing backend | `MemorySaver()` — in-memory, per-`graph.invoke()`. See **Phase 3b postscript** below for why `SqliteSaver` was abandoned. |
 | `thread_id` format | `f"news-{ticker}-{date}"` (e.g., `news-AAPL-2026-05-12`) |
-| Commits inside nodes | Never commit inside a graph node — `SqliteSaver` and the OLTP engine share the SQLite write lock; commit after `graph.invoke()` returns |
+| Commits inside nodes | Never commit inside a graph node; commit after `graph.invoke()` returns. With `MemorySaver` the write-lock contention is gone, but the rule still holds for clarity. |
+| Context into graph | Use a dedicated `gather_context_node` that runs first, reads all ORM data into a frozen dataclass, closes the session, and puts the dataclass on state. Downstream LLM nodes never open a session. See CLAUDE.md convention #9. |
 | State mutation | Never mutate LangGraph node state in place; always return `{**state, "new_key": value}` — in-place mutation works in unit tests but breaks checkpointing |
 | Dependency pinning | Version-pin `langgraph`, `langchain-core`, `langchain-anthropic`, and `langgraph-checkpoint-sqlite` to specific minor versions; upgrade deliberately. The ecosystem has historically been version-churn-prone. |
 
@@ -54,8 +55,22 @@ Monitor the rate via the `critic_flagged` column on `news_article` and adjust th
 ## Consequences
 
 - The graph adds one or two extra LLM calls for flagged articles. At the expected flagging rate (10–30%) and current article volumes, the additional cost is within the `llm_daily_cost_cap_usd` budget.
-- `SqliteSaver` checkpointing means a partially-completed triage run can resume after a crash without re-classifying already-processed articles. This is the primary reason to accept the LangGraph dependency.
-- The `SqliteSaver` tables (`checkpoints`, `checkpoint_writes`, `checkpoint_blobs`) are written into `investor.db` alongside OLTP tables. They are not managed by Alembic; LangGraph creates them on first use. Do not reference them in hand-written queries.
-- The SQLite single-writer constraint (ADR-0003) applies within graph nodes: no node may call `session.commit()` while `SqliteSaver` may be writing. Commit only after `graph.invoke()` returns and the saver context is closed.
+- With `MemorySaver`, a partially-completed triage run cannot resume after a crash — articles already classified are re-classified on retry. At current volumes (≤20 articles per ticker per run) this is acceptable; the alternative (`SqliteSaver`) caused production failures (see postscript).
 - Adopting LangGraph couples the news pipeline to a rapidly-evolving dependency. Version-pinning (see conventions above) is the mitigation; plan a deliberate upgrade review each quarter.
 - Plain single-call functions such as `score_levels_for_ticker()` are not affected by this ADR. The "use a graph when you'd write a Python `if`" rule keeps scope contained.
+
+---
+
+## Phase 3b postscript — why `SqliteSaver` was abandoned
+
+The original design used `SqliteSaver(sqlite3.connect(db_path, check_same_thread=False))` for checkpointing. This was replaced with `MemorySaver()` in Phase 3b after a production `database is locked` failure with the following root cause:
+
+1. A graph node calls `llm_node_call()`, which calls `session.flush()` to persist an `llm_call_log` row.
+2. `session.flush()` starts a write transaction on SQLAlchemy's connection to `investor.db`.
+3. LangGraph attempts to checkpoint node output via `SqliteSaver`, using a *separate* `sqlite3` connection to the same `investor.db`.
+4. SQLite serialises writers — the second connection cannot acquire the write lock while the first holds it.
+5. Result: `OperationalError: database is locked`; the graph node raises; news triage silently returns empty results.
+
+The fix is architectural: `MemorySaver` has no SQLite connection and no write lock. Checkpoint state is ephemeral and held in Python memory for the duration of one `graph.invoke()` call, which is all this codebase requires.
+
+**Do not revert to `SqliteSaver` in Phase 3c or later.** If crash-recovery for long-running graphs becomes necessary, the correct path is a dedicated checkpoint database (separate file from `investor.db`), not sharing the OLTP file.

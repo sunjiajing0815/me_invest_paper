@@ -117,19 +117,26 @@ uv run mypy src/
 
 8. **All timestamps are UTC at rest.** Convert to `America/New_York` only for display or for cron triggers.
 
-9. **ORM objects never leave the service layer.** Convert SQLAlchemy model instances to plain frozen dataclasses before returning from any `services/` function. Templates, jobs, and API response builders must only ever see ordinary Python values — never ORM objects. This prevents SQLAlchemy's "detached instance" error, which occurs when a lazy-load is attempted after the session closes. The pattern:
+9. **ORM objects never leave the service layer — and never outlive their session.** Convert SQLAlchemy model instances to plain Python values (frozen dataclasses, dicts, primitives) *before* the `session_scope()` block closes. This rule has three distinct callsites and has caused a `DetachedInstanceError` at each of them on three separate occasions:
+
+   - Phase 1: `BrokerAccount` ORM object accessed after session closed in `compose_daily_report()`
+   - Phase 3b: `MoverState` ORM objects stored in a dict, session closed, attributes accessed outside
+   - The fix in both cases is identical — extract the values you need *inside* the session, not outside.
+
+   The canonical pattern in a LangGraph graph is a dedicated **`gather_context_node`** that runs first, opens a session, reads all needed ORM data into a frozen `GraphContext` dataclass, closes the session, and puts the dataclass on graph state. All downstream LLM nodes receive the frozen dataclass — they never touch a session. This is the only correct pattern for passing database data into a graph.
 
    ```python
-   # Inside compose_daily_report(), while session is still open:
-   account = AccountSnapshot(
-       broker=orm_row.broker,
-       cash_usd=orm_row.cash_usd,
-       ...
-   )
-   # Return the plain dataclass, not the ORM object
+   # gather_context_node — runs first, session closes before any LLM node
+   with session_scope() as s:
+       ctx = GraphContext(
+           gap_rows=[GapRow(...) for row in s.query(...)],
+           last_triggered=s.query(MoverState).filter_by(ticker=ticker).one_or_none(),
+           # extract all scalar/dataclass values here
+       )
+   return {**state, "context": ctx}   # frozen dataclass on state, session gone
    ```
 
-   `GapRow`, `AccountSnapshot`, `Position` (Phase 2+) all follow this pattern. If you find yourself passing an ORM model instance to a template or a job function, stop and introduce a frozen dataclass.
+   If you find yourself accessing an ORM attribute outside a `with session_scope()` block, or passing a live ORM object into a LangGraph node, stop and apply the `gather_context_node` pattern.
 
 ## Code style
 
@@ -149,7 +156,7 @@ uv run mypy src/
 - **Never silently UPDATE a `target_allocation` row.** Use the time-versioned close-and-insert pattern.
 - **Never let LLM output flow into the suggestion engine without schema validation and explicit deterministic fallback.** If `score_levels_for_ticker()` fails or returns `[]`, `generate_suggestions()` falls back to Phase 2 nearest-distance logic automatically. Do not short-circuit this fallback.
 - **Never mutate LangGraph node state in place.** Always return `{**state, "new_key": value}`. Mutations work in tests but break checkpointing.
-- **Never call `session.commit()` inside a LangGraph node.** The `SqliteSaver` checkpointer and the OLTP engine share the SQLite write lock; committing inside a node causes deadlock. Persist after `graph.invoke()` returns.
+- **Never call `session.commit()` inside a LangGraph node.** Persist after `graph.invoke()` returns. The checkpointer (`MemorySaver`) and the OLTP session must not compete for the write lock — keep them in separate scopes.
 - **Never authenticate the Agent SDK with consumer OAuth tokens for automated/unattended use.** Anthropic's ToS prohibits using consumer Claude.ai OAuth for automated scripts. `ANTHROPIC_API_KEY` is always required, even when `LLM_BACKEND=agent_sdk`.
 
 ## Common gotchas
@@ -165,7 +172,7 @@ uv run mypy src/
 9. **LangGraph/LangChain version pinning.** Pin `langgraph`, `langchain-core`, `langchain-anthropic`, `langgraph-checkpoint-sqlite` to specific minor versions; the ecosystem is historically version-churn-prone. The graph-integration test in `test_news_triage.py` is the canary after any upgrade.
 10. **News URL normalization.** Alpaca and Finnhub serve the same Benzinga articles with different `?utm_source=` params. `_normalise_url()` in `services/news.py` strips query params and lowercases the host before hashing — this is what prevents double-insertion into `news_event`.
 11. **Movers on holidays.** A ≥5% vs. last-week-close on Monday after a 3-day weekend can be noisy ("last week" lands inside the holiday window). Acceptable degradation; documented.
-12. **`SqliteSaver.from_conn_string` is a `@contextmanager`.** It cannot be used at module level. Use `SqliteSaver(sqlite3.connect(db_path, check_same_thread=False))` directly, as done in `graphs/__init__.py:make_checkpointer()`.
+12. **LangGraph checkpointer is `MemorySaver`, not `SqliteSaver`.** Phase 3b discovered that `SqliteSaver` causes `database is locked` errors: when a graph node calls `session.flush()` for `llm_call_log`, SQLAlchemy starts a write transaction; `SqliteSaver`'s separate `sqlite3` connection then can't acquire the write lock to checkpoint between nodes. `MemorySaver` (in-memory, per-`graph.invoke()`) eliminates the contention entirely. Graph checkpoint state is ephemeral — one `invoke()` per ticker per run — so disk persistence is not needed. Do not revert to `SqliteSaver`. `langgraph --thread-id` trace inspection does not work with `MemorySaver`; use logging inside nodes instead.
 13. **`AgentSDKClient.call()` uses `asyncio.run()` — APScheduler-safe, async-route-unsafe.** The sync bridge is fine in APScheduler job threads (each has no live event loop). Do NOT call `llm.call()` on an `AgentSDKClient` from inside an `async def` FastAPI route — it will raise `RuntimeError: This event loop is already running`.
 14. **`LLM_BACKEND` env var defaults to `anthropic_api`.** Set to `agent_sdk` to route LLM calls through `claude-agent-sdk`. Unknown values fall back to `anthropic_api` with a warning log. `LLMClient` is now a Protocol (`services/llm.py`); use `make_llm_client(settings)` factory, not `LLMClient(...)` directly. See ADR-0016.
 
