@@ -89,17 +89,20 @@ class TestGenerateSuggestions:
     def test_in_band_tickers_skipped(self) -> None:
         gap = [_gap("VOO", gap_pct=0.5, band_status="in_band")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=195.0)}
-        result = generate_suggestions(gap_rows=gap, nearby_levels=nearby, account=_account())
-        assert result == []
+        suggestions, skipped = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby, account=_account()
+        )
+        assert suggestions == []
+        assert skipped == []  # in-band tickers are never reported
 
     def test_buy_suggestion_for_underweight(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}  # 2% away
-        result = generate_suggestions(
+        suggestions, _ = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=2_000.0)
         )
-        assert len(result) == 1
-        s = result[0]
+        assert len(suggestions) == 1
+        s = suggestions[0]
         assert s.ticker == "VOO"
         assert s.side == "buy"
         assert s.qty >= 1
@@ -107,20 +110,23 @@ class TestGenerateSuggestions:
     def test_sell_suggestion_for_overweight(self) -> None:
         gap = [_gap("VOO", gap_pct=-8.0, band_status="over")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, resistance_price=204.0)}  # 2% away
-        result = generate_suggestions(
+        suggestions, _ = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=2_000.0)
         )
-        assert len(result) == 1
-        assert result[0].side == "sell"
+        assert len(suggestions) == 1
+        assert suggestions[0].side == "sell"
 
     def test_distance_guard_skips_far_levels(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         # Support is 15% away — beyond max_distance_pct=8
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=170.0)}
-        result = generate_suggestions(
+        suggestions, skipped = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
         )
-        assert result == []
+        assert suggestions == []
+        assert len(skipped) == 1
+        assert "15.0%" in skipped[0].reason
+        assert "exceeds 8%" in skipped[0].reason
 
     def test_cash_floor_guard(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
@@ -128,29 +134,33 @@ class TestGenerateSuggestions:
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=195.0)}
         # gap_usd = 8% of 10k = 800; half = 400; at 195/share = 2 shares = $390
         # Cash = $400; cost = $390; cash after = $10; floor = $100 → skipped
-        result = generate_suggestions(
+        suggestions, skipped = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby,
             account=_account(cash=400.0), cash_floor=100.0,
         )
-        assert result == []
+        assert suggestions == []
+        assert len(skipped) == 1
+        assert "cash floor" in skipped[0].reason
 
     def test_no_suggestion_when_no_nearby_levels(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0)}  # no support
-        result = generate_suggestions(
+        suggestions, skipped = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
         )
-        assert result == []
+        assert suggestions == []
+        assert len(skipped) == 1
+        assert "no support levels found" in skipped[0].reason
 
     def test_result_is_frozen_dataclass(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
-        result = generate_suggestions(
+        suggestions, _ = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=2_000.0)
         )
-        if result:
+        if suggestions:
             with pytest.raises(dataclasses.FrozenInstanceError):
-                result[0].qty = 999.0  # type: ignore[misc]
+                suggestions[0].qty = 999.0  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -312,14 +322,14 @@ class TestGenerateSuggestionsWithScoredLevels:
         """generate_suggestions falls back to nearby_levels when scored_levels is empty."""
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
-        result = generate_suggestions(
+        suggestions, _ = generate_suggestions(
             gap_rows=gap,
             nearby_levels=nearby,
             account=_account(cash=2_000.0),
             scored_levels={},  # empty dict → fallback
         )
-        assert len(result) == 1
-        s = result[0]
+        assert len(suggestions) == 1
+        s = suggestions[0]
         assert s.ticker == "VOO"
         assert s.side == "buy"
         # confidence_at_creation must be None when using fallback path
@@ -332,25 +342,83 @@ class TestGenerateSuggestionsWithScoredLevels:
         }
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
-        result = generate_suggestions(
+        suggestions, _ = generate_suggestions(
             gap_rows=gap,
             nearby_levels=nearby,
             account=_account(cash=2_000.0),
             scored_levels=scored,
         )
-        assert len(result) == 1
-        s = result[0]
+        assert len(suggestions) == 1
+        s = suggestions[0]
         assert s.confidence_at_creation == 0.75
 
     def test_generate_suggestions_falls_back_when_scored_levels_none(self) -> None:
         """generate_suggestions with scored_levels=None falls back to nearby_levels."""
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
-        result = generate_suggestions(
+        suggestions, _ = generate_suggestions(
             gap_rows=gap,
             nearby_levels=nearby,
             account=_account(cash=2_000.0),
             scored_levels=None,  # None → fallback
         )
-        assert len(result) == 1
-        assert result[0].confidence_at_creation is None
+        assert len(suggestions) == 1
+        assert suggestions[0].confidence_at_creation is None
+
+
+# ---------------------------------------------------------------------------
+# SkippedRow tests
+# ---------------------------------------------------------------------------
+
+class TestSkippedRow:
+    def test_distance_guard_buy_populates_skipped(self) -> None:
+        """SkippedRow captures ticker, side, gap_pct, and distance reason for buy."""
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=170.0)}
+        _, skipped = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
+        )
+        assert len(skipped) == 1
+        s = skipped[0]
+        assert s.ticker == "VOO"
+        assert s.side == "buy"
+        assert s.gap_pct == pytest.approx(8.0)
+        assert "15.0%" in s.reason
+        assert "exceeds 8%" in s.reason
+
+    def test_skipped_row_is_frozen_dataclass(self) -> None:
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=170.0)}
+        _, skipped = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
+        )
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            skipped[0].reason = "mutation not allowed"  # type: ignore[misc]
+
+    def test_in_band_tickers_produce_no_skipped_row(self) -> None:
+        gap = [_gap("VOO", gap_pct=0.5, band_status="in_band")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=195.0)}
+        _, skipped = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby, account=_account()
+        )
+        assert skipped == []
+
+    def test_no_support_levels_populates_skipped(self) -> None:
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0)}  # no supports
+        _, skipped = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
+        )
+        assert len(skipped) == 1
+        assert skipped[0].side == "buy"
+        assert "no support levels found" in skipped[0].reason
+
+    def test_cash_floor_populates_skipped(self) -> None:
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=195.0)}
+        _, skipped = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby,
+            account=_account(cash=400.0), cash_floor=100.0,
+        )
+        assert len(skipped) == 1
+        assert "cash floor" in skipped[0].reason

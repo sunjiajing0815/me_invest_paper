@@ -28,6 +28,13 @@ Orders for the week of {{ week_of.strftime('%b %-d, %Y') }}
 No suggestions this week — all positions within band, or no nearby S/R level.
 {% endif %}
 
+{% if skipped %}
+=== NOT SUGGESTED (considered but no actionable level) ===
+{% for sk in skipped %}
+  {{ sk.ticker }}: {{ sk.side }} (gap {{ "{:+.1f}%".format(sk.gap_pct) }}) — {{ sk.reason }}
+{% endfor %}
+
+{% endif %}
 {% if indicators %}
 === LEVELS AT A GLANCE ===
 {{ "Ticker" | ljust(6) }}  {{ "Last" | rjust(9) }}  {{ "%Δ50SMA" | rjust(8) }}  {{ "%Δ200SMA" | rjust(9) }}  {{ "RSI14" | rjust(6) }}  {{ "Support" | ljust(20) }}  Resistance

@@ -161,7 +161,7 @@ def run_weekly_suggestions(
         persist_levels(session, sr_rows)
 
         nearby = build_nearby_levels(tickers, sr_rows, indicators)
-        drafts = generate_suggestions(
+        drafts, skipped = generate_suggestions(
             gap_rows=gap_rows,
             nearby_levels=nearby,
             account=account,
@@ -225,6 +225,7 @@ def run_weekly_suggestions(
         indicators=indicators,
         nearby=nearby,
         untracked=untracked,
+        skipped=skipped,
     )
     text = render_template(
         "weekly_suggestions.txt.j2",
@@ -234,6 +235,7 @@ def run_weekly_suggestions(
         indicators=indicators,
         nearby=nearby,
         untracked=untracked,
+        skipped=skipped,
     )
     emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
     logger.info(

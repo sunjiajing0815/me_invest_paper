@@ -42,6 +42,16 @@ class OrderSuggestionRow:
 
 
 @dataclass(frozen=True)
+class SkippedRow:
+    """Out-of-band ticker considered but not suggested, with explanation."""
+
+    ticker: str
+    gap_pct: float
+    side: Literal["buy", "sell"]
+    reason: str
+
+
+@dataclass(frozen=True)
 class SizingRule:
     """Controls how many dollars to deploy per suggestion."""
 
@@ -121,8 +131,8 @@ def generate_suggestions(
     scored_levels: dict[str, list[ScoredLevel]] | None = None,
     cash_floor: float = 100.0,
     max_distance_pct: float = 8.0,
-) -> list[OrderSuggestionRow]:
-    """Pure function: return a list of order suggestions.
+) -> tuple[list[OrderSuggestionRow], list[SkippedRow]]:
+    """Pure function: return (suggestions, skipped) for out-of-band tickers.
 
     Processes gap_rows in order (already sorted by abs gap desc).
 
@@ -133,8 +143,13 @@ def generate_suggestions(
     the function falls back to the Phase 2 nearest-distance logic
     (``nearby_levels[ticker].supports[0]`` / ``.resistances[0]``) and
     sets ``confidence_at_creation`` to None.
+
+    *skipped* contains one entry per out-of-band ticker that was considered
+    but not suggested, with a human-readable reason (distance guard, no levels,
+    sub-share qty, cash floor). In-band tickers are never reported.
     """
     out: list[OrderSuggestionRow] = []
+    skipped: list[SkippedRow] = []
     cash_remaining = account.cash_usd
 
     for g in gap_rows:
@@ -143,6 +158,12 @@ def generate_suggestions(
 
         nearby = nearby_levels.get(g.ticker)
         if nearby is None:
+            skipped.append(SkippedRow(
+                ticker=g.ticker,
+                gap_pct=g.gap_pct,
+                side="buy" if g.gap_pct > 0 else "sell",
+                reason="no nearby levels computed",
+            ))
             continue
 
         if g.gap_pct > 0:  # underweight → buy at nearest support
@@ -169,6 +190,10 @@ def generate_suggestions(
             if anchor_price is None:
                 levels = nearby.supports
                 if not levels:
+                    skipped.append(SkippedRow(
+                        ticker=g.ticker, gap_pct=g.gap_pct, side="buy",
+                        reason="no support levels found",
+                    ))
                     continue
                 level = levels[0]
                 anchor_price = level.price
@@ -184,6 +209,14 @@ def generate_suggestions(
                     "generate_suggestions: %s support %.2f is %.1f%% away — skipping",
                     g.ticker, anchor_price, distance_pct,
                 )
+                skipped.append(SkippedRow(
+                    ticker=g.ticker, gap_pct=g.gap_pct, side="buy",
+                    reason=(
+                        f"nearest support ({anchor_method} ${anchor_price:,.2f})"
+                        f" is {distance_pct:.1f}% away"
+                        f" — exceeds {max_distance_pct:.0f}% limit"
+                    ),
+                ))
                 continue
 
             dollars = g.gap_usd * sizing_rule.fraction
@@ -192,7 +225,20 @@ def generate_suggestions(
 
             qty = _round_qty(dollars, anchor_price)
             cost = qty * anchor_price
-            if qty < 1 or cost > cash_remaining - cash_floor:
+            if qty < 1:
+                skipped.append(SkippedRow(
+                    ticker=g.ticker, gap_pct=g.gap_pct, side="buy",
+                    reason=f"gap too small for a full-share order at ${anchor_price:,.2f}",
+                ))
+                continue
+            if cost > cash_remaining - cash_floor:
+                skipped.append(SkippedRow(
+                    ticker=g.ticker, gap_pct=g.gap_pct, side="buy",
+                    reason=(
+                        f"would breach ${cash_floor:.0f} cash floor"
+                        " after higher-priority suggestions"
+                    ),
+                ))
                 continue
 
             cash_remaining -= cost
@@ -242,6 +288,10 @@ def generate_suggestions(
             if anchor_price_sell is None:
                 levels = nearby.resistances
                 if not levels:
+                    skipped.append(SkippedRow(
+                        ticker=g.ticker, gap_pct=g.gap_pct, side="sell",
+                        reason="no resistance levels found",
+                    ))
                     continue
                 level = levels[0]
                 anchor_price_sell = level.price
@@ -257,6 +307,15 @@ def generate_suggestions(
                     "generate_suggestions: %s resistance %.2f is %.1f%% away — skipping",
                     g.ticker, anchor_price_sell, distance_pct,
                 )
+                skipped.append(SkippedRow(
+                    ticker=g.ticker, gap_pct=g.gap_pct, side="sell",
+                    reason=(
+                        f"nearest resistance ({anchor_method_sell}"
+                        f" ${anchor_price_sell:,.2f})"
+                        f" is {distance_pct:.1f}% away"
+                        f" — exceeds {max_distance_pct:.0f}% limit"
+                    ),
+                ))
                 continue
 
             trim_usd = abs(g.gap_usd) * sizing_rule.fraction
@@ -265,6 +324,13 @@ def generate_suggestions(
 
             qty = _round_qty(trim_usd, anchor_price_sell)
             if qty < 1:
+                skipped.append(SkippedRow(
+                    ticker=g.ticker, gap_pct=g.gap_pct, side="sell",
+                    reason=(
+                        f"gap too small for a full-share trim"
+                        f" at ${anchor_price_sell:,.2f}"
+                    ),
+                ))
                 continue
 
             gap_closed_pct = trim_usd / abs(g.gap_usd) * 100 if g.gap_usd else 0
@@ -289,7 +355,7 @@ def generate_suggestions(
                 anchor_method=anchor_method_sell,
             ))
 
-    return out
+    return out, skipped
 
 
 # ---------------------------------------------------------------------------
