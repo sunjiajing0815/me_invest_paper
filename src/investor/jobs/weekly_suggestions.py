@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..brokers.base import BrokerAdapter
 from ..config import Settings, load_targets
@@ -33,6 +34,55 @@ from ..services.suggest import (
 from ..graphs.suggestion_review import build_suggestion_review_graph
 
 logger = logging.getLogger(__name__)
+
+
+def score_all_tickers_parallel(
+    *,
+    tickers: list[str],
+    sr_rows: list,  # list[SRLevelRow]
+    llm: LLMClient,
+    bars_dir: str,
+    recent_news_by_ticker: dict,
+    prompt_version: str,
+    max_workers: int = 4,
+) -> dict[str, list[ScoredLevel]]:
+    """Score S/R levels for all tickers in parallel via ThreadPoolExecutor.
+
+    Each worker opens its own session so there's no session sharing across threads.
+    Falls back to [] for any ticker that raises. max_workers=4 is conservative;
+    Anthropic rate limits are tighter during bursts — tune up if no 429s observed.
+    """
+    out: dict[str, list[ScoredLevel]] = {}
+
+    def _score_one(ticker: str) -> list[ScoredLevel]:
+        ticker_levels = [r for r in sr_rows if r.ticker == ticker]
+        ticker_news = [
+            {"sentiment": n.sentiment or "", "summary": n.summary or ""}
+            for n in recent_news_by_ticker.get(ticker, [])
+            if n.is_material
+        ]
+        with session_scope() as session:
+            return score_levels_for_ticker(
+                llm=llm,
+                session=session,
+                ticker=ticker,
+                computed_levels=ticker_levels,
+                bars_dir=bars_dir,
+                recent_news=ticker_news or None,
+                prompt_version=prompt_version,
+            )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_score_one, t): t for t in tickers}
+        for fut in as_completed(futures):
+            ticker = futures[fut]
+            try:
+                out[ticker] = fut.result()
+            except Exception as exc:
+                logger.warning("level scoring failed for %s: %s", ticker, exc)
+                out[ticker] = []
+
+    return out
 
 
 def run_weekly_suggestions(
@@ -69,32 +119,18 @@ def run_weekly_suggestions(
     sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
     week_of = _next_monday()
 
-    # Score all levels per ticker via LLM; include last-24h material news as context
-    scored: dict[str, list[ScoredLevel]] = {}
+    # Load last-24h material news, then score all tickers in parallel
     with session_scope() as session:
         recent_news_by_ticker = load_recent_material_news(session, days=1)
 
-    with session_scope() as session:
-        for ticker in tickers:
-            ticker_levels = [r for r in sr_rows if r.ticker == ticker]
-            ticker_news = [
-                {"sentiment": n.sentiment or "", "summary": n.summary or ""}
-                for n in recent_news_by_ticker.get(ticker, [])
-                if n.is_material
-            ]
-            try:
-                scored[ticker] = score_levels_for_ticker(
-                    llm=llm,
-                    session=session,
-                    ticker=ticker,
-                    computed_levels=ticker_levels,
-                    bars_dir=settings.bars_dir,
-                    recent_news=ticker_news or None,
-                    prompt_version=settings.level_prompt_version,
-                )
-            except Exception as exc:
-                logger.warning("level scoring failed for %s: %s", ticker, exc)
-                scored[ticker] = []
+    scored = score_all_tickers_parallel(
+        tickers=tickers,
+        sr_rows=sr_rows,
+        llm=llm,
+        bars_dir=settings.bars_dir,
+        recent_news_by_ticker=recent_news_by_ticker,
+        prompt_version=settings.level_prompt_version,
+    )
 
     # Generate drafts (pure function — no persist yet)
     nearby: dict  # type: ignore[type-arg]
