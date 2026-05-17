@@ -322,6 +322,8 @@ def persist_suggestions(
                 existing.qty = r.qty
                 existing.limit_price = r.limit_price
                 existing.reason = r.reason
+                existing.anchor_method = r.anchor_method
+                existing.confidence_at_creation = r.confidence_at_creation
             # accepted/rejected rows are never touched
             ids.append(existing.id)
             continue
