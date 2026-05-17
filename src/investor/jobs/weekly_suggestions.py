@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ..brokers.base import BrokerAdapter
 from ..config import Settings, load_targets
 from ..db import session_scope
+from ..graphs.suggestion_review import build_suggestion_review_graph
 from ..models import BrokerAccount
 from ..services.bars import update_bars
 from ..services.daily_report import AccountSnapshot
@@ -22,16 +23,15 @@ from ..services.levels import (
 )
 from ..services.llm import LLMClient
 from ..services.llm_levels import ScoredLevel, score_levels_for_ticker
+from ..services.magic_link import sign_action
 from ..services.news import load_recent_material_news
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
-from ..services.magic_link import sign_action
 from ..services.suggest import (
     HALF_THE_GAP,
     _next_monday,
     generate_suggestions,
 )
-from ..graphs.suggestion_review import build_suggestion_review_graph
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ def run_weekly_suggestions(
 
     # Build token context list for Accept/Reject buttons
     suggestion_items = []
-    for idx, (suggestion, sid) in enumerate(zip(finals, suggestion_ids)):
+    for idx, (suggestion, sid) in enumerate(zip(finals, suggestion_ids, strict=False)):
         accept_token = sign_action(sid, "accept", settings.magic_link_secret)
         reject_token = sign_action(sid, "reject", settings.magic_link_secret)
         suggestion_items.append({

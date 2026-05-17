@@ -82,5 +82,20 @@ nearest support/resistance level. The anchor selection prefers the highest-confi
 level within 8 % of the current price. `confidence_at_creation` records the anchor's confidence
 at order generation time for audit purposes.
 
-This ADR remains ⚠ Pending until Phase 3c where the full review pipeline and sizing rules will
-be finalized.
+## Phase 3c Update — Anchor Audit Trail and Critic Refinement
+
+Phase 3c closes this ADR with two additions:
+
+1. **`anchor_method` field**: `OrderSuggestionRow` and `OrderSuggestion` ORM now carry
+   `anchor_method: str | None` — the `ScoredLevel.method` string (e.g. `"sma_50"`,
+   `"swing_high"`) that was selected as the limit-price anchor. Older rows have
+   `anchor_method = NULL` (Alembic migration `f2680eed32f8`).
+
+2. **Critic refinement**: The `critic_node` in `graphs/suggestion_review.py` (ADR-0013) can
+   propose `anchor_method` and/or `qty` changes on individual drafts. The deterministic
+   `revise_node` validates and applies them. Cash-floor safety is checked by the critic as a
+   cross-suggestion constraint — not just per-suggestion — which catches combined violations that
+   the per-draft engine cannot see.
+
+The `HALF_THE_GAP` sizing rule is unchanged. The suggestion review pipeline adds a quality gate
+but does not replace the underlying sizing logic.

@@ -197,7 +197,11 @@ def generate_suggestions(
 
             cash_remaining -= cost
             gap_closed_pct = dollars / g.gap_usd * 100 if g.gap_usd else 0
-            conf_str = f" (conf {confidence_at_creation:.2f})" if confidence_at_creation is not None else ""
+            conf_str = (
+                f" (conf {confidence_at_creation:.2f})"
+                if confidence_at_creation is not None
+                else ""
+            )
             rationale_str = f" {anchor_rationale}" if anchor_rationale else ""
             out.append(OrderSuggestionRow(
                 ticker=g.ticker,
@@ -206,7 +210,8 @@ def generate_suggestions(
                 limit_price=round(anchor_price, 2),
                 reason=(
                     f"underweight {g.gap_pct:+.1f}% — buy at {anchor_method} "
-                    f"${anchor_price:,.2f}{conf_str},{rationale_str} closes ~{gap_closed_pct:.0f}% of gap"
+                    f"${anchor_price:,.2f}{conf_str},{rationale_str}"
+                    f" closes ~{gap_closed_pct:.0f}% of gap"
                 ),
                 expires_at=_next_friday_eod(),
                 confidence_at_creation=confidence_at_creation,
@@ -263,7 +268,11 @@ def generate_suggestions(
                 continue
 
             gap_closed_pct = trim_usd / abs(g.gap_usd) * 100 if g.gap_usd else 0
-            conf_str_sell = f" (conf {confidence_at_creation_sell:.2f})" if confidence_at_creation_sell is not None else ""
+            conf_str_sell = (
+                f" (conf {confidence_at_creation_sell:.2f})"
+                if confidence_at_creation_sell is not None
+                else ""
+            )
             rationale_str_sell = f" {anchor_rationale_sell}" if anchor_rationale_sell else ""
             out.append(OrderSuggestionRow(
                 ticker=g.ticker,
@@ -272,7 +281,8 @@ def generate_suggestions(
                 limit_price=round(anchor_price_sell, 2),
                 reason=(
                     f"overweight {g.gap_pct:+.1f}% — trim at {anchor_method_sell} "
-                    f"${anchor_price_sell:,.2f}{conf_str_sell},{rationale_str_sell} closes ~{gap_closed_pct:.0f}% of gap"
+                    f"${anchor_price_sell:,.2f}{conf_str_sell},{rationale_str_sell}"
+                    f" closes ~{gap_closed_pct:.0f}% of gap"
                 ),
                 expires_at=_next_friday_eod(),
                 confidence_at_creation=confidence_at_creation_sell,

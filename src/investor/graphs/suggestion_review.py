@@ -1,4 +1,7 @@
-"""Suggestion review LangGraph workflow: gather_context → reason → critic → revise/skip → finalize."""
+"""Suggestion review LangGraph workflow.
+
+gather_context → reason → critic → revise/skip_revise → finalize
+"""
 
 from __future__ import annotations
 
@@ -13,8 +16,6 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from . import make_checkpointer
-from ._nodes import llm_node_call
 from ..models import BrokerAccount
 from ..services.daily_report import AccountSnapshot
 from ..services.gap import GapRow, UntrackedPosition, compute_gap, get_untracked_positions
@@ -24,6 +25,8 @@ from ..services.llm import SONNET, load_prompt
 from ..services.llm_levels import ScoredLevel, load_latest_scored_levels
 from ..services.news import load_recent_material_news
 from ..services.suggest import OrderSuggestionRow, persist_suggestions
+from . import make_checkpointer
+from ._nodes import llm_node_call
 
 # NewsTriageItem is in the news_triage graph module
 from .news_triage import NewsTriageItem
@@ -422,7 +425,8 @@ def _apply_changes(
         )
         if price_match is None:
             log.debug(
-                "_apply_changes: limit_price %.2f not found in scored levels for %s — returning None",
+                "_apply_changes: limit_price %.2f not found in scored levels for %s"
+                " — returning None",
                 requested_price,
                 draft.ticker,
             )

@@ -66,5 +66,21 @@ current price (min_confidence = 0.4) over the naive nearest-distance selection.
 
 Anchor selection for buy orders uses only support levels; sell orders use only resistance levels.
 
-This ADR remains ⚠ Pending final close until Phase 3c completes the full suggestion review
-pipeline, at which point the scoring methodology will be finalized.
+## Phase 3c Update — News-Augmented Scoring and Suggestion Review Pipeline
+
+Phase 3c closes this ADR with two additions:
+
+1. **News-augmented confidence scoring** (`score_levels_v2.txt`): The scoring prompt now receives
+   material news from the last 24 hours alongside OHLCV context. Bearish news reduces support
+   confidence by 0.1–0.2; bullish news reduces resistance confidence by 0.1–0.2. The
+   `level_prompt_version` setting (default `"v2"`) selects the prompt.
+
+2. **Suggestion review pipeline** (see ADR-0013): The `critic_node` in
+   `graphs/suggestion_review.py` can propose `anchor_method` changes on individual drafts. The
+   deterministic `revise_node` applies them by re-looking up the corresponding `ScoredLevel` from
+   `ctx.scored_levels`. This closes the loop between scoring and anchor selection.
+
+The `anchor_method` field on `OrderSuggestionRow` (and `OrderSuggestion` ORM) records which
+scored level was chosen as the limit-price anchor, providing a complete audit trail from
+level → confidence → anchor selection → critic review → final suggestion (Alembic migration
+`f2680eed32f8`).

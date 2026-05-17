@@ -1,12 +1,12 @@
 # Long-Term Investor Assistant — Product Plan (v1)
 
-**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-06) · **Stage:** Building — Phase 2 code-complete; first Sunday weekly suggestion email pending (earliest 2026-05-10)
+**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-17) · **Stage:** Building — Phase 3 code-complete (tag `v0.3.0-phase-3` pending first Sunday email); Phase 4 next
 
 ---
 
 ## 1. Product in one paragraph
 
-A self-hosted, always-on assistant for a long-term investor. The user declares a watchlist and a target allocation. The system pulls positions and prices daily, computes the gap between current and target, identifies support/resistance levels on each ticker, and emails a weekly order suggestion plus daily news/price alerts (anything ±5 %, ±10 % vs. last week's close). It also surfaces **untracked positions** — anything held in the broker without a matching entry in `targets.yaml` — as a deliberate red banner so paper trades, legacy holdings, or accidental buys can never silently distort the gap math. The user places orders themselves — the product never touches the send-order button in v1. Designed for one user (Jane) first, with a clean path to becoming a multi-tenant product later.
+A self-hosted, always-on assistant for a long-term investor. The user declares a watchlist and a target allocation. The system pulls positions and prices daily, computes the gap between current and target, identifies support/resistance levels on each ticker, and emails a weekly order suggestion plus daily news/price alerts (anything ±5 %, ±10 % vs. last week's close). It also surfaces **untracked positions** — anything held in the broker without a matching entry in `targets.yaml` — as a deliberate red banner so paper trades, legacy holdings, or accidental buys can never silently distort the gap math. **By default, the user places orders themselves** — the product is suggest-only. From Phase 4.6 onward, there is an optional opt-in **auto-trade mode** (off by default, gated behind a three-state switch with admin access, hard caps, and a kill switch) that places already-accepted suggestions through the broker API. Designed for one user (Jane) first, with a clean path to becoming a multi-tenant product later — auto-trade stays single-user-only forever; multi-tenant auto-trade would cross into regulated advice and is explicitly out of scope.
 
 ---
 
@@ -245,48 +245,60 @@ Each phase ships something useful on its own. Total MVP: roughly **6–10 weeks 
 | Smoke-test row 14 (cash-buffer invariant assertion) | ❓ Verify | Pre-tag checklist verified rows 4–8 explicitly; row 14 not called out — confirm assertion exists in `test_gap.py` before tag |
 | Suggestion accept/reject endpoint | 🔧 Phase 3 work | `order_suggestion.status` column supports the workflow but no `PATCH /suggestions/{id}` exists yet |
 
-### Phase 3 — LLM-scored levels, accept/reject workflow, and news triage (2–3 weeks) — current
+### Phase 3 — LLM-scored levels, accept/reject, news triage, and suggestion review ✅ Code complete (2026-05-17); tag `v0.3.0-phase-3` pending first Sunday email
 
-Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifying S/R level. That's a placeholder — "nearest" does not mean "most meaningful." Phase 3 closes this gap before adding news, and also lands the missing audit-trail mutation endpoint that real-capital use depends on. News triage ships as the third workstream.
+Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifying S/R level. That's a placeholder — "nearest" does not mean "most meaningful." Phase 3 closes that gap, lands the missing audit-trail mutation endpoint, adds news triage, and introduces a LangGraph-driven suggestion-review pipeline that reasons + critiques every weekly batch before it reaches the user.
 
-**Workstream A — LLM level scoring + confidence-weighted anchor selection (~1 week, biggest correctness lift)**
+**Phase 3 is split into three sub-phases that follow the dependency graph.** Each is a tag-worthy unit. See [`phase_3_guide.md`](phase_3_guide.md) for the overview index and [`phase_3a_guide.md`](phase_3a_guide.md), [`phase_3b_guide.md`](phase_3b_guide.md), [`phase_3c_guide.md`](phase_3c_guide.md) for the detailed step-by-step guides.
 
-- Add `confidence` column (0.0–1.0) to `sr_level` via Alembic.
-- New service `services/llm_levels.py`: pass each ticker's computed `sr_level` rows (with `method`, `price`, distance-from-current-price, recent OHLCV context) to Claude Sonnet 4.6; return per-level confidence + brief rationale stored in a new `sr_level_review` table.
-- Update `services/suggest.py` to prefer **highest-confidence anchor within distance band** rather than literal nearest. Fallback to nearest if all confidences are below a threshold.
-- Update ADR-0006 (S/R methodology) and ADR-0007 (position sizing) — remove the ⚠ Pending flags once the LLM scoring is in place and the prompts are stable.
-- Hard guardrail: the LLM is allowed to score and rationalise existing computed levels, never to invent prices or fundamental claims. Any output that violates the JSON schema is rejected.
+| Sub-phase | Scope | Tag |
+|---|---|---|
+| **3a** (~2 weeks) | `services/llm.py` wrapper + `llm_call_log`. LLM-scored confidence on S/R levels (Sonnet 4.6 single call) → confidence-weighted anchor selection. `PATCH /suggestions/{id}` + HMAC magic-link Accept/Reject buttons. ADRs 0009 (LLM guardrails), 0010 (magic-link auth); partial updates to 0006 and 0007. | `v0.3a.0` |
+| **3b** (~1 week) | LangGraph introduced. News triage graph: Haiku classify → Haiku critic → conditional Sonnet arbitrate. `news_event` table. Daily 16:30 ET movers email on ≥ 5 % weekly movers. ADRs 0011 (news source priority), 0012 (LangGraph-or-not decision rule). | `v0.3b.0` |
+| **3c** (~1.5 weeks) ✅ | Second LangGraph workflow: suggestion review. Sonnet per-draft rationale → Sonnet critic over the set → deterministic Python `revise` → finalize. Weekly email rationales upgrade to 2–4 sentences. ADR 0013 (suggestion review pipeline); final close-out of 0006 + 0007. | `v0.3.0-phase-3` |
 
-**Workstream B — Suggestion accept/reject endpoint (~2 days, blocking for real-capital trust)**
+**Dependency edges:** 3a → 3b (LLM client + cost guard from 3a); 3a → 3c (scored levels feed 3c); 3b → 3c (news_event feeds the critic's reasoning context).
+
+**Workstreams within sub-phases** (expanded from the original "three workstreams A/B/C" framing):
+
+**Workstream A — LLM level scoring + confidence-weighted anchor selection** *(in Sub-phase 3a, ~1 week — biggest correctness lift)*
+
+- Add `confidence`, `llm_rationale`, `scored_at`, `scored_by_model`, `prompt_version` columns to `sr_level` via Alembic.
+- New service `services/llm_levels.py`: pass each ticker's computed `sr_level` rows + recent OHLCV context to Claude Sonnet 4.6; return per-level confidence + brief rationale.
+- Update `services/suggest.py::select_anchor` to prefer **highest-confidence anchor within distance band** rather than literal nearest. Fall back to nearest if all confidences are below threshold or the LLM call fails.
+- Snapshot `confidence_at_creation` onto every new `order_suggestion` row for retrospectives.
+- Hard guardrail: the LLM scores existing computed levels by exact `method` string and never invents prices or fundamental claims. Schema validation rejects bad output; engine falls back deterministically.
+
+**Workstream B — Suggestion accept/reject endpoint** *(in Sub-phase 3a, ~2 days — blocking for real-capital trust)*
 
 - `PATCH /suggestions/{id}` with `{ "status": "accepted" | "rejected" | "expired" }`, requires `X-Admin-Token`.
-- Email's "Suggestions" table gains signed-URL accept/reject buttons (`mailto:` or HMAC-signed link back to FastAPI).
-- Accept/reject mutates `order_suggestion.status` only — never calls the broker. Fills are a Phase 4 reconciliation problem.
-- Without this, the audit trail "what I suggested vs. what I acted on" can't be honest, which undermines every retrospective the rest of the system would produce.
+- Weekly email "Suggestions" table gains HMAC-SHA256-signed Accept/Reject buttons: `GET /suggestions/{id}/{action}?token=<expires>.<sig>`. Single-use, time-bound (TTL = `expires_at`). `MAGIC_LINK_SECRET` separate from `ADMIN_TOKEN`.
+- Accept/reject mutates `order_suggestion.status` and `acted_at` only — never calls the broker.
 
-**Workstream C — News triage (~1 week, can run in parallel with A)**
+**Workstream C — News triage via LangGraph** *(Sub-phase 3b, ~1 week)*
 
-- EOD job: for every watchlist ticker, compute `pct_vs_last_week_close`.
-- Triage buckets: |∆| ≥ 5 %, ≥ 10 %, ≥ 15 %.
-- For every flagged ticker, pull news from Alpaca News (+ Finnhub fallback) for last 24 h.
-- Pass the news batch to Claude Haiku 4.5 with a prompt like:
-  ```
-  For each headline, classify: material / noise.
-  If material, write a 1-sentence summary and a bullish/bearish/neutral label.
-  Return JSON.
-  ```
-- De-dupe by headline hash. Store in `news_event`.
-- Email: "Movers — YYYY-MM-DD" with ticker cards: ∆, last week close, today, top 3 material headlines with LLM summary.
-- No mail if nothing moved — signal-to-noise.
+- LangGraph introduced. ADR-0012 anchors the "when to use a graph vs. a single call" decision rule.
+- Graph: `classify (Haiku) → critic (Haiku) → conditional arbitrate (Sonnet) → persist`. Conditional edge skips Sonnet when nothing flagged.
+- `services/news.py`: Alpaca News primary, Finnhub fallback. URL normalisation for cross-source dedup.
+- `news_event` table with `UniqueConstraint(url_hash)`.
+- New daily 16:30 ET cron `jobs/movers.py`: if any watchlist ticker moved ≥ 5 % vs. last week's close → invoke graph → persist → email. No movers → no email.
+- Graph state checkpointed in SQLite via `SqliteSaver` for trace inspection. Thread-id convention `news-{ticker}-{date}`.
+
+**Workstream D — Suggestion review via LangGraph** *(Sub-phase 3c, ~1.5 weeks)*
+
+- Second LangGraph workflow. Graph: `gather_context → reason (Sonnet) → critic (Sonnet) → conditional revise (deterministic Python) → finalize`.
+- `ReviewContext` frozen dataclass materialises gap, scored levels, recent material news (from 3b's `news_event`), indicators, account, untracked positions — *before* any LLM node runs.
+- Reasoner writes a 2–4 sentence rationale per draft. Critic reviews *all* drafts as a set looking for cross-suggestion problems (combined cash-floor violations, disqualifying news, rationale-vs-math mismatches, direction-wrong against bands).
+- Revise node is deterministic Python — applies critic's `suggested_changes` mechanically. **LLMs propose changes; Python applies them.** Documented in ADR-0013.
+- Weekly email rationales upgrade from mechanical single lines to the Sonnet-written 2–4 sentence rationales. Mechanical `order_suggestion.reason` stays in the DB for audit.
 
 **Deliverables:**
 
-- A weekly suggestions email where each `limit_price` is the highest-confidence S/R level within the distance band, and the `reason` string includes a one-line rationale from the LLM ("buy at 50-SMA support $182.40 — confluence with prior weekly pivot S1; high confidence").
-- Click "Accept" or "Reject" in any suggestions email and see `order_suggestion.status` mutate (verifiable via `/suggestions`).
-- One movers email per trading day EOD when something moved ≥ 5 %, with material headlines summarised.
-- ADRs 0006 and 0007 refreshed (no longer ⚠ Pending).
+- (After 3a) Weekly suggestions email where each `limit_price` is chosen by LLM confidence within the distance band. Accept/Reject buttons mutate `order_suggestion.status` and `acted_at`.
+- (After 3b) Daily movers email when any watchlist ticker moved ≥ 5 %, with material headlines summarised. Critic-corrected classifications visible in `news_event.arbitrated=true`.
+- (After 3c) Weekly suggestions email with 2–4 sentence rationales reflecting full context. Critic visibly rejects/revises low-quality drafts before they reach the user. Phase 3 fully complete; tag `v0.3.0-phase-3`.
 
-**Out of scope for Phase 3:** Moomoo adapter (deferred to Phase 4 or 5; suggestion engine still mechanical-leaning during Phase 3 and Moomoo holds real capital — too risky to wire up before LLM-scoring soaks for a few weeks). Web UI (Phase 5).
+**Out of scope for Phase 3:** Moomoo adapter (deferred to Phase 4 — Phase 3 introduces LLM-influenced suggestion logic that needs to soak for at least 4 weeks of paper trading before real capital touches it). Web UI (Phase 5). Suggested-vs-filled reconciliation (Phase 4 — needs broker `account/activities` integration).
 
 ### Phase 4 — Weekly review workflow + Moomoo adapter (1.5–2 weeks)
 - Friday EOD job: build the weekly review:
@@ -327,7 +339,44 @@ Deliverable: you can add funds (even $1,000) and within 24 h get an email saying
 - Split storage: **Postgres** for OLTP/auth/user rows, **DuckDB** (or MotherDuck in cloud) for per-user analytics/bars.
 - Encrypted per-user broker credentials (envelope-encrypted with a KMS key or `cryptography.fernet` with a rotating master key).
 - Pluggable per-user broker adapter — user picks Alpaca, Moomoo, or IBKR at connect time.
+- **Mandatory pre-launch removal:** the `LLM_CLI_PATH`-with-consumer-OAuth path that Phase 3b shipped (and that the solo project owner uses for personal use) **must be removed entirely** before any second user signs up. The solo personal-use exception in ADR-0016 explicitly does not extend to multi-tenant deployment — what's gray-area-tolerated for one user becomes unambiguous OAuth abuse for many. All users on `LLM_BACKEND=anthropic_api` in Phase 5; remove the `agent_sdk` option from the user-facing config entirely or restrict it to deployments authenticated via per-user `ANTHROPIC_API_KEY` only.
 - Deliverable: a second user can sign up, connect their Alpaca or Moomoo, and get their own weekly emails.
+
+### Phase 4.6 — Opt-in auto-trade execution (~1 week build + 4–6 week soak per promotion)
+
+**This phase overturns the suggest-only default carefully — by adding auto-trade as an opt-in mode behind multiple guards, not by changing the default.** Suggest-only stays as `auto_trade_mode=OFF`, which is the value every new install gets. Promotion to `DRY_RUN` or `LIVE` requires deliberate admin action and a soak window.
+
+**Three-state mode controlled by an app-wide switch with admin access:**
+
+| Mode | Behaviour |
+|---|---|
+| `OFF` (default) | Existing suggest-only behaviour preserved. No broker order calls. |
+| `DRY_RUN` | Auto-trade module computes what *would* be placed for every `accepted` suggestion. Writes `order_execution` rows with `dry_run=true`. **Never calls the broker.** Email confirms what would have happened. |
+| `LIVE` | Calls the broker via `BrokerAdapter.submit_order` (the first time anything outside `brokers/` is allowed to trigger this method). Writes `order_execution` rows with `dry_run=false`. |
+
+**Required guards before any broker call (all enforced atomically):**
+
+- **Trigger discipline:** fires only on `order_suggestion.status='accepted'`. Never on `pending`. Never on fresh suggestions the user hasn't seen.
+- **Hard caps:** per-order $, per-day $, per-week $-per-ticker, per-day order-count. Hitting any cap flips mode to `OFF` and emails a notification.
+- **Wash-sale guard upgraded from stub to blocking:** if a sell at a loss for the same ticker happened in the last 30 days, the buy is dropped with a logged reason. (Phase 4 reconciliation provides the `order_execution` history this check needs.)
+- **Idempotency:** every order's client ID is derived from the suggestion ID (`client_order_id = f"sug-{suggestion.id}"`). Same suggestion cannot be placed twice even on a double-fire.
+- **Read-back reconciliation within 60 seconds:** every placed order is fetched back from the broker. Mismatch flips mode to `OFF`, alerts.
+- **Kill switch:** `POST /admin/emergency-stop` flips mode to `OFF` and cancels all auto-trade-placed open orders from the last 24 hours.
+
+**Broker scope progression (each step gated on a soak window):**
+
+1. Alpaca paper account in `DRY_RUN` for 2 weeks (validates the framework, no real money).
+2. Alpaca paper account in `LIVE` for 4 weeks (validates the broker call path, still no real money).
+3. Alpaca live account in `LIVE` for 4 weeks (real money, small capital).
+4. Moomoo in `LIVE` (depends on Phase 4 Moomoo adapter shipping first).
+
+Each promotion is a deliberate admin command (not a config edit), logged to `auto_trade_promotion_log` for audit. Demoting back to `OFF` is always one click.
+
+**Deliverable:** A single accepted suggestion in the weekly email becomes a real (or dry-run) order placed at the limit price on the chosen broker, with idempotent client order IDs, read-back confirmation, and a populated `order_execution` row. Tag `v0.4.6.0` after first successful Alpaca paper `DRY_RUN` week; subsequent tags (`v0.4.6.1`, `v0.4.6.2`, …) mark each promotion step.
+
+**ADRs:** ADR-0014 (auto-trade mode discipline + promotion gates), ADR-0015 (kill switch design + recovery semantics).
+
+See `phase_4_6_guide.md` for the step-by-step build.
 
 ### Phase 6 — Paper → live hardening (1 week work, 4–6 weeks soak)
 - Add kill switches: daily max suggested spend, max position size, max drift before halting new buys.

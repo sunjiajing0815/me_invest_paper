@@ -10,7 +10,7 @@ Endpoints:
   PATCH /suggestions/{sid}             — accept or reject a suggestion (requires X-Admin-Token)
   GET   /suggestions/{sid}/{action}    — magic-link accept/reject from weekly email
   POST  /admin/run-sync                — ad-hoc sync trigger (requires X-Admin-Token)
-  POST  /admin/run-daily-report        — manual trigger for daily report job (requires X-Admin-Token)
+  POST  /admin/run-daily-report        — manual daily report trigger (requires X-Admin-Token)
   POST  /admin/run-weekly-suggestions  — manual weekly suggestions trigger (requires X-Admin-Token)
   POST  /admin/reload-targets          — reload targets from targets.yaml (requires X-Admin-Token)
   POST  /admin/run-movers             — trigger movers email job (requires X-Admin-Token)

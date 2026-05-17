@@ -245,7 +245,9 @@ class TestDateHelpers:
 # ---------------------------------------------------------------------------
 
 def _make_scored(method: str, price: float, level_type: str, confidence: float) -> ScoredLevel:
-    return ScoredLevel(method=method, price=price, type=level_type, confidence=confidence, rationale="test")
+    return ScoredLevel(
+        method=method, price=price, type=level_type, confidence=confidence, rationale="test"
+    )
 
 
 class TestSelectAnchor:
@@ -307,7 +309,7 @@ class TestSelectAnchor:
 
 class TestGenerateSuggestionsWithScoredLevels:
     def test_generate_suggestions_falls_back_when_scored_levels_empty(self) -> None:
-        """generate_suggestions with scored_levels={} falls back to nearby_levels — Phase 2 regression."""
+        """generate_suggestions falls back to nearby_levels when scored_levels is empty."""
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
         nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
         result = generate_suggestions(

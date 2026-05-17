@@ -235,7 +235,9 @@ class AgentSDKClient:
                 )
         return resp, parsed
 
-    async def _async_call(self, model: str, system: str, user: str, max_tokens: int, cli_path: str | None = None) -> Any:
+    async def _async_call(
+        self, model: str, system: str, user: str, max_tokens: int, cli_path: str | None = None
+    ) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
         options = ClaudeAgentOptions(

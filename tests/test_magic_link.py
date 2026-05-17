@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import time
-import pytest
 from unittest.mock import patch
+
 from src.investor.services.magic_link import sign_action, verify_action
 
 SECRET = "test-secret-32chars-xxxxxxxxxxxxx"
@@ -91,7 +91,10 @@ class TestVerifyAction:
         assert verify_action(1, "accept", "nodotintoken", SECRET) is False
 
     def test_malformed_non_numeric_expires_returns_false(self):
-        assert verify_action(1, "accept", "notanumber.abcdef12345678901234567890123456", SECRET) is False
+        assert (
+            verify_action(1, "accept", "notanumber.abcdef12345678901234567890123456", SECRET)
+            is False
+        )
 
     def test_wrong_secret_returns_false(self):
         token = sign_action(1, "accept", SECRET)

@@ -67,6 +67,25 @@ class LLMClient(Protocol):
 
 A third backend (e.g., `bedrock`, `vertex`) must satisfy the same five invariants above. Add it as a new class implementing `LLMClient`, update `make_llm_client()`, and add a parallel test class in `test_llm.py`.
 
+## Consumer OAuth — solo personal-use guardrails (Phase 3c)
+
+`LLM_BACKEND=agent_sdk` routes calls through the Claude Code CLI subprocess. The `claude` CLI
+can be logged in via consumer Claude.ai OAuth (`claude auth login`) in addition to the API key.
+
+**This deployment is single-user personal use.** Anthropic's ToS permits the account owner to
+automate personal workflows. However, the following guardrails apply:
+
+- **`ANTHROPIC_API_KEY` is always the authentication source for LLM calls.** Consumer OAuth
+  login may be present on the host (for interactive CLI use), but the Agent SDK routes all
+  `query()` calls through the API key, not through consumer OAuth. The key must remain valid and
+  tested in CI.
+- **Never extend consumer OAuth into multi-user deployment.** If Phase 5 adds multiple users,
+  each user's LLM calls must go through individual API keys — never through a shared consumer
+  OAuth session, which would violate Anthropic's ToS (shared account across users).
+- **`ANTHROPIC_API_KEY` must be exercised in CI even when `LLM_BACKEND=agent_sdk`.** The key
+  guards cost-cap tracking, `llm_call_log` persistence, and the `_calc_cost` fallback path.
+  Its absence creates silent failures that are difficult to diagnose in production.
+
 ## Consequences
 
 - All callers that previously imported `LLMClient` (the concrete class) continue to work — `AnthropicAPIClient` is a drop-in for the old `LLMClient`. The import `from .services.llm import LLMClient` now imports the Protocol; `isinstance(obj, LLMClient)` works via `@runtime_checkable`.

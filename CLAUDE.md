@@ -10,9 +10,9 @@ Owner: Jane (solo developer, primary user). Multi-tenant productization is Phase
 
 ## Current phase
 
-Phase 2 is code-complete. See `phase_2_guide.md` for the build plan. The repo's git tag reflects the last completed phase.
+Phase 3 is code-complete. See `phase_3c_guide.md` for the most recent build plan. The repo's git tag reflects the last completed phase.
 
-Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions).
+Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions), 3 (LLM-scored levels, news triage, suggestion review pipeline).
 
 ## Tech stack and why
 
@@ -158,6 +158,8 @@ uv run mypy src/
 - **Never mutate LangGraph node state in place.** Always return `{**state, "new_key": value}`. Mutations work in tests but break checkpointing.
 - **Never call `session.commit()` inside a LangGraph node.** Persist after `graph.invoke()` returns. The checkpointer (`MemorySaver`) and the OLTP session must not compete for the write lock — keep them in separate scopes.
 - **Never authenticate the Agent SDK with consumer OAuth tokens for automated/unattended use.** Anthropic's ToS prohibits using consumer Claude.ai OAuth for automated scripts. `ANTHROPIC_API_KEY` is always required, even when `LLM_BACKEND=agent_sdk`.
+- **Never make the `revise_node` LLM-driven — LLMs propose changes, Python applies them.** The `revise_node` in `graphs/suggestion_review.py` is intentionally deterministic Python: `_apply_changes()` validates every critic-proposed change against known scored levels and rejects invented prices or unknown methods. A second LLM-driven revision would add hallucination risk, create loop risk (the critic might then revise its own revision), and add cost with no benefit. See ADR-0013.
+- **Never extend `LLM_BACKEND=agent_sdk` consumer-OAuth login into multi-user deployment.** The current single-user setup is personal automation (permitted by Anthropic's ToS). A shared consumer OAuth session across multiple users violates ToS. Phase 5 multi-tenant must use individual API keys per user.
 
 ## Common gotchas
 
@@ -175,6 +177,7 @@ uv run mypy src/
 12. **LangGraph checkpointer is `MemorySaver`, not `SqliteSaver`.** Phase 3b discovered that `SqliteSaver` causes `database is locked` errors: when a graph node calls `session.flush()` for `llm_call_log`, SQLAlchemy starts a write transaction; `SqliteSaver`'s separate `sqlite3` connection then can't acquire the write lock to checkpoint between nodes. `MemorySaver` (in-memory, per-`graph.invoke()`) eliminates the contention entirely. Graph checkpoint state is ephemeral — one `invoke()` per ticker per run — so disk persistence is not needed. Do not revert to `SqliteSaver`. `langgraph --thread-id` trace inspection does not work with `MemorySaver`; use logging inside nodes instead.
 13. **`AgentSDKClient.call()` uses `asyncio.run()` — APScheduler-safe, async-route-unsafe.** The sync bridge is fine in APScheduler job threads (each has no live event loop). Do NOT call `llm.call()` on an `AgentSDKClient` from inside an `async def` FastAPI route — it will raise `RuntimeError: This event loop is already running`.
 14. **`LLM_BACKEND` env var defaults to `anthropic_api`.** Set to `agent_sdk` to route LLM calls through `claude-agent-sdk`. Unknown values fall back to `anthropic_api` with a warning log. `LLMClient` is now a Protocol (`services/llm.py`); use `make_llm_client(settings)` factory, not `LLMClient(...)` directly. See ADR-0016.
+15. **Phase 3c adds three new prompt files** under `src/investor/prompts/`: `suggestion_reason_v1.txt` (Sonnet per-draft rationale system prompt), `suggestion_critic_v1.txt` (Sonnet cross-suggestion critic system prompt with five severity-ordered criteria), and `score_levels_v2.txt` (news-augmented copy of `score_levels_v1.txt`). The `level_prompt_version` setting (default `"v2"`) selects the scoring prompt. The reason/critic prompts are always `v1` (no version setting). All prompts live in the `prompts/` directory and are loaded via `load_prompt()` in `services/prompts.py`.
 
 ## Required env vars
 
