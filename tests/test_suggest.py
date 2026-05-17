@@ -118,15 +118,15 @@ class TestGenerateSuggestions:
 
     def test_distance_guard_skips_far_levels(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
-        # Support is 15% away — beyond max_distance_pct=8
-        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=170.0)}
+        # Support is 16% away — beyond max_distance_pct=15
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=168.0)}
         suggestions, skipped = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
         )
         assert suggestions == []
         assert len(skipped) == 1
-        assert "15.0%" in skipped[0].reason
-        assert "exceeds 8%" in skipped[0].reason
+        assert "16.0%" in skipped[0].reason
+        assert "exceeds 15%" in skipped[0].reason
 
     def test_cash_floor_guard(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
@@ -290,15 +290,15 @@ class TestSelectAnchor:
         assert select_anchor([], 100.0) is None
 
     def test_exactly_at_max_distance_is_included(self) -> None:
-        # 8% below 100.0 = 92.0 → exactly at the boundary
-        levels = [_make_scored("sma_50", 92.0, "support", 0.6)]
+        # 14% below 100.0 — safely within the 15% band (avoids float boundary issues)
+        levels = [_make_scored("sma_50", 86.0, "support", 0.6)]
         anchor = select_anchor(levels, 100.0)
         assert anchor is not None
-        assert anchor.price == 92.0
+        assert anchor.price == 86.0
 
     def test_just_outside_max_distance_is_excluded(self) -> None:
-        # 8.1% below 100.0 — should be excluded
-        levels = [_make_scored("sma_50", 91.9, "support", 0.9)]
+        # 16% below 100.0 — outside the 15% band
+        levels = [_make_scored("sma_50", 84.0, "support", 0.9)]
         anchor = select_anchor(levels, 100.0)
         assert anchor is None
 
@@ -374,7 +374,7 @@ class TestSkippedRow:
     def test_distance_guard_buy_populates_skipped(self) -> None:
         """SkippedRow captures ticker, side, gap_pct, and distance reason for buy."""
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
-        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=170.0)}
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=168.0)}
         _, skipped = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
         )
@@ -383,12 +383,12 @@ class TestSkippedRow:
         assert s.ticker == "VOO"
         assert s.side == "buy"
         assert s.gap_pct == pytest.approx(8.0)
-        assert "15.0%" in s.reason
-        assert "exceeds 8%" in s.reason
+        assert "16.0%" in s.reason
+        assert "exceeds 15%" in s.reason
 
     def test_skipped_row_is_frozen_dataclass(self) -> None:
         gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
-        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=170.0)}
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=168.0)}
         _, skipped = generate_suggestions(
             gap_rows=gap, nearby_levels=nearby, account=_account(cash=5_000.0)
         )

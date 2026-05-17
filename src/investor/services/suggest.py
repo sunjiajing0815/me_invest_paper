@@ -95,7 +95,7 @@ def select_anchor(
     levels: list[ScoredLevel],
     current_price: float,
     *,
-    max_distance_pct: float = 8.0,
+    max_distance_pct: float = 15.0,
     min_confidence: float = 0.4,
 ) -> ScoredLevel | None:
     """Return the best S/R anchor for limit-price selection.
@@ -130,7 +130,7 @@ def generate_suggestions(
     sizing_rule: SizingRule = HALF_THE_GAP,
     scored_levels: dict[str, list[ScoredLevel]] | None = None,
     cash_floor: float = 100.0,
-    max_distance_pct: float = 8.0,
+    max_distance_pct: float = 15.0,
 ) -> tuple[list[OrderSuggestionRow], list[SkippedRow]]:
     """Pure function: return (suggestions, skipped) for out-of-band tickers.
 
