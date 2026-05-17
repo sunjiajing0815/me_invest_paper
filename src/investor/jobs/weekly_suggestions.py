@@ -28,8 +28,8 @@ from ..services.suggest import (
     HALF_THE_GAP,
     _next_monday,
     generate_suggestions,
-    persist_suggestions,
 )
+from ..graphs.suggestion_review import build_suggestion_review_graph
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +37,16 @@ logger = logging.getLogger(__name__)
 def run_weekly_suggestions(
     settings: Settings, adapter: BrokerAdapter, emailer: EmailSender, llm: LLMClient
 ) -> None:
-    """Compute indicators + levels, generate suggestions, persist, and email.
+    """Compute indicators + levels, generate suggestions, review via graph, and email.
 
     Order of operations:
       1. update_bars (tolerates failure — stale bars are better than no email)
       2. compute_indicators (DuckDB, no session needed)
       3. LLM level scoring (separate session scope)
-      4. snapshot + gap + levels inside session scope
-      5. generate suggestions (pure function)
-      6. persist suggestions inside session scope
-      7. render + email outside session scope
+      4. snapshot + gap + levels inside session scope; generate drafts (no persist yet)
+      5. suggestion-review graph: gather_context → reason → critic → revise → finalize
+         finalize_node persists finals and returns suggestion_ids
+      6. render + email outside session scope
     Re-raises on email failure (matches ADR-0005).
     """
     logger.info("run_weekly_suggestions started")
@@ -85,6 +85,10 @@ def run_weekly_suggestions(
                 logger.warning("level scoring failed for %s: %s", ticker, exc)
                 scored[ticker] = []
 
+    # Generate drafts (pure function — no persist yet)
+    nearby: dict  # type: ignore[type-arg]
+    account: AccountSnapshot
+    targets_id: int | None
     with session_scope() as session:
         take_snapshot(adapter, session, settings)
         gap_rows = compute_gap(session)
@@ -95,7 +99,7 @@ def run_weekly_suggestions(
             .order_by(BrokerAccount.last_sync.desc())
             .first()
         )
-        account: AccountSnapshot = (
+        account = (
             AccountSnapshot(
                 broker=orm_account.broker,
                 mode=orm_account.mode,
@@ -110,28 +114,58 @@ def run_weekly_suggestions(
         persist_levels(session, sr_rows)
 
         nearby = build_nearby_levels(tickers, sr_rows, indicators)
-        suggestions = generate_suggestions(
+        drafts = generate_suggestions(
             gap_rows=gap_rows,
             nearby_levels=nearby,
             account=account,
             sizing_rule=HALF_THE_GAP,
             scored_levels=scored,
         )
+        # NOTE: do NOT call persist_suggestions here — finalize_node does it.
 
-        suggestion_ids = persist_suggestions(session, suggestions, targets_id, week_of)
-        untracked = get_untracked_positions(session)
+    # Suggestion review graph: reason → critic → (revise) → finalize
+    # finalize_node persists finals and writes suggestion_ids to state.
+    graph = build_suggestion_review_graph(
+        llm=llm,
+        session_factory=session_scope,
+        watchlist=tickers,
+        bars_dir=settings.bars_dir,
+    )
+    result = graph.invoke(
+        {
+            "week_of": week_of,
+            "drafts": drafts,
+            "context": None,
+            "rationales": {},
+            "critic_decisions": {},
+            "finals": [],
+            "suggestion_ids": [],
+            "telemetry": {},
+            "targets_id": targets_id,
+        },
+        config={"configurable": {"thread_id": f"weekly-{week_of}"}},
+    )
+
+    finals = result["finals"]
+    rationales: dict[int, str] = result["rationales"]
+    suggestion_ids: list[int] = result["suggestion_ids"]
 
     # Build token context list for Accept/Reject buttons
     suggestion_items = []
-    for suggestion, sid in zip(suggestions, suggestion_ids):
+    for idx, (suggestion, sid) in enumerate(zip(finals, suggestion_ids)):
         accept_token = sign_action(sid, "accept", settings.magic_link_secret)
         reject_token = sign_action(sid, "reject", settings.magic_link_secret)
         suggestion_items.append({
             "suggestion": suggestion,
             "sid": sid,
+            "rationale": rationales.get(idx, suggestion.reason),
             "accept_token": accept_token,
             "reject_token": reject_token,
         })
+
+    # Untracked positions for email (re-query so we don't hold session across graph)
+    with session_scope() as session:
+        untracked = get_untracked_positions(session)
 
     # Email outside session scope — session safety rule
     subject = f"Orders for the week of {week_of:%b %d}"
@@ -149,7 +183,7 @@ def run_weekly_suggestions(
         "weekly_suggestions.txt.j2",
         week_of=week_of,
         account=account,
-        suggestions=suggestions,
+        suggestions=finals,
         indicators=indicators,
         nearby=nearby,
         untracked=untracked,
@@ -157,6 +191,6 @@ def run_weekly_suggestions(
     emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
     logger.info(
         "run_weekly_suggestions completed: %d suggestions emailed to %s",
-        len(suggestions),
+        len(finals),
         settings.email_to,
     )

@@ -64,6 +64,7 @@ class SuggestionReviewState(TypedDict):
     rationales: dict[int, str]                         # draft_index -> rationale text
     critic_decisions: dict[int, CriticDecision]        # draft_index -> verdict
     finals: list[OrderSuggestionRow]
+    suggestion_ids: list[int]                          # IDs from persist_suggestions
     telemetry: dict  # type: ignore[type-arg]
     targets_id: int | None
 
@@ -478,10 +479,10 @@ def finalize_node(
     state: SuggestionReviewState,
     session_factory: Any,
 ) -> SuggestionReviewState:
-    """Persist finals to the DB inside a session scope."""
+    """Persist finals to the DB inside a session scope; capture IDs for magic links."""
     with session_factory() as s:
-        persist_suggestions(s, state["finals"], state["targets_id"], state["week_of"])
-    return state
+        ids = persist_suggestions(s, state["finals"], state["targets_id"], state["week_of"])
+    return {**state, "suggestion_ids": ids}
 
 
 # ---------------------------------------------------------------------------
