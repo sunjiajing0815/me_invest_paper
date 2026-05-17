@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     magic_link_secret: str = ""
     app_base_url: str = "http://localhost:8000"
-    level_prompt_version: int = 1
+    level_prompt_version: str = "v2"
     llm_daily_cost_cap_usd: float = 3.0
     llm_backend: str = "anthropic_api"
     llm_cli_path: str = ""  # override claude CLI for agent_sdk; empty = use bundled

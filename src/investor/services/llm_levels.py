@@ -55,6 +55,8 @@ def score_levels_for_ticker(
     ticker: str,
     computed_levels: list[SRLevelRow],
     bars_dir: str,
+    recent_news: list[dict[str, str]] | None = None,
+    prompt_version: str = "v2",
 ) -> list[ScoredLevel]:
     """Score S/R levels for one ticker using Claude Sonnet.
 
@@ -89,25 +91,25 @@ def score_levels_for_ticker(
         or computed_levels  # fallback: send all if current_price unknown
     )
 
-    user = json.dumps(
-        {
-            "ticker": ticker,
-            "current_price": current_price,
-            "recent_bars_60d": recent_bars,
-            "computed_levels": [
-                {
-                    "method": lv.method,
-                    "price": lv.price,
-                    "type": lv.type,
-                    "as_of": str(lv.as_of),
-                }
-                for lv in nearby_levels
-            ],
-        },
-        default=str,
-    )
+    payload: dict[str, object] = {
+        "ticker": ticker,
+        "current_price": current_price,
+        "recent_bars_60d": recent_bars,
+        "computed_levels": [
+            {
+                "method": lv.method,
+                "price": lv.price,
+                "type": lv.type,
+                "as_of": str(lv.as_of),
+            }
+            for lv in nearby_levels
+        ],
+    }
+    if recent_news:
+        payload["recent_material_news"] = recent_news
 
-    system = load_prompt("score_levels_v1.txt")
+    user = json.dumps(payload, default=str)
+    system = load_prompt(f"score_levels_{prompt_version}.txt")
 
     resp: LLMResponse
     try:
@@ -171,7 +173,7 @@ def score_levels_for_ticker(
             orm_row.llm_rationale = scored.rationale
             orm_row.scored_at = scored_at
             orm_row.scored_by_model = SONNET
-            orm_row.prompt_version = "v1"
+            orm_row.prompt_version = prompt_version
     session.flush()
 
     return out

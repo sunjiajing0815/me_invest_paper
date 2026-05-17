@@ -21,6 +21,7 @@ from ..services.levels import (
 )
 from ..services.llm import LLMClient
 from ..services.llm_levels import ScoredLevel, score_levels_for_ticker
+from ..services.news import load_recent_material_news
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.magic_link import sign_action
@@ -68,11 +69,19 @@ def run_weekly_suggestions(
     sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
     week_of = _next_monday()
 
-    # Score all levels per ticker via LLM
+    # Score all levels per ticker via LLM; include last-24h material news as context
     scored: dict[str, list[ScoredLevel]] = {}
+    with session_scope() as session:
+        recent_news_by_ticker = load_recent_material_news(session, days=1)
+
     with session_scope() as session:
         for ticker in tickers:
             ticker_levels = [r for r in sr_rows if r.ticker == ticker]
+            ticker_news = [
+                {"sentiment": n.sentiment or "", "summary": n.summary or ""}
+                for n in recent_news_by_ticker.get(ticker, [])
+                if n.is_material
+            ]
             try:
                 scored[ticker] = score_levels_for_ticker(
                     llm=llm,
@@ -80,6 +89,8 @@ def run_weekly_suggestions(
                     ticker=ticker,
                     computed_levels=ticker_levels,
                     bars_dir=settings.bars_dir,
+                    recent_news=ticker_news or None,
+                    prompt_version=settings.level_prompt_version,
                 )
             except Exception as exc:
                 logger.warning("level scoring failed for %s: %s", ticker, exc)
