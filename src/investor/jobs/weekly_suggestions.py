@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+
+import pydantic
 
 from ..brokers.base import BrokerAdapter
 from ..config import Settings, load_targets
@@ -36,6 +40,13 @@ from ..services.suggest import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ScoringFailure:
+    ticker: str
+    exc_type: str
+    exc_message: str
+
+
 def score_all_tickers_parallel(
     *,
     tickers: list[str],
@@ -45,14 +56,16 @@ def score_all_tickers_parallel(
     recent_news_by_ticker: dict,
     prompt_version: str,
     max_workers: int = 4,
-) -> dict[str, list[ScoredLevel]]:
+) -> tuple[dict[str, list[ScoredLevel]], list[ScoringFailure]]:
     """Score S/R levels for all tickers in parallel via ThreadPoolExecutor.
 
     Each worker opens its own session so there's no session sharing across threads.
     Falls back to [] for any ticker that raises. max_workers=4 is conservative;
     Anthropic rate limits are tighter during bursts — tune up if no 429s observed.
+    Returns (scored_map, failures) so callers can surface parse/validation errors.
     """
     out: dict[str, list[ScoredLevel]] = {}
+    failures: list[ScoringFailure] = []
 
     def _score_one(ticker: str) -> list[ScoredLevel]:
         ticker_levels = [r for r in sr_rows if r.ticker == ticker]
@@ -78,11 +91,28 @@ def score_all_tickers_parallel(
             ticker = futures[fut]
             try:
                 out[ticker] = fut.result()
-            except Exception as exc:
-                logger.warning("level scoring failed for %s: %s", ticker, exc)
+            except (json.JSONDecodeError, pydantic.ValidationError) as exc:
+                logger.warning("level scoring failed for %s: %s", ticker, exc, exc_info=True)
                 out[ticker] = []
+                failures.append(
+                    ScoringFailure(
+                        ticker=ticker,
+                        exc_type=type(exc).__name__,
+                        exc_message=str(exc)[:200],
+                    )
+                )
+            except Exception as exc:
+                logger.exception("level scoring failed for %s: %s", ticker, exc)
+                out[ticker] = []
+                failures.append(
+                    ScoringFailure(
+                        ticker=ticker,
+                        exc_type=type(exc).__name__,
+                        exc_message=str(exc)[:200],
+                    )
+                )
 
-    return out
+    return out, failures
 
 
 def run_weekly_suggestions(
@@ -123,7 +153,7 @@ def run_weekly_suggestions(
     with session_scope() as session:
         recent_news_by_ticker = load_recent_material_news(session, days=1)
 
-    scored = score_all_tickers_parallel(
+    scored, scoring_failures = score_all_tickers_parallel(
         tickers=tickers,
         sr_rows=sr_rows,
         llm=llm,
@@ -226,6 +256,7 @@ def run_weekly_suggestions(
         nearby=nearby,
         untracked=untracked,
         skipped=skipped,
+        scoring_failures=scoring_failures,
     )
     text = render_template(
         "weekly_suggestions.txt.j2",
@@ -236,6 +267,7 @@ def run_weekly_suggestions(
         nearby=nearby,
         untracked=untracked,
         skipped=skipped,
+        scoring_failures=scoring_failures,
     )
     emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
     logger.info(

@@ -45,6 +45,11 @@ No suggestions this week — all positions within band, or no nearby S/R level.
 {% set res = lvl.resistances[0] if lvl and lvl.resistances else None %}
 {{ ind.ticker | ljust(6) }}  {{ "${:,.2f}".format(ind.close) | rjust(9) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else "—") | rjust(8) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else "—") | rjust(9) }}  {{ ("{:.0f}".format(ind.rsi_14) if ind.rsi_14 else "—") | rjust(6) }}  {{ (("$" + "{:,.2f}".format(sup.price) + " (" + sup.method + ")") if sup else "—") | ljust(20) }}  {{ ("$" + "{:,.2f}".format(res.price) + " (" + res.method + ")") if res else "—" }}
 {% endfor %}
+{% if scoring_failures %}
+{% for f in scoring_failures %}
+  {{ f.ticker }}: scoring failed ({{ f.exc_type }}) — using nearest-distance fallback.
+{% endfor %}
+{% endif %}
 {% endif %}
 
 ---

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import MagicMock, patch
 
@@ -45,7 +46,7 @@ class TestScoreAllTickersParallel:
             mock_session_scope.return_value.__exit__ = MagicMock(return_value=False)
 
             t0 = time.monotonic()
-            result = score_all_tickers_parallel(
+            result, failures = score_all_tickers_parallel(
                 tickers=tickers,
                 sr_rows=[],
                 llm=mock_llm,
@@ -60,6 +61,7 @@ class TestScoreAllTickersParallel:
         # Allow generous headroom for CI overhead
         assert elapsed < 0.8, f"Expected < 0.8s, got {elapsed:.2f}s"
         assert set(result.keys()) == set(tickers)
+        assert failures == []
 
     def test_parallel_scoring_failure_fallback(self) -> None:
         """One ticker raises → gets [] in result; others succeed normally."""
@@ -86,7 +88,7 @@ class TestScoreAllTickersParallel:
             mock_session_scope.return_value.__enter__ = MagicMock(return_value=mock_sess)
             mock_session_scope.return_value.__exit__ = MagicMock(return_value=False)
 
-            result = score_all_tickers_parallel(
+            result, failures = score_all_tickers_parallel(
                 tickers=tickers,
                 sr_rows=[],
                 llm=mock_llm,
@@ -104,3 +106,48 @@ class TestScoreAllTickersParallel:
         for t in tickers:
             if t != failing_ticker:
                 assert result[t] == []
+        # Failure is recorded
+        assert len(failures) == 1
+        assert failures[0].ticker == failing_ticker
+        assert failures[0].exc_type == "RuntimeError"
+
+    def test_scoring_failure_surfaced(self) -> None:
+        """JSONDecodeError from LLM scoring is captured in failures list."""
+        tickers = _make_tickers(3)
+        failing_ticker = tickers[0]  # "AAPL" raises JSONDecodeError
+        mock_llm = MagicMock()
+
+        def _maybe_raise(*args: object, **kwargs: object) -> list[ScoredLevel]:
+            ticker_arg = kwargs.get("ticker", "")
+            if ticker_arg == failing_ticker:
+                raise json.JSONDecodeError("Expecting value", "bad json", 0)
+            return []
+
+        with patch(
+            "investor.jobs.weekly_suggestions.score_levels_for_ticker",
+            side_effect=_maybe_raise,
+        ), patch(
+            "investor.jobs.weekly_suggestions.session_scope",
+        ) as mock_session_scope:
+            mock_sess = MagicMock()
+            mock_session_scope.return_value.__enter__ = MagicMock(return_value=mock_sess)
+            mock_session_scope.return_value.__exit__ = MagicMock(return_value=False)
+
+            result, failures = score_all_tickers_parallel(
+                tickers=tickers,
+                sr_rows=[],
+                llm=mock_llm,
+                bars_dir="data/bars",
+                recent_news_by_ticker={},
+                prompt_version="v2",
+                max_workers=4,
+            )
+
+        assert len(failures) == 1
+        assert failures[0].ticker == failing_ticker
+        assert failures[0].exc_type == "JSONDecodeError"
+        assert result[failing_ticker] == []
+        # Non-failing tickers are present and succeed
+        for t in tickers:
+            if t != failing_ticker:
+                assert t in result
