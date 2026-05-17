@@ -33,6 +33,7 @@ from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.daily_report import run_daily_report
 from .jobs.movers import run_movers_email
+from .jobs.suggestion_expiry import sweep_expired_suggestions
 from .jobs.sync import run_sync_job
 from .jobs.weekly_suggestions import run_weekly_suggestions
 from .queries import account_last_sync, positions_latest, targets_active_count
@@ -114,7 +115,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
     weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
-    scheduler = make_scheduler(daily_fn, weekly_fn, movers_fn)
+    expiry_fn = sweep_expired_suggestions
+    scheduler = make_scheduler(daily_fn, weekly_fn, movers_fn, expiry_fn)
     scheduler.start()
     app.state.scheduler = scheduler
 
