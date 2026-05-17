@@ -175,3 +175,43 @@ def score_levels_for_ticker(
     session.flush()
 
     return out
+
+
+def load_latest_scored_levels(session: Session) -> dict[str, list[ScoredLevel]]:
+    """Load the most-recently-scored S/R levels per ticker from the DB.
+
+    Returns only rows where confidence IS NOT NULL (i.e., LLM-scored rows).
+    Per ticker, returns all scored rows from the latest ``as_of`` date,
+    sorted by confidence descending.
+    """
+    rows = (
+        session.query(SRLevelORM)
+        .filter(SRLevelORM.confidence.isnot(None))
+        .all()
+    )
+
+    # Group by ticker, tracking max as_of per ticker
+    from collections import defaultdict
+
+    ticker_rows: dict[str, list[SRLevelORM]] = defaultdict(list)
+    for row in rows:
+        ticker_rows[row.ticker].append(row)
+
+    result: dict[str, list[ScoredLevel]] = {}
+    for ticker, ticker_level_rows in ticker_rows.items():
+        max_as_of = max(r.as_of for r in ticker_level_rows)
+        latest_rows = [r for r in ticker_level_rows if r.as_of == max_as_of]
+        scored = [
+            ScoredLevel(
+                method=r.method,
+                price=r.price,
+                type=r.type,
+                confidence=float(r.confidence),  # type: ignore[arg-type]
+                rationale=r.llm_rationale or "",
+            )
+            for r in latest_rows
+        ]
+        scored.sort(key=lambda s: s.confidence, reverse=True)
+        result[ticker] = scored
+
+    return result

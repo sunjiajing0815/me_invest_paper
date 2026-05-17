@@ -7,9 +7,16 @@ read from DB or global config directly.
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
-from typing import Any, Literal
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse, urlunparse
+
+from sqlalchemy.orm import Session
+
+from ..models import NewsEvent
+
+if TYPE_CHECKING:
+    from ..graphs.news_triage import NewsTriageItem  # avoid circular import at runtime
 
 log = logging.getLogger(__name__)
 
@@ -198,3 +205,41 @@ def get_news_for_movers(
         out[ticker] = list(seen.values())
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# DB query helpers
+# ---------------------------------------------------------------------------
+
+
+def load_recent_material_news(
+    session: Session,
+    days: int = 7,
+) -> "dict[str, list[NewsTriageItem]]":
+    """Return material news from the last *days* days, grouped by ticker.
+
+    Each entry is a NewsTriageItem (Pydantic BaseModel). All conversion
+    from ORM rows happens inside this function — no ORM objects leave.
+    """
+    # Local import to avoid circular dependency: news_triage.py imports NewsRaw from this module
+    from ..graphs.news_triage import NewsTriageItem  # noqa: PLC0415
+
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    rows = (
+        session.query(NewsEvent)
+        .filter(NewsEvent.llm_material.is_(True), NewsEvent.published_at >= cutoff)
+        .order_by(NewsEvent.published_at.desc())
+        .all()
+    )
+
+    result: dict[str, list[NewsTriageItem]] = {}
+    for row in rows:
+        item = NewsTriageItem(
+            url_hash=row.url_hash,
+            is_material=True,
+            sentiment=row.llm_sentiment,  # type: ignore[arg-type]  # DB stores validated values
+            summary=row.llm_summary,
+        )
+        result.setdefault(row.ticker, []).append(item)
+
+    return result
