@@ -1,9 +1,9 @@
-# Investor Assistant — Phase 3b
+# Investor Assistant — Phase 3
 
-A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, suggests weekly limit orders, and sends daily and weekly reports by email. When a watchlist ticker moves ≥5% vs. last week, a movers email is sent with AI-triaged news headlines. The weekly email includes Accept/Reject buttons for each suggestion. The system never places orders — execution is always manual in the broker's UI.
+A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a second Sonnet pass critiques all drafts as a set (checking cash-floor violations, disqualifying news, and direction-band mismatches), and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email is sent with AI-triaged news headlines. The weekly email includes Accept/Reject buttons for each suggestion. The system never places orders — execution is always manual in the broker's UI.
 
-**Current phase:** 3b — LangGraph News Triage + Movers Email  
-**Status:** Code complete.
+**Current phase:** 3 — Suggestion Review Pipeline (complete)  
+**Status:** Code complete. Tag `v0.3.0-phase-3` pending first Sunday email.
 
 ---
 
@@ -87,8 +87,9 @@ The API is available at `http://localhost:8000`. Interactive docs at `http://loc
 
 The scheduler starts automatically with the server and fires:
 - **Daily report**: Mon–Fri at 16:15 America/New_York (30-minute misfire grace)
-- **Weekly suggestions**: Sunday at 18:00 America/New_York (6-hour misfire grace)
+- **Suggestion expiry sweep**: Mon–Fri at 16:20 America/New_York — marks stale pending suggestions as `expired`
 - **Movers email**: Mon–Fri at 16:30 America/New_York (1-hour misfire grace)
+- **Weekly suggestions**: Sunday at 18:00 America/New_York (6-hour misfire grace)
 
 ### Updating targets
 
@@ -261,7 +262,23 @@ Subject: `Orders for the week of MMM DD`
 
 Each suggestion row has **Accept** (green) and **Reject** (grey) buttons. Clicking one updates the suggestion status directly via an HMAC-signed magic link — no login required. Links expire after 7 days; second click returns a "already acted" message.
 
-Suggestions use "half-the-gap" sizing: each order deploys half the dollar shortfall (or surplus). The limit price is chosen by `select_anchor()`: Claude Sonnet 4.6 scores all computed S/R levels for confidence, and the highest-confidence level within 8% of the current price is used (buy orders use support levels; sell orders use resistance levels). If LLM scoring fails, the system falls back to nearest-distance selection. See [ADR-0006](docs/adr/0006-sr-methodology.md) and [ADR-0007](docs/adr/0007-position-sizing.md) for the full methodology.
+Suggestions use "half-the-gap" sizing: each order deploys half the dollar shortfall (or surplus). The limit price is chosen by `select_anchor()`: Claude Sonnet 4.6 scores all computed S/R levels for confidence, and the highest-confidence level within 8% of the current price is used (buy orders use support levels; sell orders use resistance levels). Scoring is news-augmented — bearish news reduces support confidence; bullish news reduces resistance confidence. If LLM scoring fails, the system falls back to nearest-distance selection.
+
+Before suggestions are persisted and emailed they pass through the **suggestion review graph** (`graphs/suggestion_review.py`):
+
+```
+gather_context → reason (Sonnet) → critic (Sonnet) → revise or skip_revise → finalize
+```
+
+- **gather_context**: Materialises gap rows, scored levels, material news, indicators, account, and untracked positions into a frozen `ReviewContext` before any LLM node runs.
+- **reason**: Writes a 2–4 sentence rationale per draft citing specific evidence (confidence score, RSI, news sentiment, MA distance, gap %). Rationales appear as the "Rationale" column in the weekly email.
+- **critic**: Reviews all drafts as a set; emits `approve / revise / reject` with structured `suggested_changes` (e.g. `{"anchor_method": "sma_50"}`). Calibration target: 10–25% revise-or-reject rate per weekly run.
+- **revise**: Deterministic Python applies the critic's changes, validating every field against known scored levels. Invented prices or unknown methods are silently rejected (original draft kept). **LLMs propose changes; Python applies them.**
+- **finalize**: Persists approved and revised drafts via `persist_suggestions()`.
+
+The mechanical `order_suggestion.reason` stays in the DB as the immutable audit trail; the Sonnet-written rationale appears in the email. If the reason node fails, the email falls back to the mechanical reason.
+
+See [ADR-0006](docs/adr/0006-sr-methodology.md), [ADR-0007](docs/adr/0007-position-sizing.md), and [ADR-0013](docs/adr/0013-suggestion-review-pipeline.md) for the full methodology.
 
 ---
 
@@ -380,6 +397,7 @@ One row per week × ticker × side. Status lifecycle: `pending` → `accepted` /
 | `confidence_at_creation` | float | Anchor level confidence when suggestion was created (Phase 3a) |
 | `acted_at` | timestamptz | When accept/reject was recorded (Phase 3a) |
 | `note` | text | Optional note from the accept/reject action (Phase 3a) |
+| `anchor_method` | varchar | Scored level method used as limit-price anchor, e.g. `sma_50` (Phase 3c; NULL on older rows) |
 
 ### `llm_call_log` (Phase 3a)
 
@@ -388,7 +406,7 @@ One row per LLM API call. Used for cost tracking and debugging.
 | Column | Type | Description |
 |---|---|---|
 | `ts` | timestamptz | Call timestamp (UTC) |
-| `purpose` | varchar | `score_levels`, `news_classify`, `news_critic`, or `news_arbitrate` |
+| `purpose` | varchar | `score_levels`, `news_classify`, `news_critic`, `news_arbitrate`, `suggestion_reason`, or `suggestion_critic` |
 | `model` | varchar | e.g. `claude-haiku-4-5`, `claude-sonnet-4-6` |
 | `prompt_hash` | varchar | First 12 hex chars of SHA-256 of system+user prompt |
 | `input_tokens` | int | Prompt tokens consumed |
@@ -468,10 +486,17 @@ ORDER BY ne.ticker, ne.published_at DESC;
 SELECT ticker, last_triggered_threshold, last_pct_change, last_triggered_at
 FROM mover_state ORDER BY ticker;
 
--- LLM cost by purpose (news triage breakdown)
+-- LLM cost by purpose (includes suggestion_reason + suggestion_critic from Phase 3c)
 SELECT purpose, model, date(ts) AS day,
        sum(cost_usd) AS total_usd, count(*) AS calls
 FROM llm_call_log GROUP BY 1, 2, 3 ORDER BY 3 DESC, 4 DESC;
+
+-- suggestion anchor methods (Phase 3c) — which levels were chosen
+SELECT ticker, side, anchor_method, round(confidence_at_creation, 2) AS conf,
+       limit_price, status
+FROM order_suggestion
+WHERE week_of = date('now', 'weekday 1', '-7 days')
+ORDER BY ticker;
 ```
 
 ---
@@ -483,20 +508,24 @@ src/investor/
   main.py             FastAPI app + lifespan
   config.py           pydantic-settings + targets.yaml loader
   db.py               SQLite engine + session factory
-  models.py           SQLAlchemy ORM models (Phase 3b adds: NewsEvent, MoverState)
-  scheduler.py        APScheduler bootstrap (daily 16:15, weekly 18:00, movers 16:30)
+  models.py           SQLAlchemy ORM models (Phase 3b adds: NewsEvent, MoverState; Phase 3c adds: anchor_method on OrderSuggestion)
+  scheduler.py        APScheduler bootstrap (daily 16:15, expiry 16:20, movers 16:30, weekly 18:00)
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
   graphs/
-    __init__.py       make_checkpointer() — MemorySaver (in-memory, avoids SQLite write contention)
-    _nodes.py         llm_node_call() — generic LLM node helper (Phase 3a lessons applied)
-    news_triage.py    Three-node triage graph: classify → critic → conditional arbitrate
+    __init__.py           make_checkpointer() — MemorySaver (in-memory, avoids SQLite write contention)
+    _nodes.py             llm_node_call() — generic LLM node helper (Phase 3a lessons applied)
+    news_triage.py        Three-node triage graph: classify → critic → conditional arbitrate
+    suggestion_review.py  Five-node review graph: gather_context → reason → critic → revise/skip → finalize
   prompts/
-    score_levels_v1.txt   Sonnet 4.6 scoring prompt (hard rules: no invented prices, no trade recs)
-    news_classify_v1.txt  Haiku batch-classifier prompt
-    news_critic_v1.txt    Haiku critic prompt (flag 10–30% of items)
-    news_arbitrate_v1.txt Sonnet final-decision prompt for flagged items
+    score_levels_v1.txt       Sonnet 4.6 scoring prompt (hard rules: no invented prices, no trade recs)
+    score_levels_v2.txt       News-augmented scoring prompt (bearish news ↓ support conf; bullish ↓ resistance conf)
+    news_classify_v1.txt      Haiku batch-classifier prompt
+    news_critic_v1.txt        Haiku critic prompt (flag 10–30% of items)
+    news_arbitrate_v1.txt     Sonnet final-decision prompt for flagged items
+    suggestion_reason_v1.txt  Sonnet per-draft rationale prompt (2–4 sentences, cite evidence)
+    suggestion_critic_v1.txt  Sonnet cross-draft critic prompt (five severity-ordered criteria)
   services/
     snapshot.py       Position + account ingestion
     gap.py            Gap computation + UntrackedPosition detection
@@ -504,9 +533,9 @@ src/investor/
     indicators.py     IndicatorRow + compute_indicators() — SMA/EMA/RSI/MACD
     levels.py         SRLevelRow, NearbyLevels + compute_levels() / persist_levels()
     llm.py            LLMClient Protocol + AnthropicAPIClient + AgentSDKClient + make_llm_client() factory + persist_llm_call_log()
-    llm_levels.py     ScoredLevel + score_levels_for_ticker() via Sonnet 4.6
+    llm_levels.py     ScoredLevel + score_levels_for_ticker() (news-augmented, v2 prompt); load_latest_scored_levels()
     magic_link.py     sign_action() / verify_action() — HMAC-SHA256 email tokens
-    news.py           NewsRaw, fetch_alpaca_news(), fetch_finnhub_news(), get_news_for_movers()
+    news.py           NewsRaw, fetch_alpaca_news(), fetch_finnhub_news(), get_news_for_movers(), load_recent_material_news()
     suggest.py        OrderSuggestionRow, select_anchor() + generate_suggestions() / persist_suggestions()
     daily_report.py   DailyReport dataclass + compose_daily_report()
     bars.py           update_bars() — smart backfill + incremental Parquet append
@@ -515,8 +544,9 @@ src/investor/
     email.py          SMTPEmailer + FakeEmailer
   jobs/
     daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
-    weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
+    suggestion_expiry.py   Mon-Fri 16:20 ET — mark stale pending suggestions expired
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
+    weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
 config/
   targets.yaml        Target allocation (hand-edited)
 templates/
@@ -553,6 +583,9 @@ tests/
   test_suggest.py             generate_suggestions, select_anchor, persist lifecycle (27 tests)
   test_news.py                URL normalization, news fetch mocks, tiered threshold logic (27 tests)
   test_news_triage.py         Per-node unit tests, graph integration, fence/parse regressions (12 tests)
+  test_suggestion_review.py   revise/skip_revise nodes, critic routing, reason/critic with mock LLM, session-leak guard (18 tests)
+  test_suggestion_expiry.py   Expiry sweep: stale → expired, future → unchanged, non-pending → unchanged (3 tests)
+  test_weekly_suggestions.py  Parallel scoring wall-clock + failure fallback (2 tests)
   test_integration_alpaca.py  Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -560,13 +593,14 @@ docs/adr/
   0003-schema-migrations-alembic-sqlite.md
   0004-bar-storage.md
   0005-email-failure-policy.md
-  0006-sr-methodology.md      ⚠ Pending Phase 3c (scoring pass partial update added)
-  0007-position-sizing.md     ⚠ Pending Phase 3c (confidence-weighted anchor added)
+  0006-sr-methodology.md      S/R methodology; Phase 3a scoring pass; Phase 3c news-augmented scoring + anchor audit trail
+  0007-position-sizing.md     Position sizing; Phase 3a confidence-weighted anchor; Phase 3c anchor_method field + critic refinement
   0009-llm-guardrails.md      Hard rules for LLM output in the suggestion pipeline
   0010-magic-link-auth.md     HMAC magic-link auth for Accept/Reject email buttons
   0011-news-source-priority.md  Alpaca-primary / Finnhub-fallback; URL normalization dedup
   0012-langgraph-adoption.md    LangGraph decision rule, MemorySaver checkpointer, version-pinning
-  0016-llm-backend-abstraction.md  LLMClient Protocol, AnthropicAPIClient vs AgentSDKClient, LLM_BACKEND env var
+  0013-suggestion-review-pipeline.md  Suggestion review graph; why revise is deterministic Python; calibration target 10–25%
+  0016-llm-backend-abstraction.md  LLMClient Protocol, AnthropicAPIClient vs AgentSDKClient, consumer OAuth guardrails
 ```
 
 ---
@@ -575,7 +609,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 161 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 184 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/
