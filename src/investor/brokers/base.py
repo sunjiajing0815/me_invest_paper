@@ -37,7 +37,7 @@ class Activity:
     side: Literal["buy", "sell"]
     filled_qty: float
     filled_price: float
-    filled_at: datetime
+    filled_at: datetime | None
     status: Literal["filled", "partially_filled", "rejected", "expired", "canceled"]
 
 

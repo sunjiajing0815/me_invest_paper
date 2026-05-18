@@ -92,7 +92,7 @@ class AlpacaAdapter:
                     side="buy" if order.side == OrderSide.BUY else "sell",
                     filled_qty=float(order.filled_qty),
                     filled_price=float(order.filled_avg_price or 0),
-                    filled_at=order.filled_at or datetime.now(UTC),
+                    filled_at=order.filled_at,
                     status=act_status,  # type: ignore[arg-type]
                 )
             )
