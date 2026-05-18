@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     llm_backend: str = "anthropic_api"
     llm_cli_path: str = ""  # override claude CLI for agent_sdk; empty = use bundled
 
+    auto_trade_promotion_token: str = ""  # separate from admin_token; required for promotions
+
     # Moomoo/Futu OpenD daemon settings (used when broker == "moomoo")
     opend_host: str = "host.docker.internal"
     opend_port: int = 11111

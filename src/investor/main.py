@@ -15,6 +15,10 @@ Endpoints:
   POST  /admin/reload-targets           — reload targets from targets.yaml (admin token)
   POST  /admin/run-movers               — trigger movers email job (admin token)
   POST  /admin/reconcile/{execution_id} — manually link an execution to a suggestion
+  POST  /admin/run-auto-trade           — manual auto-trade trigger (admin token)
+  POST  /admin/auto-trade/promote       — promote auto-trade mode (promotion token)
+  POST  /admin/auto-trade/caps          — update spending caps (promotion token)
+  POST  /admin/auto-trade/emergency-stop — trigger kill switch immediately (admin token)
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from pydantic import BaseModel
 from .brokers import make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
+from .jobs.auto_trade import run_auto_trade_job
 from .jobs.daily_report import run_daily_report
 from .jobs.moomoo_parallel import run_moomoo_parallel
 from .jobs.movers import run_movers_email
@@ -72,6 +77,18 @@ def admin_auth(
     """Dependency: validates X-Admin-Token header against ADMIN_TOKEN setting."""
     if not settings.admin_token or x_admin_token != settings.admin_token:
         raise HTTPException(status_code=401, detail="invalid admin token")
+
+
+def promotion_auth(
+    x_promotion_token: str = Header(default=""),
+    settings: Settings = Depends(_get_settings),  # noqa: B008
+) -> None:
+    """Dependency: validates X-Promotion-Token header against AUTO_TRADE_PROMOTION_TOKEN setting."""
+    if (
+        not settings.auto_trade_promotion_token
+        or x_promotion_token != settings.auto_trade_promotion_token
+    ):
+        raise HTTPException(status_code=401, detail="invalid promotion token")
 
 
 @asynccontextmanager
@@ -123,8 +140,16 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
     weekly_review_fn = partial(run_weekly_review, _settings, adapter, emailer, llm)
+    auto_trade_fn = partial(run_auto_trade_job, _settings, adapter, emailer)
     scheduler = make_scheduler(
-        daily_fn, weekly_fn, movers_fn, expiry_fn, recon_fn, moomoo_parallel_fn, weekly_review_fn
+        daily_fn,
+        weekly_fn,
+        movers_fn,
+        expiry_fn,
+        recon_fn,
+        moomoo_parallel_fn,
+        weekly_review_fn,
+        auto_trade_fn,
     )
     scheduler.start()
     app.state.scheduler = scheduler
@@ -506,3 +531,169 @@ def admin_reconcile_manual(
         "suggestion_id": body.suggestion_id,
         "match_method": "manual_matched",
     }
+
+
+# --- Auto-trade endpoints ---
+
+@app.post(
+    "/admin/run-auto-trade",
+    summary="Manual auto-trade trigger",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_run_auto_trade(request: Request) -> dict[str, Any]:
+    """Manually trigger one auto-trade pass."""
+    try:
+        run_auto_trade_job(
+            request.app.state.settings,
+            request.app.state.adapter,
+            request.app.state.emailer,
+        )
+    except Exception as exc:
+        logger.error("Manual auto-trade pass failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Auto-trade pass failed: {exc}") from exc
+    return {"status": "ok", "message": "Auto-trade pass completed"}
+
+
+class AutoTradePromoteRequest(BaseModel):
+    to_mode: str   # "OFF" | "DRY_RUN" | "LIVE"
+    broker_scope: str  # "alpaca_paper" | "alpaca_live" | "moomoo"
+    reason: str | None = None
+
+
+SOAK_WINDOWS: dict[tuple[str, str], int] = {
+    # (broker_scope, to_mode) → minimum days in previous mode
+    ("alpaca_paper", "DRY_RUN"): 0,
+    ("alpaca_paper", "LIVE"): 14,
+    ("alpaca_live", "LIVE"): 28,
+    ("moomoo", "LIVE"): 28,
+}
+
+
+@app.post(
+    "/admin/auto-trade/promote",
+    summary="Promote auto-trade mode (requires promotion token)",
+    dependencies=[Depends(promotion_auth)],
+)
+def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
+    """Promote or demote auto-trade mode. Enforces soak-window requirements."""
+    from datetime import timedelta
+
+    from .models import AutoTradePromotionLog, Meta
+
+    to_mode = body.to_mode.upper()
+    if to_mode not in ("OFF", "DRY_RUN", "LIVE"):
+        raise HTTPException(status_code=422, detail=f"Invalid to_mode: {to_mode!r}")
+
+    with session_scope() as session:
+        meta = session.get(Meta, "auto_trade_mode")
+        current_mode = meta.value if meta else "OFF"
+
+        # Demote to OFF is always allowed immediately
+        if to_mode != "OFF":
+            soak_days = SOAK_WINDOWS.get((body.broker_scope, to_mode))
+            if soak_days is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"No soak window defined for ({body.broker_scope}, {to_mode})",
+                )
+            if soak_days > 0:
+                # Check last promotion timestamp from promotion log
+                last_promo = session.query(AutoTradePromotionLog).order_by(
+                    AutoTradePromotionLog.ts.desc()
+                ).first()
+                if last_promo is None or (
+                    datetime.now(UTC) - last_promo.ts
+                ) < timedelta(days=soak_days):
+                    days_elapsed = (
+                        (datetime.now(UTC) - last_promo.ts).days if last_promo else 0
+                    )
+                    days_remaining = soak_days - days_elapsed
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Soak window not met: need {soak_days} days,"
+                            f" {days_remaining} remaining"
+                        ),
+                    )
+
+        # Apply the promotion
+        if meta is None:
+            session.add(Meta(key="auto_trade_mode", value=to_mode))
+        else:
+            meta.value = to_mode
+
+        session.add(AutoTradePromotionLog(
+            ts=datetime.now(UTC),
+            from_mode=current_mode,
+            to_mode=to_mode,
+            broker_scope=body.broker_scope,
+            reason=body.reason,
+            actor="admin",
+        ))
+
+    return {"mode": to_mode, "broker_scope": body.broker_scope}
+
+
+class AutoTradeCapsRequest(BaseModel):
+    per_order_max_usd: float
+    per_day_max_usd: float
+    per_week_max_usd_per_ticker: float
+    per_day_max_orders: int
+
+
+@app.post(
+    "/admin/auto-trade/caps",
+    summary="Update auto-trade spending caps",
+    dependencies=[Depends(promotion_auth)],
+)
+def admin_auto_trade_caps(body: AutoTradeCapsRequest) -> dict[str, Any]:
+    """Update auto-trade caps: closes old row, inserts new."""
+    from sqlalchemy import select
+
+    from .models import AutoTradeCaps
+
+    with session_scope() as session:
+        # Close existing active caps row
+        old = session.scalar(
+            select(AutoTradeCaps).where(AutoTradeCaps.effective_to.is_(None))
+        )
+        if old is not None:
+            old.effective_to = datetime.now(UTC)
+
+        session.add(AutoTradeCaps(
+            per_order_max_usd=body.per_order_max_usd,
+            per_day_max_usd=body.per_day_max_usd,
+            per_week_max_usd_per_ticker=body.per_week_max_usd_per_ticker,
+            per_day_max_orders=body.per_day_max_orders,
+            effective_from=datetime.now(UTC),
+            effective_to=None,
+        ))
+
+    return {
+        "per_order_max_usd": body.per_order_max_usd,
+        "per_day_max_usd": body.per_day_max_usd,
+        "per_week_max_usd_per_ticker": body.per_week_max_usd_per_ticker,
+        "per_day_max_orders": body.per_day_max_orders,
+    }
+
+
+@app.post(
+    "/admin/auto-trade/emergency-stop",
+    summary="Immediately trigger kill switch",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_auto_trade_emergency_stop(request: Request) -> dict[str, Any]:
+    """Trigger the kill switch immediately (mode → OFF, cancel open auto-trade orders)."""
+    from .services.auto_trade import _trigger_kill_switch
+
+    with session_scope() as session:
+        _trigger_kill_switch(
+            session=session,
+            emailer=request.app.state.emailer,
+            adapter=request.app.state.adapter,
+            trigger="manual",
+            detail="Emergency stop triggered via POST /admin/auto-trade/emergency-stop",
+            settings_email_to=request.app.state.settings.email_to,
+        )
+
+    return {"status": "ok", "message": "Kill switch activated. Auto-trade mode set to OFF."}

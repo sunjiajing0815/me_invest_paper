@@ -1,6 +1,7 @@
 """APScheduler bootstrap — Phase 2/3c/4.
 
 Jobs:
+  auto_trade            — Mon–Fri 09:35 ET, grace 15 min
   daily_report          — Mon–Fri 16:15 ET, grace 30 min
   suggestion_expiry     — Mon–Fri 16:20 ET, grace 30 min
   movers                — Mon–Fri 16:30 ET, grace 1 h
@@ -29,6 +30,7 @@ def make_scheduler(
     reconciliation_func: Callable[[], None] | None = None,
     moomoo_parallel_func: Callable[[], None] | None = None,
     weekly_review_func: Callable[[], None] | None = None,
+    auto_trade_func: Callable[[], None] | None = None,
 ) -> BackgroundScheduler:
     """Create and configure the scheduler. Does not start it."""
     sched = BackgroundScheduler(timezone="America/New_York")
@@ -128,9 +130,23 @@ def make_scheduler(
             misfire_grace_time=60 * 60,  # 1h grace — it's a long-running job
         )
 
+    if auto_trade_func is not None:
+        sched.add_job(
+            auto_trade_func,
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=9,
+                minute=35,
+                timezone="America/New_York",
+            ),
+            id="auto_trade",
+            replace_existing=True,
+            misfire_grace_time=60 * 15,  # 15 min grace — must fire before market moves
+        )
+
     logger.info(
-        "APScheduler created. Daily report Mon–Fri 16:15 ET; Expiry sweep 16:20 ET;"
-        " Movers Mon–Fri 16:30 ET; Reconciliation Mon–Fri 16:45 ET;"
+        "APScheduler created. Auto-trade Mon–Fri 09:35 ET; Daily report Mon–Fri 16:15 ET;"
+        " Expiry sweep 16:20 ET; Movers Mon–Fri 16:30 ET; Reconciliation Mon–Fri 16:45 ET;"
         " Moomoo parallel Mon–Fri 16:50 ET; Weekly suggestions Sun 18:00 ET;"
         " Weekly review Fri 17:00 ET"
     )
