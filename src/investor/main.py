@@ -1,19 +1,20 @@
-"""FastAPI application — Phase 3a.
+"""FastAPI application — Phase 3a/4.
 
 Endpoints:
-  GET   /health                        — status, broker, last sync ts, target count
-  GET   /positions                     — latest portfolio snapshot rows
-  GET   /gap                           — current allocation vs targets (% and USD, band_status)
-  GET   /drift                         — only out-of-band gap rows
-  GET   /indicators                    — technical indicators per ticker (SMA, RSI, MACD)
-  GET   /suggestions                   — pending order suggestions for current week
-  PATCH /suggestions/{sid}             — accept or reject a suggestion (requires X-Admin-Token)
-  GET   /suggestions/{sid}/{action}    — magic-link accept/reject from weekly email
-  POST  /admin/run-sync                — ad-hoc sync trigger (requires X-Admin-Token)
-  POST  /admin/run-daily-report        — manual daily report trigger (requires X-Admin-Token)
-  POST  /admin/run-weekly-suggestions  — manual weekly suggestions trigger (requires X-Admin-Token)
-  POST  /admin/reload-targets          — reload targets from targets.yaml (requires X-Admin-Token)
-  POST  /admin/run-movers             — trigger movers email job (requires X-Admin-Token)
+  GET   /health                         — status, broker, last sync ts, target count
+  GET   /positions                      — latest portfolio snapshot rows
+  GET   /gap                            — allocation vs targets (%, USD, band_status)
+  GET   /drift                          — only out-of-band gap rows
+  GET   /indicators                     — technical indicators per ticker (SMA, RSI, MACD)
+  GET   /suggestions                    — pending order suggestions for current week
+  PATCH /suggestions/{sid}              — accept or reject a suggestion (admin token)
+  GET   /suggestions/{sid}/{action}     — magic-link accept/reject from weekly email
+  POST  /admin/run-sync                 — ad-hoc sync trigger (admin token)
+  POST  /admin/run-daily-report         — manual daily report trigger (admin token)
+  POST  /admin/run-weekly-suggestions   — manual weekly suggestions trigger (admin token)
+  POST  /admin/reload-targets           — reload targets from targets.yaml (admin token)
+  POST  /admin/run-movers               — trigger movers email job (admin token)
+  POST  /admin/reconcile/{execution_id} — manually link an execution to a suggestion
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.daily_report import run_daily_report
 from .jobs.movers import run_movers_email
+from .jobs.reconciliation import run_daily_reconciliation
 from .jobs.suggestion_expiry import sweep_expired_suggestions
 from .jobs.sync import run_sync_job
 from .jobs.weekly_suggestions import run_weekly_suggestions
@@ -116,7 +118,8 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
     expiry_fn = sweep_expired_suggestions
-    scheduler = make_scheduler(daily_fn, weekly_fn, movers_fn, expiry_fn)
+    recon_fn = partial(run_daily_reconciliation, _settings, adapter)
+    scheduler = make_scheduler(daily_fn, weekly_fn, movers_fn, expiry_fn, recon_fn)
     scheduler.start()
     app.state.scheduler = scheduler
 
@@ -441,3 +444,35 @@ def admin_run_movers(request: Request) -> dict[str, str]:
         request.app.state.llm,
     )
     return {"status": "ok"}
+
+
+class ReconcileManualRequest(BaseModel):
+    """Request body for POST /admin/reconcile/{execution_id}."""
+
+    suggestion_id: int
+
+
+@app.post(
+    "/admin/reconcile/{execution_id}",
+    summary="Manually link an execution to a suggestion",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_reconcile_manual(
+    execution_id: int,
+    body: ReconcileManualRequest,
+) -> dict[str, Any]:
+    """Manually set suggestion_id on an order_execution row (match_method='manual_matched')."""
+    from .models import OrderExecution
+
+    with session_scope() as session:
+        execution = session.get(OrderExecution, execution_id)
+        if execution is None:
+            raise HTTPException(status_code=404, detail=f"OrderExecution {execution_id} not found")
+        execution.suggestion_id = body.suggestion_id
+        execution.match_method = "manual_matched"
+        session.commit()
+    return {
+        "id": execution_id,
+        "suggestion_id": body.suggestion_id,
+        "match_method": "manual_matched",
+    }
