@@ -44,7 +44,7 @@ def reconcile_activities(
     """
     activities = adapter.get_activities(since, until)
     pending = session.scalars(
-        select(OrderSuggestion).where(OrderSuggestion.status.in_(["accepted", "pending"]))
+        select(OrderSuggestion).where(OrderSuggestion.status == "accepted")
     ).all()
 
     results: list[MatchResult] = []
@@ -75,7 +75,8 @@ def reconcile_activities(
             for s in pending
             if s.ticker == act.ticker
             and s.side == act.side
-            and abs((act.filled_at - s.created_at).total_seconds())
+            and 0
+            <= (act.filled_at - s.created_at).total_seconds()
             < ticker_tolerance_window_hours * 3600
             and abs(act.filled_price - s.limit_price) / s.limit_price
             <= price_tolerance_pct / 100
@@ -182,6 +183,8 @@ def compute_realized_pnl(session: Session, sell: Activity) -> float | None:
             OrderExecution.side == "buy",
             OrderExecution.dry_run.is_(False),
             OrderExecution.filled_qty > 0,
+            OrderExecution.filled_at.isnot(None),
+            OrderExecution.filled_at <= sell.filled_at,  # FIFO: only lots before this sell
         )
         .order_by(OrderExecution.filled_at.asc())
     ).all()
