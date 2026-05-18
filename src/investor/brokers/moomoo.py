@@ -167,9 +167,7 @@ class MoomooAdapter:
         through get_order() and get_activities() (per ADR-0018).
         """
         ft = self._ft
-        from futu import OrderType, TrdSide
-
-        trd_side = TrdSide.BUY if req.side == "buy" else TrdSide.SELL
+        trd_side = ft.TrdSide.BUY if req.side == "buy" else ft.TrdSide.SELL
         # US. prefix required for Moomoo
         code = f"US.{req.ticker}"
         ret, data = self._trade_ctx.place_order(
@@ -177,7 +175,7 @@ class MoomooAdapter:
             qty=req.qty,
             code=code,
             trd_side=trd_side,
-            order_type=OrderType.NORMAL,
+            order_type=ft.OrderType.NORMAL,
             trd_env=self._trd_env,
             remark=req.client_order_id,  # client_order_id stored in remark per ADR-0018
         )
@@ -205,7 +203,7 @@ class MoomooAdapter:
         remark = str(row.get("remark", "")) if "remark" in row else ""
         return OrderConfirmation(
             broker_order_id=broker_order_id,
-            client_order_id=remark if remark else "",
+            client_order_id=remark if remark else None,
             status=str(row.get("order_status", "unknown")),
             submitted_at=datetime.now(UTC),
         )
@@ -213,10 +211,8 @@ class MoomooAdapter:
     def cancel_order(self, broker_order_id: str) -> None:
         """Cancel an open order via Moomoo modify_order with CANCEL op."""
         ft = self._ft
-        from futu import ModifyOrderOp
-
         ret, data = self._trade_ctx.modify_order(
-            modify_order_op=ModifyOrderOp.CANCEL,
+            modify_order_op=ft.ModifyOrderOp.CANCEL,
             order_id=broker_order_id,
             qty=0,
             price=0,

@@ -54,7 +54,7 @@ class OrderRequest:
 @dataclass(frozen=True)
 class OrderConfirmation:
     broker_order_id: str
-    client_order_id: str
+    client_order_id: str | None  # None when broker didn't echo the client_order_id
     status: str
     submitted_at: datetime
 
