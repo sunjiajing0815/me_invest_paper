@@ -5,6 +5,7 @@ Jobs:
   suggestion_expiry     — Mon–Fri 16:20 ET, grace 30 min
   movers                — Mon–Fri 16:30 ET, grace 1 h
   daily_reconciliation  — Mon–Fri 16:45 ET, grace 30 min
+  moomoo_parallel       — Mon–Fri 16:50 ET, grace 30 min
   weekly_suggestions    — Sun 18:00 ET, grace 6 h
 """
 
@@ -25,6 +26,7 @@ def make_scheduler(
     movers_func: Callable[[], None],
     suggestion_expiry_func: Callable[[], None] | None = None,
     reconciliation_func: Callable[[], None] | None = None,
+    moomoo_parallel_func: Callable[[], None] | None = None,
 ) -> BackgroundScheduler:
     """Create and configure the scheduler. Does not start it."""
     sched = BackgroundScheduler(timezone="America/New_York")
@@ -96,9 +98,23 @@ def make_scheduler(
             misfire_grace_time=60 * 30,
         )
 
+    if moomoo_parallel_func is not None:
+        sched.add_job(
+            moomoo_parallel_func,
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=16,
+                minute=50,
+                timezone="America/New_York",
+            ),
+            id="moomoo_parallel",
+            replace_existing=True,
+            misfire_grace_time=60 * 30,
+        )
+
     logger.info(
         "APScheduler created. Daily report Mon–Fri 16:15 ET; Expiry sweep 16:20 ET;"
         " Movers Mon–Fri 16:30 ET; Reconciliation Mon–Fri 16:45 ET;"
-        " Weekly suggestions Sun 18:00 ET"
+        " Moomoo parallel Mon–Fri 16:50 ET; Weekly suggestions Sun 18:00 ET"
     )
     return sched

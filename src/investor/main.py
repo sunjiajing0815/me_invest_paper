@@ -33,6 +33,7 @@ from .brokers import make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.daily_report import run_daily_report
+from .jobs.moomoo_parallel import run_moomoo_parallel
 from .jobs.movers import run_movers_email
 from .jobs.reconciliation import run_daily_reconciliation
 from .jobs.suggestion_expiry import sweep_expired_suggestions
@@ -119,7 +120,10 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
     expiry_fn = sweep_expired_suggestions
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
-    scheduler = make_scheduler(daily_fn, weekly_fn, movers_fn, expiry_fn, recon_fn)
+    moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
+    scheduler = make_scheduler(
+        daily_fn, weekly_fn, movers_fn, expiry_fn, recon_fn, moomoo_parallel_fn
+    )
     scheduler.start()
     app.state.scheduler = scheduler
 
