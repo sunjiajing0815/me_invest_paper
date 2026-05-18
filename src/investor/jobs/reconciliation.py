@@ -26,7 +26,10 @@ def run_daily_reconciliation(settings: Settings, adapter: BrokerAdapter) -> None
         else:
             since = datetime.now(UTC) - timedelta(days=7)
 
-    # reconcile_activities (reads) and persist_reconciliation (writes) run in one session
+    # reconcile_activities (reads), persist_reconciliation (writes), and meta update
+    # all run in one session — session_scope() commits on clean exit.
+    # Note: the adapter also applies a 1h overlap internally, so the effective window
+    # is ~2h before `since`. The unique constraint deduplicates any overlap.
     with session_scope() as session:
         results = reconcile_activities(
             session=session,
@@ -35,14 +38,11 @@ def run_daily_reconciliation(settings: Settings, adapter: BrokerAdapter) -> None
         )
         persist_reconciliation(session, results, broker=settings.broker)
 
-        # Update last-run timestamp (persist_reconciliation already committed once; a second
-        # commit here is safe — both operations are in the same session)
         meta_row = session.get(Meta, META_KEY)
         if meta_row is None:
             session.add(Meta(key=META_KEY, value=datetime.now(UTC).isoformat()))
         else:
             meta_row.value = datetime.now(UTC).isoformat()
-        session.commit()
 
     logger.info(
         "run_daily_reconciliation: %d activities processed, broker=%s",

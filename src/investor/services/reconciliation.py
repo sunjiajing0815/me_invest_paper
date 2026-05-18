@@ -171,7 +171,7 @@ def persist_reconciliation(
                 sug.status = "filled"
                 sug.acted_at = r.activity.filled_at
 
-    session.commit()
+    # Caller (job layer) is responsible for committing — session_scope() handles it on exit.
 
 
 def compute_realized_pnl(session: Session, sell: Activity) -> float | None:

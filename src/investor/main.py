@@ -462,15 +462,20 @@ def admin_reconcile_manual(
     body: ReconcileManualRequest,
 ) -> dict[str, Any]:
     """Manually set suggestion_id on an order_execution row (match_method='manual_matched')."""
-    from .models import OrderExecution
+    from .models import OrderExecution, OrderSuggestion
 
     with session_scope() as session:
         execution = session.get(OrderExecution, execution_id)
         if execution is None:
             raise HTTPException(status_code=404, detail=f"OrderExecution {execution_id} not found")
+        suggestion = session.get(OrderSuggestion, body.suggestion_id)
+        if suggestion is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"OrderSuggestion {body.suggestion_id} not found",
+            )
         execution.suggestion_id = body.suggestion_id
         execution.match_method = "manual_matched"
-        session.commit()
     return {
         "id": execution_id,
         "suggestion_id": body.suggestion_id,
