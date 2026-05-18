@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Date, DateTime, Double, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Double, Float, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -184,3 +184,74 @@ class MoverState(Base):
         DateTime(timezone=True), nullable=True, default=None
     )
     last_pct_change: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+
+class OrderExecution(Base):
+    """Filled (or dry-run) order record, linked optionally to an OrderSuggestion."""
+
+    __tablename__ = "order_execution"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    suggestion_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # nullable — manual trades have no suggestion
+    ticker: Mapped[str] = mapped_column(String, nullable=False)
+    side: Mapped[str] = mapped_column(String, nullable=False)                  # "buy" | "sell"
+    submitted_qty: Mapped[float | None] = mapped_column(Double, nullable=True)
+    filled_qty: Mapped[float] = mapped_column(Double, nullable=False)
+    limit_price: Mapped[float | None] = mapped_column(Double, nullable=True)
+    filled_price: Mapped[float | None] = mapped_column(Double, nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    broker: Mapped[str] = mapped_column(String, nullable=False)               # "alpaca" | "moomoo"
+    broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)  # NULL for DRY_RUN rows
+    client_order_id: Mapped[str | None] = mapped_column(String, nullable=True)  # "sug-N" for auto-trade
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="1")  # default TRUE (safe)
+    status: Mapped[str] = mapped_column(String, nullable=False)               # filled|partially_filled|rejected|expired|accepted_for_routing|dry_run
+    realized_pnl_usd: Mapped[float | None] = mapped_column(Double, nullable=True)  # sells only
+    match_method: Mapped[str] = mapped_column(String, nullable=False)         # auto_trade_placed|auto_matched|manual_review|untracked
+    match_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    __table_args__ = (
+        UniqueConstraint("broker_order_id", "broker", name="uq_broker_order_id"),
+        Index("ix_order_execution_ticker_filled_at", "ticker", "filled_at"),
+    )
+
+
+class AutoTradePromotionLog(Base):
+    """Audit log for every auto-trade mode promotion or demotion event."""
+
+    __tablename__ = "auto_trade_promotion_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    from_mode: Mapped[str] = mapped_column(String, nullable=False)
+    to_mode: Mapped[str] = mapped_column(String, nullable=False)
+    broker_scope: Mapped[str] = mapped_column(String, nullable=False)  # alpaca_paper|alpaca_live|moomoo
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor: Mapped[str] = mapped_column(String, nullable=False)         # "admin" | "kill_switch" | "guard_failure"
+
+
+class KillSwitchLog(Base):
+    """Audit log for every kill-switch activation."""
+
+    __tablename__ = "kill_switch_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    trigger: Mapped[str] = mapped_column(String, nullable=False)       # manual|cap_breach|readback_mismatch|broker_error
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_order_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+
+class AutoTradeCaps(Base):
+    """Time-versioned spending/order caps for the auto-trade engine."""
+
+    __tablename__ = "auto_trade_caps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    per_order_max_usd: Mapped[float] = mapped_column(Double, nullable=False)
+    per_day_max_usd: Mapped[float] = mapped_column(Double, nullable=False)
+    per_week_max_usd_per_ticker: Mapped[float] = mapped_column(Double, nullable=False)
+    per_day_max_orders: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
