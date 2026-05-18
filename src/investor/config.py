@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     llm_backend: str = "anthropic_api"
     llm_cli_path: str = ""  # override claude CLI for agent_sdk; empty = use bundled
 
+    # Moomoo/Futu OpenD daemon settings (used when broker == "moomoo")
+    opend_host: str = "host.docker.internal"
+    opend_port: int = 11111
+    opend_security_firm: str = "FUTUSECURITIES"
+
     @field_validator("broker")
     @classmethod
     def validate_broker(cls, v: str) -> str:

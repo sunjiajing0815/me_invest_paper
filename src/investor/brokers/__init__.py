@@ -28,6 +28,15 @@ def make_adapter(settings: Settings) -> BrokerAdapter:
             secret_key=settings.alpaca_secret_key,
             paper=False,
         )
+    if settings.broker == "moomoo":
+        from .moomoo import MoomooAdapter
+
+        return MoomooAdapter(
+            host=settings.opend_host,
+            port=settings.opend_port,
+            paper=False,
+            security_firm=settings.opend_security_firm,
+        )
     raise NotImplementedError(
         f"Broker {settings.broker!r} not yet implemented."
     )
