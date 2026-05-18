@@ -63,8 +63,10 @@ class TestScoreAllTickersParallel:
         assert set(result.keys()) == set(tickers)
         assert failures == []
 
-    def test_parallel_scoring_failure_fallback(self) -> None:
+    def test_parallel_scoring_failure_fallback(self, caplog: object) -> None:
         """One ticker raises → gets [] in result; others succeed normally."""
+        import logging
+
         tickers = _make_tickers(4)
         failing_ticker = tickers[1]  # "MSFT" will fail
         mock_llm = MagicMock()
@@ -88,15 +90,16 @@ class TestScoreAllTickersParallel:
             mock_session_scope.return_value.__enter__ = MagicMock(return_value=mock_sess)
             mock_session_scope.return_value.__exit__ = MagicMock(return_value=False)
 
-            result, failures = score_all_tickers_parallel(
-                tickers=tickers,
-                sr_rows=[],
-                llm=mock_llm,
-                bars_dir="data/bars",
-                recent_news_by_ticker={},
-                prompt_version="v2",
-                max_workers=4,
-            )
+            with caplog.at_level(logging.ERROR, logger="investor.jobs.weekly_suggestions"):
+                result, failures = score_all_tickers_parallel(
+                    tickers=tickers,
+                    sr_rows=[],
+                    llm=mock_llm,
+                    bars_dir="data/bars",
+                    recent_news_by_ticker={},
+                    prompt_version="v2",
+                    max_workers=4,
+                )
 
         # All tickers appear in result
         assert set(result.keys()) == set(tickers)
@@ -110,9 +113,16 @@ class TestScoreAllTickersParallel:
         assert len(failures) == 1
         assert failures[0].ticker == failing_ticker
         assert failures[0].exc_type == "RuntimeError"
+        # RuntimeError (non-JSON) must emit an ERROR-level log record
+        assert any(
+            r.levelname == "ERROR" and failing_ticker in r.message
+            for r in caplog.records
+        )
 
-    def test_scoring_failure_surfaced(self) -> None:
+    def test_scoring_failure_surfaced(self, caplog: object) -> None:
         """JSONDecodeError from LLM scoring is captured in failures list."""
+        import logging
+
         tickers = _make_tickers(3)
         failing_ticker = tickers[0]  # "AAPL" raises JSONDecodeError
         mock_llm = MagicMock()
@@ -133,21 +143,30 @@ class TestScoreAllTickersParallel:
             mock_session_scope.return_value.__enter__ = MagicMock(return_value=mock_sess)
             mock_session_scope.return_value.__exit__ = MagicMock(return_value=False)
 
-            result, failures = score_all_tickers_parallel(
-                tickers=tickers,
-                sr_rows=[],
-                llm=mock_llm,
-                bars_dir="data/bars",
-                recent_news_by_ticker={},
-                prompt_version="v2",
-                max_workers=4,
-            )
+            with caplog.at_level(logging.WARNING, logger="investor.jobs.weekly_suggestions"):
+                result, failures = score_all_tickers_parallel(
+                    tickers=tickers,
+                    sr_rows=[],
+                    llm=mock_llm,
+                    bars_dir="data/bars",
+                    recent_news_by_ticker={},
+                    prompt_version="v2",
+                    max_workers=4,
+                )
 
         assert len(failures) == 1
         assert failures[0].ticker == failing_ticker
         assert failures[0].exc_type == "JSONDecodeError"
         assert result[failing_ticker] == []
+        # exc_message is populated and truncated to ≤ 200 chars
+        assert failures[0].exc_message != ""
+        assert len(failures[0].exc_message) <= 200
         # Non-failing tickers are present and succeed
         for t in tickers:
             if t != failing_ticker:
                 assert t in result
+        # JSON/Validation errors must emit a WARNING-level log record for the failing ticker
+        assert any(
+            r.levelname == "WARNING" and failing_ticker in r.message
+            for r in caplog.records
+        )
