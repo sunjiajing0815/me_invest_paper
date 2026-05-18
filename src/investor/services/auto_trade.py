@@ -65,21 +65,27 @@ def _get_active_caps(session: Session) -> AutoTradeCaps | None:
 
 
 def _fetch_accepted_unexecuted(session: Session) -> list[OrderSuggestion]:
-    """Return suggestions with status='accepted' that have no matching order_execution."""
+    """Return suggestions with status='accepted' that have no matching real execution row.
+
+    Two queries (not N+1): one for accepted suggestions, one for already-executed IDs.
+    A DRY_RUN execution row does not exclude the suggestion — only dry_run=False rows count.
+    """
     accepted = session.scalars(
         select(OrderSuggestion).where(OrderSuggestion.status == "accepted")
     ).all()
-    result = []
-    for sug in accepted:
-        existing = session.scalar(
-            select(OrderExecution).where(
-                OrderExecution.client_order_id == f"sug-{sug.id}",
+    if not accepted:
+        return []
+
+    client_ids = [f"sug-{sug.id}" for sug in accepted]
+    already_executed: set[str | None] = set(
+        session.scalars(
+            select(OrderExecution.client_order_id).where(
+                OrderExecution.client_order_id.in_(client_ids),
                 OrderExecution.dry_run.is_(False),
             )
-        )
-        if existing is None:
-            result.append(sug)
-    return result
+        ).all()
+    )
+    return [sug for sug in accepted if f"sug-{sug.id}" not in already_executed]
 
 
 def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> None:
@@ -310,8 +316,13 @@ def run_auto_trade_pass(
         try:
             _check_idempotency(session, sug, mode)
             _check_wash_sale(session, sug)
-            if caps is not None:
-                _check_caps(session, sug, caps, mode)
+            if caps is None:
+                logger.warning(
+                    "auto_trade: no active AutoTradeCaps row — skipping sug-%d (caps unconfigured)",
+                    sug.id,
+                )
+                raise _GuardFailure("no active AutoTradeCaps row — configure caps first")
+            _check_caps(session, sug, caps, mode)
             _check_cash_sufficiency(adapter, sug)
         except _GuardFailure as gf:
             logger.info("auto_trade: sug-%d skipped by guard: %s", sug.id, gf)
