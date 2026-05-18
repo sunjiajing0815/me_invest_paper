@@ -98,3 +98,4 @@ def downgrade() -> None:
     op.drop_table('auto_trade_promotion_log')
     op.drop_table('auto_trade_caps')
     # ### end Alembic commands ###
+    op.execute(sa.text("DELETE FROM meta WHERE key = 'auto_trade_mode'"))
