@@ -25,13 +25,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from .brokers import make_adapter
 from .config import Settings, load_targets
@@ -45,8 +46,10 @@ from .jobs.suggestion_expiry import sweep_expired_suggestions
 from .jobs.sync import run_sync_job
 from .jobs.weekly_review import run_weekly_review
 from .jobs.weekly_suggestions import run_weekly_suggestions
+from .models import AutoTradeCaps, AutoTradePromotionLog, Meta
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
+from .services.auto_trade import _trigger_kill_switch
 from .services.email import SMTPEmailer
 from .services.gap import GapRow, compute_gap
 from .services.targets import load_targets_into_db, yaml_hash
@@ -555,8 +558,8 @@ def admin_run_auto_trade(request: Request) -> dict[str, Any]:
 
 
 class AutoTradePromoteRequest(BaseModel):
-    to_mode: str   # "OFF" | "DRY_RUN" | "LIVE"
-    broker_scope: str  # "alpaca_paper" | "alpaca_live" | "moomoo"
+    to_mode: Literal["OFF", "DRY_RUN", "LIVE"]
+    broker_scope: Literal["alpaca_paper", "alpaca_live", "moomoo"]
     reason: str | None = None
 
 
@@ -576,13 +579,7 @@ SOAK_WINDOWS: dict[tuple[str, str], int] = {
 )
 def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
     """Promote or demote auto-trade mode. Enforces soak-window requirements."""
-    from datetime import timedelta
-
-    from .models import AutoTradePromotionLog, Meta
-
-    to_mode = body.to_mode.upper()
-    if to_mode not in ("OFF", "DRY_RUN", "LIVE"):
-        raise HTTPException(status_code=422, detail=f"Invalid to_mode: {to_mode!r}")
+    to_mode = body.to_mode  # already validated by Pydantic Literal
 
     with session_scope() as session:
         meta = session.get(Meta, "auto_trade_mode")
@@ -590,22 +587,20 @@ def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
 
         # Demote to OFF is always allowed immediately
         if to_mode != "OFF":
-            soak_days = SOAK_WINDOWS.get((body.broker_scope, to_mode))
-            if soak_days is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"No soak window defined for ({body.broker_scope}, {to_mode})",
-                )
+            soak_days = SOAK_WINDOWS.get((body.broker_scope, to_mode), 0)
             if soak_days > 0:
-                # Check last promotion timestamp from promotion log
-                last_promo = session.query(AutoTradePromotionLog).order_by(
-                    AutoTradePromotionLog.ts.desc()
-                ).first()
-                if last_promo is None or (
-                    datetime.now(UTC) - last_promo.ts
+                # Clock starts when we last entered the current mode
+                last_entry = (
+                    session.query(AutoTradePromotionLog)
+                    .filter(AutoTradePromotionLog.to_mode == current_mode)
+                    .order_by(AutoTradePromotionLog.ts.desc())
+                    .first()
+                )
+                if last_entry is None or (
+                    datetime.now(UTC) - last_entry.ts
                 ) < timedelta(days=soak_days):
                     days_elapsed = (
-                        (datetime.now(UTC) - last_promo.ts).days if last_promo else 0
+                        (datetime.now(UTC) - last_entry.ts).days if last_entry else 0
                     )
                     days_remaining = soak_days - days_elapsed
                     raise HTTPException(
@@ -648,10 +643,6 @@ class AutoTradeCapsRequest(BaseModel):
 )
 def admin_auto_trade_caps(body: AutoTradeCapsRequest) -> dict[str, Any]:
     """Update auto-trade caps: closes old row, inserts new."""
-    from sqlalchemy import select
-
-    from .models import AutoTradeCaps
-
     with session_scope() as session:
         # Close existing active caps row
         old = session.scalar(
@@ -684,8 +675,6 @@ def admin_auto_trade_caps(body: AutoTradeCapsRequest) -> dict[str, Any]:
 )
 def admin_auto_trade_emergency_stop(request: Request) -> dict[str, Any]:
     """Trigger the kill switch immediately (mode → OFF, cancel open auto-trade orders)."""
-    from .services.auto_trade import _trigger_kill_switch
-
     with session_scope() as session:
         _trigger_kill_switch(
             session=session,
