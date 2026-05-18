@@ -99,3 +99,28 @@ Phase 3c closes this ADR with two additions:
 
 The `HALF_THE_GAP` sizing rule is unchanged. The suggestion review pipeline adds a quality gate
 but does not replace the underlying sizing logic.
+
+## Phase 4 Note — Distance-Guard Calibration
+
+*To be completed after 20+ reconciled real fills are collected in `order_execution`.*
+
+Run the following SQL against `investor.db` to bucket actual fill distances from the
+anchor level and determine whether the ±8% default is well-calibrated:
+
+```sql
+SELECT
+    round(abs(e.filled_price - s.limit_price) / s.limit_price * 100, 1) AS pct_from_anchor,
+    count(*) AS fills
+FROM order_execution e
+JOIN order_suggestion s ON e.suggestion_id = s.id
+WHERE e.dry_run = 0 AND e.filled_price IS NOT NULL
+GROUP BY 1
+ORDER BY 1;
+```
+
+If ≥ 80% of fills land within ±2% of the anchor level, the sizing logic is well-calibrated.
+If a material fraction of fills occur at > 5% distance, consider tightening the anchor
+selection distance in `select_anchor()` or adding a tighter price-tolerance band to the
+reconciliation heuristic (ADR-0017).
+
+*Update this section with calibration results once sufficient data is available.*
