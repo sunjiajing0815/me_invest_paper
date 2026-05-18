@@ -38,6 +38,7 @@ from .jobs.movers import run_movers_email
 from .jobs.reconciliation import run_daily_reconciliation
 from .jobs.suggestion_expiry import sweep_expired_suggestions
 from .jobs.sync import run_sync_job
+from .jobs.weekly_review import run_weekly_review
 from .jobs.weekly_suggestions import run_weekly_suggestions
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
@@ -121,8 +122,9 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     expiry_fn = sweep_expired_suggestions
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
+    weekly_review_fn = partial(run_weekly_review, _settings, adapter, emailer, llm)
     scheduler = make_scheduler(
-        daily_fn, weekly_fn, movers_fn, expiry_fn, recon_fn, moomoo_parallel_fn
+        daily_fn, weekly_fn, movers_fn, expiry_fn, recon_fn, moomoo_parallel_fn, weekly_review_fn
     )
     scheduler.start()
     app.state.scheduler = scheduler
@@ -432,6 +434,25 @@ def admin_run_weekly_suggestions(request: Request) -> dict[str, str]:
         logger.error("Weekly suggestions failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly suggestions failed: {exc}") from exc
     return {"status": "ok", "message": "Weekly suggestions email sent"}
+
+
+@app.post(
+    "/admin/run-weekly-review",
+    summary="Manual weekly review trigger",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_run_weekly_review(request: Request) -> dict[str, str]:
+    """Trigger the weekly review job — builds review data and emails it."""
+    settings = _get_settings()
+    adapter = request.app.state.adapter
+    emailer = request.app.state.emailer
+    logger.info("Weekly review triggered via POST /admin/run-weekly-review")
+    try:
+        run_weekly_review(settings, adapter, emailer, request.app.state.llm)
+    except Exception as exc:
+        logger.error("Weekly review failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Weekly review failed: {exc}") from exc
+    return {"status": "ok", "message": "Weekly review email sent"}
 
 
 @app.post(

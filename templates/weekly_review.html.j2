@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weekly Review: {{ review.week_of.strftime('%b %-d, %Y') }}</title>
+</head>
+<body style="font-family: Arial, sans-serif; color: #222; max-width: 700px; margin: 0 auto; padding: 16px;">
+
+<!-- Section 1: Header -->
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1a2e; color:#fff; border-radius:6px; margin-bottom:20px;">
+  <tr>
+    <td style="padding:20px;">
+      <h1 style="margin:0 0 6px 0; font-size:20px;">Weekly Review</h1>
+      <p style="margin:0; font-size:14px; opacity:0.8;">Week of {{ review.week_of.strftime('%B %-d, %Y') }}</p>
+    </td>
+    <td style="padding:20px; text-align:right;">
+      {% if review.account %}
+      <p style="margin:0 0 4px 0; font-size:22px; font-weight:bold;">${{ "{:,.0f}".format(review.account.equity_usd) }}</p>
+      <p style="margin:0; font-size:13px; opacity:0.8;">Equity &nbsp;|&nbsp; Cash ${{ "{:,.0f}".format(review.account.cash_usd) }}</p>
+      <p style="margin:4px 0 0 0; font-size:11px; opacity:0.6;">{{ review.account.broker }} &middot; {{ review.account.mode }}</p>
+      {% else %}
+      <p style="margin:0; font-size:14px; opacity:0.7;">No account data</p>
+      {% endif %}
+      {% set pnl_color = '#27ae60' if review.realized_pnl_usd >= 0 else '#c0392b' %}
+      <p style="margin:8px 0 0 0; font-size:15px; font-weight:bold; color:{{ pnl_color }};">
+        {{ "+" if review.realized_pnl_usd >= 0 else "" }}${{ "{:,.2f}".format(review.realized_pnl_usd) }} realized PnL
+      </p>
+    </td>
+  </tr>
+</table>
+
+<!-- Section 2: Suggestions vs fills -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Suggestions vs Fills</h2>
+{% if review.suggestion_audits %}
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:20px;">
+  <thead>
+    <tr style="background:#f0f0f0; color:#555;">
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
+      <th style="padding:8px 10px; text-align:center; border-bottom:2px solid #ddd;">Side</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Qty</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Limit</th>
+      <th style="padding:8px 10px; text-align:center; border-bottom:2px solid #ddd;">Status</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Fill Price</th>
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Acted At</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in review.suggestion_audits %}
+    {% if a.status == 'accepted' %}{% set row_bg = '#f0fff4' %}
+    {% elif a.status == 'rejected' %}{% set row_bg = '#fff8f8' %}
+    {% elif a.status == 'expired' %}{% set row_bg = '#f9f9f9' %}
+    {% else %}{% set row_bg = '#fffdf0' %}{% endif %}
+    {% if a.status in ('accepted', 'filled') %}{% set status_color = '#27ae60' %}
+    {% elif a.status == 'rejected' %}{% set status_color = '#c0392b' %}
+    {% elif a.status == 'expired' %}{% set status_color = '#999' %}
+    {% else %}{% set status_color = '#e67e22' %}{% endif %}
+    <tr style="border-bottom:1px solid #eee; background:{{ row_bg }};">
+      <td style="padding:7px 10px; font-weight:bold;">{{ a.ticker }}</td>
+      <td style="padding:7px 10px; text-align:center;">
+        {% if a.side == 'buy' %}
+        <span style="background:#27ae60; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">BUY</span>
+        {% else %}
+        <span style="background:#c0392b; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">TRIM</span>
+        {% endif %}
+      </td>
+      <td style="padding:7px 10px; text-align:right;">{{ "{:.0f}".format(a.qty) }}</td>
+      <td style="padding:7px 10px; text-align:right;">${{ "{:,.2f}".format(a.limit_price) }}</td>
+      <td style="padding:7px 10px; text-align:center; color:{{ status_color }}; font-weight:bold; font-size:11px; text-transform:uppercase;">{{ a.status }}</td>
+      <td style="padding:7px 10px; text-align:right;">{{ "$" + "{:,.2f}".format(a.filled_price) if a.filled_price else '—' }}</td>
+      <td style="padding:7px 10px; font-size:11px; color:#777;">{{ a.acted_at.strftime('%b %-d %H:%M') if a.acted_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="padding:16px; background:#f9f9f9; border-radius:6px; color:#666; font-size:13px; margin-bottom:20px;">
+  No suggestions were generated for this week.
+</p>
+{% endif %}
+
+<!-- Section 3: Drift state -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Drift State</h2>
+{% if review.gap_rows %}
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:20px;">
+  <thead>
+    <tr style="background:#f0f0f0; color:#555;">
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">Current %</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">Target %</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">Gap %</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">Gap $</th>
+      <th style="padding:7px 10px; text-align:center; border-bottom:2px solid #ddd;">Band</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for g in review.gap_rows %}
+    {% set row_bg = '#fff3cd' if g.band_status != 'in_band' else '#fff' %}
+    {% set gap_color = '#27ae60' if g.gap_pct > 0 else '#c0392b' %}
+    <tr style="border-bottom:1px solid #eee; background:{{ row_bg }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ g.ticker }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "{:.1f}%".format(g.current_pct) }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "{:.1f}%".format(g.target_pct) }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ gap_color }};">{{ "{:+.1f}%".format(g.gap_pct) }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ gap_color }};">${{ "{:+,.0f}".format(g.gap_usd) }}</td>
+      <td style="padding:6px 10px; text-align:center; font-size:11px; text-transform:uppercase; color:{{ '#856404' if g.band_status != 'in_band' else '#27ae60' }};">{{ g.band_status }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="padding:16px; background:#f9f9f9; border-radius:6px; color:#666; font-size:13px; margin-bottom:20px;">
+  No gap data available.
+</p>
+{% endif %}
+
+<!-- Section 4: Material news -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Material News This Week</h2>
+{% if review.material_news %}
+{% for ticker, news_items in review.material_news.items() %}
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-bottom:12px; border:1px solid #e0e0e0; border-radius:6px; overflow:hidden;">
+  <tr style="background:#f5f5f5;">
+    <td style="padding:8px 12px; font-weight:bold; font-size:13px;">{{ ticker }}</td>
+  </tr>
+  {% for item in news_items %}
+  {% set sent_color = '#27ae60' if item.sentiment == 'bullish' else ('#c0392b' if item.sentiment == 'bearish' else '#777') %}
+  <tr style="border-top:1px solid #eee;">
+    <td style="padding:8px 12px; font-size:12px;">
+      <span style="color:{{ sent_color }}; font-weight:bold; text-transform:uppercase; font-size:10px; margin-right:8px;">{{ item.sentiment or 'neutral' }}</span>
+      {{ item.summary or '(no summary)' }}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endfor %}
+{% else %}
+<p style="padding:16px; background:#f9f9f9; border-radius:6px; color:#666; font-size:13px; margin-bottom:20px;">
+  No material news this week.
+</p>
+{% endif %}
+
+<!-- Section 5: Preview suggestions for next week -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Preview: Next Week's Suggestions</h2>
+{% if review.preview_suggestions %}
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:20px;">
+  <thead>
+    <tr style="background:#f0f0f0; color:#555;">
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
+      <th style="padding:7px 10px; text-align:center; border-bottom:2px solid #ddd;">Side</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">Qty</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">Limit</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid #ddd;">~$</th>
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid #ddd;">Reason</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in review.preview_suggestions %}
+    {% set cost = p.qty * p.limit_price %}
+    {% set row_bg = '#f0fff4' if p.side == 'buy' else '#fff8f8' %}
+    <tr style="border-bottom:1px solid #eee; background:{{ row_bg }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ p.ticker }}</td>
+      <td style="padding:6px 10px; text-align:center;">
+        {% if p.side == 'buy' %}
+        <span style="background:#27ae60; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">BUY</span>
+        {% else %}
+        <span style="background:#c0392b; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">TRIM</span>
+        {% endif %}
+      </td>
+      <td style="padding:6px 10px; text-align:right;">{{ "{:.0f}".format(p.qty) }}</td>
+      <td style="padding:6px 10px; text-align:right;">${{ "{:,.2f}".format(p.limit_price) }}</td>
+      <td style="padding:6px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
+      <td style="padding:6px 10px; font-size:12px; color:#555;">{{ p.reason }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="padding:16px; background:#f9f9f9; border-radius:6px; color:#666; font-size:13px; margin-bottom:20px;">
+  No preview suggestions available.
+</p>
+{% endif %}
+
+<!-- Section 6: Auto-trade activity -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Auto-Trade Activity</h2>
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f9f9f9; border:1px solid #e0e0e0; border-radius:6px; margin-bottom:12px;">
+  <tr>
+    <td style="padding:12px 16px; font-size:13px;">
+      Mode: <strong>{{ review.auto_trade_mode }}</strong>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      Executions this week: <strong>{{ review.executions_this_week }}</strong>
+    </td>
+  </tr>
+</table>
+{% if review.promotions_this_week %}
+<p style="font-size:12px; color:#555; margin:0 0 4px 0;"><strong>Mode changes:</strong></p>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:12px;">
+  <thead>
+    <tr style="background:#f0f0f0; color:#555;">
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #ddd;">Time</th>
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #ddd;">From</th>
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #ddd;">To</th>
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #ddd;">Actor</th>
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #ddd;">Reason</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in review.promotions_this_week %}
+    <tr style="border-bottom:1px solid #eee;">
+      <td style="padding:5px 10px; color:#777;">{{ p.ts }}</td>
+      <td style="padding:5px 10px;">{{ p.from_mode }}</td>
+      <td style="padding:5px 10px; font-weight:bold;">{{ p.to_mode }}</td>
+      <td style="padding:5px 10px;">{{ p.actor }}</td>
+      <td style="padding:5px 10px; color:#555;">{{ p.reason or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% if review.kill_switches_this_week %}
+<p style="font-size:12px; color:#c0392b; margin:0 0 4px 0;"><strong>Kill switches activated:</strong></p>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:20px;">
+  <thead>
+    <tr style="background:#fde8e8; color:#922b21;">
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #e74c3c;">Time</th>
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #e74c3c;">Trigger</th>
+      <th style="padding:5px 10px; text-align:left; border-bottom:1px solid #e74c3c;">Detail</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for k in review.kill_switches_this_week %}
+    <tr style="border-bottom:1px solid #eee; background:#fff8f8;">
+      <td style="padding:5px 10px; color:#c0392b;">{{ k.ts }}</td>
+      <td style="padding:5px 10px; font-weight:bold; color:#c0392b;">{{ k.trigger }}</td>
+      <td style="padding:5px 10px; color:#555;">{{ k.detail or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="font-size:12px; color:#27ae60; margin:0 0 20px 0;">No kill switches activated this week.</p>
+{% endif %}
+
+<!-- Section 7: Moomoo parallel status -->
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Moomoo Status</h2>
+{% if review.moomoo_status == 'primary' %}
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5fb; border:1px solid #3498db; border-radius:6px; margin-bottom:20px;">
+  <tr><td style="padding:12px 16px; font-size:13px; color:#1a5276;">
+    Moomoo is the <strong>primary broker</strong> — live trading enabled.
+  </td></tr>
+</table>
+{% elif review.moomoo_status == 'parallel_running' %}
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f0fff4; border:1px solid #27ae60; border-radius:6px; margin-bottom:20px;">
+  <tr><td style="padding:12px 16px; font-size:13px; color:#1e8449;">
+    Moomoo OpenD is <strong>running in parallel</strong> — data sync active, not primary broker.
+  </td></tr>
+</table>
+{% else %}
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f9f9f9; border:1px solid #e0e0e0; border-radius:6px; margin-bottom:20px;">
+  <tr><td style="padding:12px 16px; font-size:13px; color:#777;">
+    Moomoo OpenD is <strong>unavailable</strong> — not configured or not reachable.
+  </td></tr>
+</table>
+{% endif %}
+
+<!-- Footer -->
+<p style="font-size:11px; color:#999; border-top:1px solid #eee; padding-top:12px; margin-top:24px;">
+  No orders are placed automatically. Log into your broker to act on any suggestion.<br>
+  Generated by Investor Assistant &middot; {{ review.week_of.strftime('%Y-%m-%d') }}
+</p>
+
+</body>
+</html>

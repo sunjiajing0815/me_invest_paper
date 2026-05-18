@@ -1,0 +1,84 @@
+Weekly Review: {{ review.week_of.strftime('%b %-d, %Y') }}
+{% if review.account %}Equity: ${{ "{:,.0f}".format(review.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(review.account.cash_usd) }}  ({{ review.account.broker }} · {{ review.account.mode }}){% else %}No account data{% endif %}
+
+Realized PnL this week: {{ "+" if review.realized_pnl_usd >= 0 else "" }}${{ "{:,.2f}".format(review.realized_pnl_usd) }}
+
+=== SUGGESTIONS VS FILLS ===
+{% if review.suggestion_audits %}
+{{ "Ticker" | ljust(6) }}  {{ "Side" | ljust(4) }}  {{ "Qty" | rjust(5) }}  {{ "Limit" | rjust(10) }}  {{ "Status" | ljust(10) }}  {{ "Fill$" | rjust(9) }}  Acted At
+{{ "-" * 70 }}
+{% for a in review.suggestion_audits %}
+{{ a.ticker | ljust(6) }}  {{ a.side.upper() | ljust(4) }}  {{ "{:.0f}".format(a.qty) | rjust(5) }}  {{ "${:,.2f}".format(a.limit_price) | rjust(10) }}  {{ a.status | ljust(10) }}  {{ ("$" + "{:,.2f}".format(a.filled_price) if a.filled_price else "—") | rjust(9) }}  {{ a.acted_at.strftime('%b %-d %H:%M') if a.acted_at else '—' }}
+{% endfor %}
+{% else %}
+  No suggestions were generated for this week.
+{% endif %}
+
+=== DRIFT STATE ===
+{% if review.gap_rows %}
+{{ "Ticker" | ljust(6) }}  {{ "Current%" | rjust(9) }}  {{ "Target%" | rjust(8) }}  {{ "Gap%" | rjust(6) }}  {{ "Gap$" | rjust(9) }}  Band
+{{ "-" * 55 }}
+{% for g in review.gap_rows %}
+{% set band_marker = "  <-- OUT" if g.band_status != 'in_band' else "" %}
+{{ g.ticker | ljust(6) }}  {{ "{:.1f}%".format(g.current_pct) | rjust(9) }}  {{ "{:.1f}%".format(g.target_pct) | rjust(8) }}  {{ "{:+.1f}%".format(g.gap_pct) | rjust(6) }}  {{ "${:+,.0f}".format(g.gap_usd) | rjust(9) }}  {{ g.band_status }}{{ band_marker }}
+{% endfor %}
+{% else %}
+  No gap data available.
+{% endif %}
+
+=== MATERIAL NEWS THIS WEEK ===
+{% if review.material_news %}
+{% for ticker, news_items in review.material_news.items() %}
+--- {{ ticker }} ---
+{% for item in news_items %}
+  [{{ (item.sentiment or 'neutral') | upper }}] {{ item.summary or '(no summary)' }}
+{% endfor %}
+
+{% endfor %}
+{% else %}
+  No material news this week.
+{% endif %}
+
+=== PREVIEW: NEXT WEEK'S SUGGESTIONS ===
+{% if review.preview_suggestions %}
+{{ "Ticker" | ljust(6) }}  {{ "Side" | ljust(4) }}  {{ "Qty" | rjust(5) }}  {{ "Limit" | rjust(10) }}  {{ "~$" | rjust(9) }}  Reason
+{{ "-" * 80 }}
+{% for p in review.preview_suggestions %}
+{% set cost = p.qty * p.limit_price %}
+{{ p.ticker | ljust(6) }}  {{ p.side.upper() | ljust(4) }}  {{ "{:.0f}".format(p.qty) | rjust(5) }}  {{ "${:,.2f}".format(p.limit_price) | rjust(10) }}  {{ "${:,.0f}".format(cost) | rjust(9) }}  {{ p.reason }}
+{% endfor %}
+{% else %}
+  No preview suggestions available.
+{% endif %}
+
+=== AUTO-TRADE ACTIVITY ===
+Mode: {{ review.auto_trade_mode }}  |  Executions this week: {{ review.executions_this_week }}
+
+{% if review.promotions_this_week %}
+Mode changes:
+{% for p in review.promotions_this_week %}
+  {{ p.ts }}  {{ p.from_mode }} -> {{ p.to_mode }}  (actor: {{ p.actor }}){% if p.reason %}  reason: {{ p.reason }}{% endif %}
+
+{% endfor %}
+{% endif %}
+{% if review.kill_switches_this_week %}
+Kill switches activated:
+{% for k in review.kill_switches_this_week %}
+  {{ k.ts }}  trigger: {{ k.trigger }}{% if k.detail %}  detail: {{ k.detail }}{% endif %}
+
+{% endfor %}
+{% else %}
+No kill switches activated this week.
+{% endif %}
+
+=== MOOMOO STATUS ===
+{% if review.moomoo_status == 'primary' %}
+Moomoo is the PRIMARY broker — live trading enabled.
+{% elif review.moomoo_status == 'parallel_running' %}
+Moomoo OpenD is running in PARALLEL — data sync active, not primary broker.
+{% else %}
+Moomoo OpenD is UNAVAILABLE — not configured or not reachable.
+{% endif %}
+
+---
+No orders are placed automatically. Log into your broker to act on any suggestion.
