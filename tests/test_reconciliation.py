@@ -222,13 +222,13 @@ def test_rule2_heuristic_single_candidate(db_session: Session) -> None:
 
 def test_rule3_ambiguous_flags_manual_review(db_session: Session) -> None:
     # Two accepted suggestions from different weeks — unique constraint is (week_of, ticker, side)
-    _WEEK2 = date(2026, 4, 21)  # one week earlier
+    prior_week = date(2026, 4, 21)  # one week earlier
     s1 = OrderSuggestion(
         week_of=_WEEK, ticker="NVDA", side="buy", qty=2.0, limit_price=800.0,
         reason="test", status="accepted", created_at=_NOW - timedelta(hours=2),
     )
     s2 = OrderSuggestion(
-        week_of=_WEEK2, ticker="NVDA", side="buy", qty=4.0, limit_price=800.0,
+        week_of=prior_week, ticker="NVDA", side="buy", qty=4.0, limit_price=800.0,
         reason="test", status="accepted", created_at=_NOW - timedelta(hours=3),
     )
     db_session.add_all([s1, s2])

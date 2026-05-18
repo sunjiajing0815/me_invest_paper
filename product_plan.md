@@ -1,6 +1,6 @@
 # Long-Term Investor Assistant — Product Plan (v1)
 
-**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-17) · **Stage:** Building — Phase 3 code-complete (tag `v0.3.0-phase-3` pending first Sunday email); Phase 4 next
+**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-18) · **Stage:** Phase 4 code-complete — pending first Friday review email to tag `v0.4.0-phase-4-code-complete`. Moomoo primary-flip is a separate manual decision post-soak.
 
 ---
 
@@ -245,7 +245,7 @@ Each phase ships something useful on its own. Total MVP: roughly **6–10 weeks 
 | Smoke-test row 14 (cash-buffer invariant assertion) | ❓ Verify | Pre-tag checklist verified rows 4–8 explicitly; row 14 not called out — confirm assertion exists in `test_gap.py` before tag |
 | Suggestion accept/reject endpoint | 🔧 Phase 3 work | `order_suggestion.status` column supports the workflow but no `PATCH /suggestions/{id}` exists yet |
 
-### Phase 3 — LLM-scored levels, accept/reject, news triage, and suggestion review ✅ Code complete (2026-05-17); tag `v0.3.0-phase-3` pending first Sunday email
+### Phase 3 — LLM-scored levels, accept/reject, news triage, and suggestion review (3–4 weeks) — current
 
 Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifying S/R level. That's a placeholder — "nearest" does not mean "most meaningful." Phase 3 closes that gap, lands the missing audit-trail mutation endpoint, adds news triage, and introduces a LangGraph-driven suggestion-review pipeline that reasons + critiques every weekly batch before it reaches the user.
 
@@ -255,7 +255,7 @@ Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifyi
 |---|---|---|
 | **3a** (~2 weeks) | `services/llm.py` wrapper + `llm_call_log`. LLM-scored confidence on S/R levels (Sonnet 4.6 single call) → confidence-weighted anchor selection. `PATCH /suggestions/{id}` + HMAC magic-link Accept/Reject buttons. ADRs 0009 (LLM guardrails), 0010 (magic-link auth); partial updates to 0006 and 0007. | `v0.3a.0` |
 | **3b** (~1 week) | LangGraph introduced. News triage graph: Haiku classify → Haiku critic → conditional Sonnet arbitrate. `news_event` table. Daily 16:30 ET movers email on ≥ 5 % weekly movers. ADRs 0011 (news source priority), 0012 (LangGraph-or-not decision rule). | `v0.3b.0` |
-| **3c** (~1.5 weeks) ✅ | Second LangGraph workflow: suggestion review. Sonnet per-draft rationale → Sonnet critic over the set → deterministic Python `revise` → finalize. Weekly email rationales upgrade to 2–4 sentences. ADR 0013 (suggestion review pipeline); final close-out of 0006 + 0007. | `v0.3.0-phase-3` |
+| **3c** (~1.5 weeks) | Second LangGraph workflow: suggestion review. Sonnet per-draft rationale → Sonnet critic over the set → deterministic Python `revise` → finalize. Weekly email rationales upgrade to 2–4 sentences. ADR 0013 (suggestion review pipeline); final close-out of 0006 + 0007. | `v0.3.0-phase-3` |
 
 **Dependency edges:** 3a → 3b (LLM client + cost guard from 3a); 3a → 3c (scored levels feed 3c); 3b → 3c (news_event feeds the critic's reasoning context).
 
@@ -299,6 +299,24 @@ Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifyi
 - (After 3c) Weekly suggestions email with 2–4 sentence rationales reflecting full context. Critic visibly rejects/revises low-quality drafts before they reach the user. Phase 3 fully complete; tag `v0.3.0-phase-3`.
 
 **Out of scope for Phase 3:** Moomoo adapter (deferred to Phase 4 — Phase 3 introduces LLM-influenced suggestion logic that needs to soak for at least 4 weeks of paper trading before real capital touches it). Web UI (Phase 5). Suggested-vs-filled reconciliation (Phase 4 — needs broker `account/activities` integration).
+
+**Phase 3 status ⚙️ All three sub-phases code-complete (2026-05-17). Composite tag `v0.3.0-phase-3` deferred until live observation closes the pending pre-tag checklists on 3a, 3b, and 3c — earliest 2026-05-24 (two Sunday cycles for critic-rate calibration).**
+
+**Phase 4 status ✅ Code-complete 2026-05-18.** All four workstreams shipped: reconciliation engine, MoomooAdapter, Friday weekly review email, opt-in auto-trade (mode=OFF). Tag `v0.4.0-phase-4-code-complete` pending first Friday review email. Subsequent promotion soak tags follow in calendar time per DoD table in `plans/phase_4_guide.md`. Moomoo primary-flip is a separate manual decision after ≥4 weeks of parallel-run soak.
+
+| Sub-phase | Code-complete | Tag | Tag-gated observations |
+|---|---|---|---|
+| 3a | 2026-05-12 | `v0.3a.0` (pending) | One Sunday email with `(conf X.XX)` and Sonnet rationale in `reason`; Accept click → `acted_at` populated |
+| 3b | 2026-05-15 | `v0.3b.0` (pending) | One movers email with `arbitrated=true` row in `news_event`; `mover_state` advances correctly on second crossing |
+| 3c | 2026-05-17 | `v0.3.0-phase-3` (pending) | Sunday email shows Sonnet 2–4 sentence rationales; "Not Suggested This Week" section appears; `anchor_method` populated; critic reject-or-revise rate in 10–25% across 2 Sundays |
+
+**Carryovers into Phase 4 from the Phase 3c completion review:**
+
+- **MU silent-failure in `score_all_tickers_parallel()`** — same class of bug as Phase 3c Bug 2 but in a different code path; the `SkippedRow` discipline applied to `generate_suggestions()` was not extended here. Phase 4 §1 fixes via specific exception handling, `exc_info=True` logging, and user-visible surfacing.
+- **Distance-guard calibration revisit** — Phase 3c bumped `max_distance_pct` from 8% to 15% to unblock MU. This is fix-for-MU rather than principled calibration; Phase 4 reconciliation data (fill rates by anchor distance) is the right input for revisiting whether 15% should stick or be per-ticker.
+- **Six pending pre-tag observations across 3a/3b/3c** — Phase 4 §0 pre-flight blocks on these being green.
+
+**Phase 3 stats:** 189 unit tests + 1 integration (up from 28 at Phase 1 close). Five new ADRs (0011, 0012, 0013, 0016) plus two closures (0006, 0007). Three LangGraph workflows (news triage in 3b, suggestion review in 3c, and the placeholder-acknowledged-but-unbuilt level-scoring graph from 3c §6.5a). Phase 3 retrospective identifies `DetachedInstanceError` as the project's most-recurrent bug (Phase 1 `BrokerAccount` → Phase 3b `MoverState` → Phase 3c `gather_context`); the `gather_context_node` pattern is now a first-class architectural primitive captured in CLAUDE.md convention #9 + gotcha #12.
 
 ### Phase 4 — Weekly review workflow + Moomoo adapter (1.5–2 weeks)
 - Friday EOD job: build the weekly review:

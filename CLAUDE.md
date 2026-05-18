@@ -10,9 +10,15 @@ Owner: Jane (solo developer, primary user). Multi-tenant productization is Phase
 
 ## Current phase
 
-Phase 3 is code-complete. See `phase_3c_guide.md` for the most recent build plan. The repo's git tag reflects the last completed phase.
+Phase 4 code is complete — pending first Friday review email to tag `v0.4.0-phase-4-code-complete`. See `plans/phase_4_guide.md` for the build plan.
 
-Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions), 3 (LLM-scored levels, news triage, suggestion review pipeline).
+Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions), 3 (LLM-scored levels, news triage, suggestion review pipeline), 4 (reconciliation, Moomoo adapter, weekly review, opt-in auto-trade).
+
+Phase 4 promotion soak stages (all require manual promotion via `POST /admin/auto-trade/promote`):
+- `v0.4.1-paper-dry-run` — DRY_RUN on Alpaca paper, clean for 2 weeks
+- `v0.4.2-paper-live` — LIVE on Alpaca paper, clean for 4 weeks
+- `v0.4.3-alpaca-live` — LIVE on real Alpaca, clean for 4 weeks
+- `v0.4.4-moomoo-live` — LIVE on Moomoo after parallel-run + primary flip + 4 weeks
 
 ## Tech stack and why
 
@@ -43,7 +49,7 @@ src/investor/
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
-    moomoo.py         (future) MoomooAdapter — talks to OpenD on host
+    moomoo.py         MoomooAdapter — talks to OpenD on host (Phase 4)
   services/
     snapshot.py       position + account ingestion
     gap.py            target-vs-actual gap computation
@@ -56,9 +62,15 @@ src/investor/
     targets.py        load_targets_into_db()
     render.py         Jinja2 template rendering
     email.py          SMTPEmailer + FakeEmailer
+    reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl()
+    auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch()
   jobs/
     daily_report.py   Mon-Fri 16:15 ET — sync, indicators, compose, email
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
+    reconciliation.py Mon-Fri 16:45 ET — match broker fills to suggestions
+    moomoo_parallel.py  Mon-Fri 16:50 ET — compare Moomoo vs Alpaca (parallel-run soak)
+    weekly_review.py  Fri 17:00 ET — 7-section reflection email
+    auto_trade.py     Mon-Fri 09:35 ET — place orders for accepted suggestions
   graphs/           LangGraph graph definitions and node helpers
 config/targets.yaml   user's target allocation (hand-edited or via /targets API)
 migrations/           Alembic revisions
@@ -177,7 +189,15 @@ uv run mypy src/
 12. **LangGraph checkpointer is `MemorySaver`, not `SqliteSaver`.** Phase 3b discovered that `SqliteSaver` causes `database is locked` errors: when a graph node calls `session.flush()` for `llm_call_log`, SQLAlchemy starts a write transaction; `SqliteSaver`'s separate `sqlite3` connection then can't acquire the write lock to checkpoint between nodes. `MemorySaver` (in-memory, per-`graph.invoke()`) eliminates the contention entirely. Graph checkpoint state is ephemeral — one `invoke()` per ticker per run — so disk persistence is not needed. Do not revert to `SqliteSaver`. `langgraph --thread-id` trace inspection does not work with `MemorySaver`; use logging inside nodes instead.
 13. **`AgentSDKClient.call()` uses `asyncio.run()` — APScheduler-safe, async-route-unsafe.** The sync bridge is fine in APScheduler job threads (each has no live event loop). Do NOT call `llm.call()` on an `AgentSDKClient` from inside an `async def` FastAPI route — it will raise `RuntimeError: This event loop is already running`.
 14. **`LLM_BACKEND` env var defaults to `anthropic_api`.** Set to `agent_sdk` to route LLM calls through `claude-agent-sdk`. Unknown values fall back to `anthropic_api` with a warning log. `LLMClient` is now a Protocol (`services/llm.py`); use `make_llm_client(settings)` factory, not `LLMClient(...)` directly. See ADR-0016.
+16. **Moomoo OpenD bind address must be `0.0.0.0:11111`, not `127.0.0.1`.** A loopback-bound OpenD is unreachable from Docker. Verify with `lsof -i :11111` on the host.
+17. **Moomoo ticker prefix stripping is enforced at the adapter boundary.** `_strip_market_prefix()` in `brokers/moomoo.py` converts `US.AAPL` → `AAPL`. No ticker with a market prefix should ever appear outside that file. Similarly, `submit_order()` adds `US.` internally — callers always use bare tickers.
+18. **`client_order_id` ↔ `remark` mapping in Moomoo.** Moomoo has no native `client_order_id` field. The adapter stores it in the `remark` field on `place_order()` and reads it back from `remark` in `deal_list_query()` and `order_list_query()`. Callers see `Activity.client_order_id` — the `remark` mapping is invisible outside the adapter (per ADR-0018).
+19. **Wash-sale window is 30 calendar days, not trading days.** The guard checks `filled_at >= now - timedelta(days=30)`. It only applies to real fills (`dry_run=False`). A `dry_run=True` simulated loss sell does NOT trigger the wash-sale guard for subsequent real buys — the `dry_run.is_(False)` filter in `_check_wash_sale()` is intentional and critical.
+20. **`dry_run=False` filter is mandatory in every reconciliation and auto-trade query.** Simulated losses from `DRY_RUN` mode must never interfere with real PnL accounting, wash-sale guards, or cap calculations. If you add a new query that touches `order_execution`, include `OrderExecution.dry_run.is_(False)` unless you explicitly want DRY_RUN rows too.
 15. **Phase 3c adds three new prompt files** under `src/investor/prompts/`: `suggestion_reason_v1.txt` (Sonnet per-draft rationale system prompt), `suggestion_critic_v1.txt` (Sonnet cross-suggestion critic system prompt with five severity-ordered criteria), and `score_levels_v2.txt` (news-augmented copy of `score_levels_v1.txt`). The `level_prompt_version` setting (default `"v2"`) selects the scoring prompt. The reason/critic prompts are always `v1` (no version setting). All prompts live in the `prompts/` directory and are loaded via `load_prompt()` in `services/prompts.py`.
+16. **Reconciliation is matching, not creation.** `services/reconciliation.py` writes `order_execution` rows by matching broker activities to existing `order_suggestion` rows. It never invents executions. Four matching rules and priority order are fixed in ADR-0017. Every reconciliation and wash-sale query must include `WHERE dry_run = false` to prevent simulated DRY_RUN rows from interfering with real trade logic.
+17. **Auto-trade mode defaults to OFF forever.** `meta.auto_trade_mode` is seeded `'OFF'` by the Alembic migration. `_get_mode()` falls back to `'OFF'` if the row is absent or unrecognised. Promotion to `DRY_RUN` or `LIVE` requires the separate `AUTO_TRADE_PROMOTION_TOKEN` and soak-window enforcement. See ADR-0014.
+18. **`submit_order()` is a single-call-site privilege.** Only `services/auto_trade.py` and `brokers/` may call `adapter.submit_order()`. The grep CI test `tests/test_no_unauthorized_submit_order.py` enforces this on every run.
 
 ## Required env vars
 
@@ -192,6 +212,8 @@ Phase 1+ adds: `SMTP_*`, `EMAIL_*`, `ANTHROPIC_API_KEY`. They're declared as Opt
 Phase 3a adds: `ANTHROPIC_API_KEY` (Sonnet scoring), `MAGIC_LINK_SECRET` (HMAC for email buttons, distinct from ADMIN_TOKEN), `APP_BASE_URL` (magic-link URL base).
 
 Phase 3b adds: `FINNHUB_API_KEY` (Finnhub free tier; optional but needed as Alpaca fallback). `LLM_DAILY_COST_CAP_USD=3.0` (updated from 1.0 in Phase 3a). `LLM_BACKEND=anthropic_api` (or `agent_sdk` to route through `claude-agent-sdk`; see ADR-0016).
+
+Phase 4 adds: `OPEND_HOST=host.docker.internal`, `OPEND_PORT=11111`, `OPEND_SECURITY_FIRM=FUTUSECURITIES` (Moomoo/Futu OpenD daemon settings — only needed when `BROKER=moomoo`). `AUTO_TRADE_PROMOTION_TOKEN` — separate from `ADMIN_TOKEN`; required for auto-trade mode promotions.
 
 ## Where to find more
 

@@ -9,7 +9,6 @@ import pytest
 
 from investor.jobs.weekly_review import SuggestionAudit, WeeklyReview, _week_start
 
-
 # ── _week_start ────────────────────────────────────────────────────────────────
 
 def test_week_start_returns_monday_midnight_utc() -> None:

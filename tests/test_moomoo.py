@@ -14,7 +14,6 @@ import pytest
 
 from investor.brokers.moomoo import MoomooAdapter, _strip_market_prefix
 
-
 # ── _strip_market_prefix ──────────────────────────────────────────────────────
 
 def test_strip_us_prefix() -> None:
