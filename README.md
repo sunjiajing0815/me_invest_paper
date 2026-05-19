@@ -1,9 +1,11 @@
-# Investor Assistant — Phase 3
+# Investor Assistant — Phase 4
 
-A self-hosted, **suggest-only** portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a second Sonnet pass critiques all drafts as a set (checking cash-floor violations, disqualifying news, and direction-band mismatches), and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email is sent with AI-triaged news headlines. The weekly email includes Accept/Reject buttons for each suggestion. The system never places orders — execution is always manual in the broker's UI.
+A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a second Sonnet pass critiques all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a 7-section **weekly review email** covers realised PnL, suggestion outcomes, drift state, material news, and a next-Sunday preview.
 
-**Current phase:** 3 — Suggestion Review Pipeline (complete)  
-**Status:** Code complete. Tag `v0.3.0-phase-3` pending first Sunday email.
+**By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
+
+**Current phase:** 4 — Reconciliation, Moomoo adapter, weekly review, opt-in auto-trade  
+**Status:** Code complete 2026-05-18. Tag `v0.4.0-phase-4-code-complete` pending first Friday review email.
 
 ---
 
@@ -20,7 +22,7 @@ A self-hosted, **suggest-only** portfolio assistant for long-term US-equity inve
 
 ```bash
 cp .env.example .env
-# Edit .env — set ALPACA_*, SMTP_*, ADMIN_TOKEN, ANTHROPIC_API_KEY, MAGIC_LINK_SECRET, and FINNHUB_API_KEY
+# Edit .env — set ALPACA_*, SMTP_*, ADMIN_TOKEN, ANTHROPIC_API_KEY, MAGIC_LINK_SECRET, FINNHUB_API_KEY
 ```
 
 Required variables (see `.env.example` for the full list):
@@ -45,6 +47,10 @@ Required variables (see `.env.example` for the full list):
 | `LLM_DAILY_COST_CAP_USD` | Daily LLM spend cap in USD (default `3.0`) |
 | `LLM_BACKEND` | `anthropic_api` (default) or `agent_sdk` (routes calls through `claude-agent-sdk`) |
 | `LLM_CLI_PATH` | Path to system `claude` CLI for `agent_sdk` backend; empty = use SDK-bundled binary |
+| `AUTO_TRADE_PROMOTION_TOKEN` | Separate token required for auto-trade mode promotions (`openssl rand -hex 32`) |
+| `OPEND_HOST` | Moomoo OpenD host (default `host.docker.internal`) — only needed when `BROKER=moomoo` |
+| `OPEND_PORT` | Moomoo OpenD port (default `11111`) |
+| `OPEND_SECURITY_FIRM` | Moomoo security firm (default `FUTUSECURITIES`) |
 
 ### 2. Configure target allocation
 
@@ -86,10 +92,17 @@ uv run uvicorn src.investor.main:app --reload --port 8000
 The API is available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
 The scheduler starts automatically with the server and fires:
-- **Daily report**: Mon–Fri at 16:15 America/New_York (30-minute misfire grace)
-- **Suggestion expiry sweep**: Mon–Fri at 16:20 America/New_York — marks stale pending suggestions as `expired`
-- **Movers email**: Mon–Fri at 16:30 America/New_York (1-hour misfire grace)
-- **Weekly suggestions**: Sunday at 18:00 America/New_York (6-hour misfire grace)
+
+| Time (ET) | Days | Job |
+|---|---|---|
+| 09:35 | Mon–Fri | **Auto-trade pass** — place orders for `accepted` suggestions (mode-gated; default OFF) |
+| 16:15 | Mon–Fri | **Daily report** — sync, indicators, compose, email |
+| 16:20 | Mon–Fri | **Suggestion expiry sweep** — marks stale pending suggestions as `expired` |
+| 16:30 | Mon–Fri | **Movers email** — threshold crossings + AI-triaged news |
+| 16:45 | Mon–Fri | **Daily reconciliation** — match broker fills to suggestions, FIFO PnL |
+| 16:50 | Mon–Fri | **Moomoo parallel-run** — compare Moomoo vs Alpaca positions (soak stage) |
+| 17:00 | Friday | **Weekly review email** — 7-section reflection on the past week |
+| 18:00 | Sunday | **Weekly suggestions** — indicators, levels, LLM scoring, review graph, email |
 
 ### Updating targets
 
@@ -223,6 +236,60 @@ Manually triggers the movers email job (detect threshold crossings → fetch new
 curl -H "X-Admin-Token: $ADMIN_TOKEN" -X POST localhost:8000/admin/run-movers
 ```
 
+### `POST /admin/run-weekly-review` *(requires X-Admin-Token)*
+
+Manually triggers the Friday weekly review email.
+
+### `POST /admin/reconcile/{execution_id}` *(requires X-Admin-Token)*
+
+Manually link an `order_execution` row to a specific `order_suggestion`. Use when the automatic reconciliation flags a fill as `manual_review` (ambiguous heuristic match).
+
+```bash
+curl -X POST localhost:8000/admin/reconcile/42 \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"suggestion_id": 7}'
+```
+
+### `POST /admin/run-auto-trade` *(requires X-Admin-Token)*
+
+Manually trigger one auto-trade pass (respects the current mode — no-ops if `OFF`).
+
+### `POST /admin/auto-trade/promote` *(requires X-Promotion-Token)*
+
+Promote (or demote) the auto-trade mode. Enforces soak-window requirements:
+
+| `broker_scope` | `to_mode` | Min days in current mode |
+|---|---|---|
+| `alpaca_paper` | `DRY_RUN` | 0 (first promotion) |
+| `alpaca_paper` | `LIVE` | 14 |
+| `alpaca_live` | `LIVE` | 28 |
+| `moomoo` | `LIVE` | 28 |
+
+Demotion to `OFF` is always immediate. Returns 409 with `days_remaining` if the soak window is not met.
+
+```bash
+curl -X POST localhost:8000/admin/auto-trade/promote \
+  -H "X-Promotion-Token: $AUTO_TRADE_PROMOTION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"to_mode": "DRY_RUN", "broker_scope": "alpaca_paper", "reason": "starting soak"}'
+```
+
+### `POST /admin/auto-trade/caps` *(requires X-Promotion-Token)*
+
+Update spending caps (closes the old row, inserts a new one):
+
+```bash
+curl -X POST localhost:8000/admin/auto-trade/caps \
+  -H "X-Promotion-Token: $AUTO_TRADE_PROMOTION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"per_order_max_usd": 500, "per_day_max_usd": 1500, "per_week_max_usd_per_ticker": 1000, "per_day_max_orders": 5}'
+```
+
+### `POST /admin/auto-trade/emergency-stop` *(requires X-Admin-Token)*
+
+Immediately fires the kill switch: flips mode to `OFF`, cancels all open auto-trade orders placed in the last 24h, writes a `kill_switch_log` row, and sends an alert email. Recovery requires manual re-promotion.
+
 Interactive docs: `http://localhost:8000/docs`
 
 ---
@@ -286,6 +353,8 @@ See [ADR-0006](docs/adr/0006-sr-methodology.md), [ADR-0007](docs/adr/0007-positi
 
 Fires Mon–Fri at 16:30 America/New_York (15 min after bars are updated). Sends only when a watchlist ticker crosses a **new** threshold milestone — not every day the same move persists.
 
+On **Monday** runs the news lookback window is extended to **48 hours** (vs. 24 h on other days) to catch Friday-afternoon and weekend news that often drives Monday opening moves.
+
 ### Tiered threshold logic
 
 | Scenario | Outcome |
@@ -318,6 +387,54 @@ One card per mover showing:
 - Ticker, % change, today's close vs. last week's close
 - Top 3 `llm_material=true` headlines with LLM summary and sentiment badge (bullish/bearish/neutral)
 - "No material news in the last 24h" when nothing material is found
+
+---
+
+## Weekly review email (Friday)
+
+Fires Friday at 17:00 America/New_York. A backward-looking reflection on the week — distinct from the Sunday suggestions email (which is forward-looking).
+
+| Section | Content |
+|---|---|
+| 1. Header | Week-of date, account equity, total realised PnL (green / red) |
+| 2. Suggestions vs fills | Ticker, suggested qty/price, user action, fill outcome |
+| 3. Drift state | Current vs target allocation, band status for each ticker |
+| 4. Material news | LLM-material events for held tickers this week |
+| 5. Next Sunday preview | Suggestions run without persisting (non-authoritative, labelled as such) |
+| 6. Auto-trade activity | Mode changes, placements, cap spend, kill-switch events if any |
+| 7. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
+
+Subject: `Weekly Review — week of MMM DD`
+
+---
+
+## Reconciliation and realised PnL
+
+After market close (16:45 ET), the reconciliation engine fetches fills from the broker and matches them to `order_suggestion` rows using four rules (priority order):
+
+1. `client_order_id = "sug-N"` — auto-trade placed (confidence 1.0)
+2. Single accepted suggestion with same ticker + side, within 48h of suggestion creation, price within ±0.5% (confidence 0.9)
+3. Multiple candidates → best-proximity match flagged `manual_review` (confidence 0.5)
+4. No match → `untracked` (confidence 0.0)
+
+For each sell fill, FIFO cost basis is computed against prior buy lots to produce `realized_pnl_usd`. `manual_review` rows surface in the Friday weekly review for user inspection. Use `POST /admin/reconcile/{id}` to resolve ambiguous matches.
+
+---
+
+## Opt-in auto-trade
+
+Auto-trade is **off by default**. Promotion requires a separate `AUTO_TRADE_PROMOTION_TOKEN` and soak-window enforcement (see endpoint docs above).
+
+**Mode lifecycle:** `OFF` → `DRY_RUN` (simulates orders, no broker calls) → `LIVE` (real orders via broker API)
+
+Each auto-trade pass (09:35 ET Mon–Fri) processes `accepted` suggestions through five guards before placing:
+
+1. **Idempotency** — skips if an execution row for `sug-N` already exists
+2. **Wash-sale** — skips buy if a real loss-sell on the same ticker occurred within 30 calendar days
+3. **Caps** — per-order, per-day, per-week-per-ticker, per-day order count
+4. **Cash sufficiency** — skips if buying power < order cost
+
+Guard failures skip the individual suggestion without affecting mode. Four events trigger the **kill switch** (mode → OFF + cancel open orders + alert email): `broker_error`, `readback_mismatch`, `readback_failed`, `manual`.
 
 ---
 
@@ -448,6 +565,69 @@ One row per watchlist ticker. Tracks the tiered threshold state for movers detec
 | `last_triggered_at` | timestamptz | When the threshold was last crossed |
 | `last_pct_change` | float | % change at the time of the last trigger |
 
+### `order_execution` (Phase 4)
+
+One row per broker fill. Written by the reconciliation engine (for manual trades) and by the auto-trade engine (for automated placements). The `(broker_order_id, broker)` pair is a unique idempotency key.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int | Primary key |
+| `suggestion_id` | int | FK → `order_suggestion.id` (nullable — untracked fills have no suggestion) |
+| `ticker` | varchar | e.g. `AAPL` |
+| `side` | varchar | `buy` or `sell` |
+| `filled_qty` | double | Shares actually filled |
+| `filled_price` | double | Average fill price |
+| `filled_at` | timestamptz | Fill timestamp (UTC) |
+| `broker` | varchar | `alpaca`, `moomoo`, or `dry_run` |
+| `broker_order_id` | varchar | Broker-assigned order ID (NULL for dry-run rows) |
+| `client_order_id` | varchar | `sug-N` for auto-trade rows; NULL or custom for manual fills |
+| `dry_run` | bool | `true` for simulated DRY_RUN orders; `false` for real fills |
+| `status` | varchar | `filled`, `partially_filled`, `rejected`, `expired`, `accepted_for_routing`, or `dry_run` |
+| `realized_pnl_usd` | double | FIFO realised PnL for sell fills (NULL for buys or when cost basis is unavailable) |
+| `match_method` | varchar | `auto_matched`, `manual_review`, `untracked`, `auto_trade_placed`, or `manual_matched` |
+| `match_confidence` | float | Confidence score from reconciliation rules [0.0, 1.0] |
+| `created_at` | timestamptz | Row insertion timestamp |
+
+### `auto_trade_promotion_log` (Phase 4)
+
+Append-only audit log of every auto-trade mode change.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int | Primary key |
+| `ts` | timestamptz | When the promotion occurred |
+| `from_mode` | varchar | Previous mode (`OFF`, `DRY_RUN`, `LIVE`) |
+| `to_mode` | varchar | New mode |
+| `broker_scope` | varchar | `alpaca_paper`, `alpaca_live`, or `moomoo` |
+| `reason` | varchar | Human-supplied reason |
+| `actor` | varchar | Always `admin` in Phase 4 (single-user) |
+
+### `kill_switch_log` (Phase 4)
+
+Permanent audit of every kill-switch activation.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int | Primary key |
+| `ts` | timestamptz | Activation timestamp |
+| `trigger` | varchar | `broker_error`, `readback_mismatch`, `readback_failed`, or `manual` |
+| `detail` | text | Human-readable context |
+| `cancelled_order_ids` | text | JSON array of broker order IDs cancelled at trigger time |
+
+### `auto_trade_caps` (Phase 4)
+
+Time-versioned spending caps. Only one row has `effective_to = NULL` (the active cap). Updating caps closes the old row and inserts a new one.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int | Primary key |
+| `per_order_max_usd` | double | Max USD per single order |
+| `per_day_max_usd` | double | Max total USD across all orders in one day |
+| `per_week_max_usd_per_ticker` | double | Max USD for one ticker in one calendar week |
+| `per_day_max_orders` | int | Max number of orders in one day |
+| `effective_from` | timestamptz | When this cap row became active |
+| `effective_to` | timestamptz | When it was superseded (NULL = currently active) |
+
 ---
 
 ## Inspecting the database
@@ -497,6 +677,29 @@ SELECT ticker, side, anchor_method, round(confidence_at_creation, 2) AS conf,
 FROM order_suggestion
 WHERE week_of = date('now', 'weekday 1', '-7 days')
 ORDER BY ticker;
+
+-- recent fills from the reconciliation engine (Phase 4)
+SELECT oe.ticker, oe.side, oe.filled_qty, oe.filled_price, oe.filled_at,
+       oe.match_method, round(oe.match_confidence, 2) AS conf,
+       oe.realized_pnl_usd, oe.dry_run
+FROM order_execution oe
+WHERE oe.dry_run = false
+ORDER BY oe.filled_at DESC LIMIT 20;
+
+-- check current auto-trade mode (Phase 4)
+SELECT value FROM meta WHERE key = 'auto_trade_mode';
+
+-- realised PnL summary by ticker (Phase 4)
+SELECT ticker, sum(realized_pnl_usd) AS total_pnl, count(*) AS sell_fills
+FROM order_execution
+WHERE side = 'sell' AND dry_run = false AND realized_pnl_usd IS NOT NULL
+GROUP BY ticker ORDER BY total_pnl DESC;
+
+-- fills awaiting manual review (Phase 4)
+SELECT id, ticker, side, filled_qty, filled_price, filled_at, match_confidence
+FROM order_execution
+WHERE match_method = 'manual_review' AND dry_run = false
+ORDER BY filled_at DESC;
 ```
 
 ---
@@ -508,11 +711,12 @@ src/investor/
   main.py             FastAPI app + lifespan
   config.py           pydantic-settings + targets.yaml loader
   db.py               SQLite engine + session factory
-  models.py           SQLAlchemy ORM models (Phase 3b adds: NewsEvent, MoverState; Phase 3c adds: anchor_method on OrderSuggestion)
-  scheduler.py        APScheduler bootstrap (daily 16:15, expiry 16:20, movers 16:30, weekly 18:00)
+  models.py           SQLAlchemy ORM models (Phase 3b: NewsEvent, MoverState; Phase 3c: anchor_method; Phase 4: OrderExecution, AutoTradePromotionLog, KillSwitchLog, AutoTradeCaps)
+  scheduler.py        APScheduler bootstrap
   brokers/
-    base.py           BrokerAdapter Protocol + dataclasses
+    base.py           BrokerAdapter Protocol + dataclasses (Activity, OrderRequest, OrderConfirmation)
     alpaca.py         AlpacaAdapter
+    moomoo.py         MoomooAdapter — talks to OpenD on host (Phase 4; futu-api)
   graphs/
     __init__.py           make_checkpointer() — MemorySaver (in-memory, avoids SQLite write contention)
     _nodes.py             llm_node_call() — generic LLM node helper (Phase 3a lessons applied)
@@ -542,11 +746,17 @@ src/investor/
     targets.py        Hash-based idempotent target loader
     render.py         Jinja2 template rendering
     email.py          SMTPEmailer + FakeEmailer
+    reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl() (Phase 4)
+    auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch() (Phase 4)
   jobs/
     daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
     suggestion_expiry.py   Mon-Fri 16:20 ET — mark stale pending suggestions expired
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
+    reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL (Phase 4)
+    moomoo_parallel.py     Mon-Fri 16:50 ET — compare Moomoo vs Alpaca positions (Phase 4)
+    weekly_review.py       Fri 17:00 ET — 7-section reflection email (Phase 4)
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
+    auto_trade.py          Mon-Fri 09:35 ET — place orders for accepted suggestions (Phase 4)
 config/
   targets.yaml        Target allocation (hand-edited)
 templates/
@@ -556,6 +766,8 @@ templates/
   weekly_suggestions.txt.j2    Weekly suggestions plain-text email
   movers.html.j2               Movers HTML email (one card per mover, top-3 material headlines)
   movers.txt.j2                Movers plain-text fallback
+  weekly_review.html.j2        Weekly review HTML email (7 sections) (Phase 4)
+  weekly_review.txt.j2         Weekly review plain-text fallback (Phase 4)
 scripts/
   load_targets.py     Seed/update target_allocation from targets.yaml
   sync_positions.py   One-shot position sync
@@ -584,9 +796,14 @@ tests/
   test_news.py                URL normalization, news fetch mocks, tiered threshold logic (27 tests)
   test_news_triage.py         Per-node unit tests, graph integration, fence/parse regressions (12 tests)
   test_suggestion_review.py   revise/skip_revise nodes, critic routing, reason/critic with mock LLM, session-leak guard (18 tests)
-  test_suggestion_expiry.py   Expiry sweep: stale → expired, future → unchanged, non-pending → unchanged (3 tests)
-  test_weekly_suggestions.py  Parallel scoring wall-clock + failure fallback (2 tests)
-  test_integration_alpaca.py  Full chain vs live Alpaca paper (1 test, skips without keys)
+  test_suggestion_expiry.py             Expiry sweep: stale → expired, future → unchanged, non-pending → unchanged (3 tests)
+  test_weekly_suggestions.py            Parallel scoring wall-clock + failure fallback (2 tests)
+  test_reconciliation.py                Reconciliation rules, FIFO PnL, idempotency, dry-run isolation (14 tests) (Phase 4)
+  test_auto_trade.py                    OFF/DRY_RUN/LIVE modes, all guards, kill-switch triggers, promotion soak (20 tests) (Phase 4)
+  test_moomoo.py                        Prefix stripping, positions/activities mapping, remark→client_order_id, get_bars guard (11 tests) (Phase 4)
+  test_weekly_review.py                 WeeklyReview + SuggestionAudit frozen dataclasses, _week_start() helper (7 tests) (Phase 4)
+  test_no_unauthorized_submit_order.py  Grep CI gate: submit_order single-call-site enforcement (1 test) (Phase 4)
+  test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
   0002-three-tier-storage-architecture.md
@@ -600,7 +817,12 @@ docs/adr/
   0011-news-source-priority.md  Alpaca-primary / Finnhub-fallback; URL normalization dedup
   0012-langgraph-adoption.md    LangGraph decision rule, MemorySaver checkpointer, version-pinning
   0013-suggestion-review-pipeline.md  Suggestion review graph; why revise is deterministic Python; calibration target 10–25%
-  0016-llm-backend-abstraction.md  LLMClient Protocol, AnthropicAPIClient vs AgentSDKClient, consumer OAuth guardrails
+  0014-auto-trade-mode-discipline.md  Three-state mode; OFF default invariant; soak-window matrix; idempotency via sug-N; single-user scope
+  0015-kill-switch-design.md          Four kill-switch triggers; guard failures do NOT trigger kill switch; recovery is manual re-promotion
+  0016-llm-backend-abstraction.md     LLMClient Protocol, AnthropicAPIClient vs AgentSDKClient, consumer OAuth guardrails
+  0017-reconciliation-matching.md     Four matching rules (priority order); FIFO cost-basis; 1h overlap window; sug-N namespace
+  0018-moomoo-parallel-run.md         Five soak criteria; OpenD-on-host rule; bars-on-Alpaca; remark↔client_order_id; prefix stripping
+  0019-weekly-review-composition.md   Seven sections; Friday-reflection vs Sunday-action cadence; Moomoo-section sunset criteria
 ```
 
 ---
@@ -609,7 +831,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 184 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 240 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/

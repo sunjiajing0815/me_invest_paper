@@ -134,7 +134,10 @@ def run_movers_email(
     )
 
     # 4. Fetch news for tickers that crossed a new threshold
-    since = datetime.now(UTC) - timedelta(hours=24)
+    # Monday: look back 48h to catch Friday/weekend news that drove the move.
+    _now = datetime.now(UTC)
+    lookback_hours = 48 if _now.weekday() == 0 else 24
+    since = _now - timedelta(hours=lookback_hours)
     news_by_ticker: dict[str, list[NewsRaw]] = get_news_for_movers(
         [t["ticker"] for t in tickers_to_process],
         since,
