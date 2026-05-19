@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     auto_trade_promotion_token: str = ""  # separate from admin_token; required for promotions
 
     # Moomoo/Futu OpenD daemon settings (used when broker == "moomoo")
-    opend_host: str = "host.docker.internal"
+    opend_host: str = ""
     opend_port: int = 11111
     opend_security_firm: str = "FUTUSECURITIES"
 
