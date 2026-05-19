@@ -71,6 +71,42 @@ Kill switches activated:
 No kill switches activated this week.
 {% endif %}
 
+=== WEEKLY MARKET CONTEXT ===
+{% if review.market_context %}
+{% if review.market_context.macro_summary %}
+MACRO
+{{ review.market_context.macro_summary }}
+
+{% endif %}
+{% if review.market_context.sector_summary %}
+SECTORS
+{{ review.market_context.sector_summary }}
+
+{% endif %}
+{% if review.market_context.ticker_catchup %}
+TICKER CATCH-UP
+{% for ticker, summary in review.market_context.ticker_catchup.items() %}
+  {{ ticker }}: {{ summary }}
+{% endfor %}
+
+{% endif %}
+{% if review.market_context.forward_events %}
+NEXT WEEK
+{% for event in review.market_context.forward_events %}
+  - {{ event }}
+{% endfor %}
+
+{% endif %}
+{% if review.market_context.citations %}
+Sources:
+{% for cite in review.market_context.citations[:10] %}
+  {{ loop.index }}. {{ cite.title }} ({{ cite.source_domain }}) — {{ cite.url }}
+{% endfor %}
+{% endif %}
+{% else %}
+  Weekly market context unavailable (Tavily not configured or capped).
+{% endif %}
+
 === MOOMOO STATUS ===
 {% if review.moomoo_status == 'primary' %}
 Moomoo is the PRIMARY broker — live trading enabled.

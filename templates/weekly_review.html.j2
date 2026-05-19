@@ -240,7 +240,44 @@
 <p style="font-size:12px; color:#27ae60; margin:0 0 20px 0;">No kill switches activated this week.</p>
 {% endif %}
 
-<!-- Section 7: Moomoo parallel status -->
+<!-- Section 7: Weekly Market Context (Phase 4.5) -->
+{% if review.market_context %}
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Weekly Market Context</h2>
+{% if review.market_context.macro_summary %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Macro</h3>
+<p style="font-size:13px; color:#333; margin:0 0 12px 0;">{{ review.market_context.macro_summary }}</p>
+{% endif %}
+{% if review.market_context.sector_summary %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Sectors</h3>
+<p style="font-size:13px; color:#333; margin:0 0 12px 0;">{{ review.market_context.sector_summary }}</p>
+{% endif %}
+{% if review.market_context.ticker_catchup %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Ticker Catch-Up</h3>
+<ul style="font-size:13px; margin:0 0 12px 0; padding-left:20px;">
+  {% for ticker, summary in review.market_context.ticker_catchup.items() %}
+  <li style="margin-bottom:4px;"><strong>{{ ticker }}:</strong> {{ summary }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if review.market_context.forward_events %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Next Week</h3>
+<ul style="font-size:13px; margin:0 0 12px 0; padding-left:20px;">
+  {% for event in review.market_context.forward_events %}
+  <li style="margin-bottom:4px;">{{ event }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if review.market_context.citations %}
+<p style="font-size:11px; color:#888; margin:8px 0 2px 0;"><strong>Sources</strong></p>
+<ol style="font-size:11px; color:#888; margin:0 0 20px 0; padding-left:20px;">
+  {% for cite in review.market_context.citations[:10] %}
+  <li style="margin-bottom:2px;"><a href="{{ cite.url }}" style="color:#888;">{{ cite.title }}</a> ({{ cite.source_domain }})</li>
+  {% endfor %}
+</ol>
+{% endif %}
+{% endif %}
+
+<!-- Section 8: Moomoo parallel status -->
 <h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Moomoo Status</h2>
 {% if review.moomoo_status == 'primary' %}
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#eaf5fb; border:1px solid #3498db; border-radius:6px; margin-bottom:20px;">

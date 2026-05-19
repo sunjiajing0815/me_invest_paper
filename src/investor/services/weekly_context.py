@@ -1,0 +1,225 @@
+"""Weekly market context — Tavily fanout queries + Sonnet synthesis.
+
+Produces a WeeklyMarketContext frozen dataclass for the Friday review email.
+Results are informational only and must never influence the suggestion engine
+or order-execution path (see ADR-0020).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from datetime import date
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel
+
+from .llm import SONNET, LLMClient, load_prompt
+from .tavily import NewsResult, TavilyClient
+
+if TYPE_CHECKING:
+    pass
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Ticker → sector mapping (extend as watchlist grows)
+# ---------------------------------------------------------------------------
+
+_TICKER_SECTORS: dict[str, str] = {
+    # Broad market ETFs
+    "VOO": "broad market", "SPY": "broad market", "IVV": "broad market",
+    "IWM": "small cap",
+    # Factor / dividend ETFs
+    "QQQ": "technology", "SCHD": "dividend equity", "VIG": "dividend equity",
+    "VYM": "dividend equity",
+    # Technology
+    "AAPL": "technology", "MSFT": "technology", "NVDA": "technology",
+    "GOOG": "technology", "GOOGL": "technology", "META": "technology",
+    "ORCL": "technology", "CRM": "technology", "ADBE": "technology",
+    "NFLX": "technology", "AMD": "semiconductors", "INTC": "semiconductors",
+    "MU": "semiconductors", "QCOM": "semiconductors", "AVGO": "semiconductors",
+    "TSM": "semiconductors", "AMAT": "semiconductors",
+    # Consumer
+    "AMZN": "consumer discretionary", "TSLA": "consumer discretionary",
+    "NKE": "consumer discretionary", "HD": "consumer discretionary",
+    "COST": "consumer staples", "WMT": "consumer staples", "PG": "consumer staples",
+    # Financials
+    "JPM": "financials", "BAC": "financials", "GS": "financials",
+    "MS": "financials", "V": "financials", "MA": "financials",
+    # Healthcare
+    "JNJ": "healthcare", "UNH": "healthcare", "PFE": "healthcare",
+    "ABBV": "healthcare", "LLY": "healthcare",
+    # Energy
+    "XOM": "energy", "CVX": "energy",
+    # Industrials / other
+    "CAT": "industrials", "BA": "industrials", "GE": "industrials",
+    "BRK.B": "financials",
+}
+
+
+def _infer_sectors(watchlist: list[str]) -> list[str]:
+    """Return sorted unique sector names for the given watchlist tickers."""
+    sectors = {_TICKER_SECTORS.get(t, "equity") for t in watchlist}
+    return sorted(sectors)
+
+
+# ---------------------------------------------------------------------------
+# Output types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WeeklyMarketContext:
+    """All data for the Weekly Market Context section. Plain types only."""
+
+    week_of: date
+    macro_summary: str
+    sector_summary: str
+    ticker_catchup: dict[str, str]  # ticker → 1-2 sentence catch-up
+    forward_events: list[str]       # bullet points: earnings, Fed, etc.
+    citations: list[NewsResult]     # deduped by URL, sorted score desc, capped 15
+
+
+class _WeeklyContextSynthesis(BaseModel):
+    """LLM output schema — validated by llm.call's response_schema parameter."""
+
+    macro_summary: str
+    sector_summary: str
+    ticker_catchup: dict[str, str]
+    forward_events: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+
+def build_weekly_market_context(
+    *,
+    tavily: TavilyClient,
+    llm: LLMClient,
+    watchlist: list[str],
+    week_of: date,
+    prompt_version: str = "v1",
+) -> WeeklyMarketContext | None:
+    """Fanout Tavily queries, synthesise with Sonnet, return WeeklyMarketContext.
+
+    Returns None when Tavily returns nothing (capped or unavailable) so the
+    caller can omit the section gracefully rather than render a broken one.
+    """
+    # 1. Macro queries
+    macro: list[NewsResult] = []
+    macro += tavily.search_news("US Federal Reserve policy this week", days=7, max_results=4)
+    macro += tavily.search_finance("US equity market this week", days=7, max_results=3)
+
+    # 2. Sector queries
+    sector_results: list[NewsResult] = []
+    for sector in _infer_sectors(watchlist):
+        sector_results += tavily.search_finance(
+            f"{sector} sector news this week", days=7, max_results=3
+        )
+
+    # 3. Per-ticker catch-up
+    ticker_results: dict[str, list[NewsResult]] = {}
+    for ticker in watchlist:
+        ticker_results[ticker] = tavily.search_finance(
+            f"{ticker} stock news this week", days=7, max_results=3
+        )
+
+    # 4. Forward-looking events
+    forward: list[NewsResult] = []
+    forward += tavily.search_news(
+        "US stock market earnings calendar next week", days=2, max_results=5
+    )
+    forward += tavily.search_news(
+        "US Federal Reserve next week schedule", days=2, max_results=3
+    )
+
+    # If everything is empty, skip the section entirely
+    all_ticker_results = [r for rs in ticker_results.values() for r in rs]
+    if not (macro or sector_results or all_ticker_results or forward):
+        log.info("build_weekly_market_context: all Tavily results empty; skipping section")
+        return None
+
+    # 5. Collect and deduplicate citations now (needed even on LLM failure)
+    all_results = macro + sector_results + all_ticker_results + forward
+    seen_urls: set[str] = set()
+    unique_citations: list[NewsResult] = []
+    for r in sorted(all_results, key=lambda x: -x.score):
+        if r.url not in seen_urls:
+            seen_urls.add(r.url)
+            unique_citations.append(r)
+    citations = unique_citations[:15]
+
+    # 6. Sonnet synthesis
+    user_payload = json.dumps(
+        {
+            "week_of": str(week_of),
+            "watchlist": watchlist,
+            "macro_results": [
+                {
+                    "title": r.title,
+                    "content": r.content,
+                    "source_domain": r.source_domain,
+                    "published_date": str(r.published_date) if r.published_date else None,
+                }
+                for r in macro[:6]
+            ],
+            "sector_results": [
+                {
+                    "title": r.title,
+                    "content": r.content,
+                    "source_domain": r.source_domain,
+                }
+                for r in sector_results[:8]
+            ],
+            "ticker_results": {
+                ticker: [
+                    {"title": r.title, "content": r.content, "source_domain": r.source_domain}
+                    for r in rs[:3]
+                ]
+                for ticker, rs in ticker_results.items()
+                if rs
+            },
+            "forward_results": [
+                {"title": r.title, "content": r.content, "source_domain": r.source_domain}
+                for r in forward[:6]
+            ],
+        },
+        default=str,
+    )
+
+    system_prompt = load_prompt(f"weekly_context_{prompt_version}.txt")
+    _, parsed = llm.call(
+        model=SONNET,
+        system=system_prompt,
+        user=user_payload,
+        max_tokens=2048,
+        response_schema=_WeeklyContextSynthesis,
+    )
+
+    if parsed is None:
+        log.warning(
+            "build_weekly_market_context: LLM synthesis failed; "
+            "returning empty sections with citations only"
+        )
+        return WeeklyMarketContext(
+            week_of=week_of,
+            macro_summary="",
+            sector_summary="",
+            ticker_catchup={},
+            forward_events=[],
+            citations=citations,
+        )
+
+    synthesis: _WeeklyContextSynthesis = parsed  # type: ignore[assignment]
+    return WeeklyMarketContext(
+        week_of=week_of,
+        macro_summary=synthesis.macro_summary,
+        sector_summary=synthesis.sector_summary,
+        ticker_catchup=synthesis.ticker_catchup,
+        forward_events=synthesis.forward_events,
+        citations=citations,
+    )

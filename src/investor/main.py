@@ -131,10 +131,14 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     from .services.llm import make_llm_client
     llm = make_llm_client(_settings)
 
+    from .services.tavily import make_tavily_client
+    tavily = make_tavily_client(_settings)
+
     app.state.settings = _settings
     app.state.adapter = adapter
     app.state.emailer = emailer
     app.state.llm = llm
+    app.state.tavily = tavily
 
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
     weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
@@ -142,7 +146,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     expiry_fn = sweep_expired_suggestions
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
-    weekly_review_fn = partial(run_weekly_review, _settings, adapter, emailer, llm)
+    weekly_review_fn = partial(run_weekly_review, _settings, adapter, emailer, llm, tavily)
     auto_trade_fn = partial(run_auto_trade_job, _settings, adapter, emailer)
     scheduler = make_scheduler(
         daily_fn,
@@ -476,7 +480,10 @@ def admin_run_weekly_review(request: Request) -> dict[str, str]:
     emailer = request.app.state.emailer
     logger.info("Weekly review triggered via POST /admin/run-weekly-review")
     try:
-        run_weekly_review(settings, adapter, emailer, request.app.state.llm)
+        run_weekly_review(
+            settings, adapter, emailer,
+            request.app.state.llm, request.app.state.tavily,
+        )
     except Exception as exc:
         logger.error("Weekly review failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly review failed: {exc}") from exc

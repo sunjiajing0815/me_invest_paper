@@ -27,6 +27,8 @@ from ..services.news import load_recent_material_news
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.suggest import HALF_THE_GAP, _next_monday, generate_suggestions
+from ..services.tavily import TavilyClient
+from ..services.weekly_context import WeeklyMarketContext, build_weekly_market_context
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ class WeeklyReview:
     executions_this_week: int
     preview_suggestions: list[dict[str, Any]]  # simplified dicts from generate_suggestions()
     moomoo_status: str  # "parallel_running" | "primary" | "unavailable"
+    market_context: WeeklyMarketContext | None = None  # Phase 4.5: Tavily weekly digest
 
 
 def _week_start(ref: date | None = None) -> datetime:
@@ -199,6 +202,7 @@ def run_weekly_review(
     adapter: BrokerAdapter,
     emailer: EmailSender,
     llm: LLMClient,
+    tavily: TavilyClient,
 ) -> None:
     """Build the weekly review data, render templates, and email.
 
@@ -259,7 +263,24 @@ def run_weekly_review(
         logger.warning("run_weekly_review: preview generation failed: %s", exc)
         preview_suggestions = []
 
-    # Rebuild review with preview (dataclass is frozen — create new instance)
+    # Phase 4.5: Tavily weekly market context (runs outside session scope)
+    try:
+        market_context = build_weekly_market_context(
+            tavily=tavily,
+            llm=llm,
+            watchlist=tickers,
+            week_of=week_of,
+            prompt_version=settings.weekly_context_prompt_version,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_weekly_review: weekly market context failed; omitting section: %s",
+            exc,
+            exc_info=True,
+        )
+        market_context = None
+
+    # Rebuild review with preview + market_context (dataclass is frozen — create new instance)
     review = WeeklyReview(
         week_of=review.week_of,
         account=review.account,
@@ -273,6 +294,7 @@ def run_weekly_review(
         executions_this_week=review.executions_this_week,
         preview_suggestions=preview_suggestions,
         moomoo_status=review.moomoo_status,
+        market_context=market_context,
     )
 
     subject = f"Weekly review: {week_of:%b %d, %Y}"

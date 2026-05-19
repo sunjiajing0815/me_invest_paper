@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     opend_port: int = 11111
     opend_security_firm: str = "FUTUSECURITIES"
 
+    # Tavily search API (Phase 4.5 weekly market context)
+    tavily_api_key: str = ""
+    tavily_monthly_cap: int = 200
+    weekly_context_prompt_version: str = "v1"
+
     @field_validator("broker")
     @classmethod
     def validate_broker(cls, v: str) -> str:

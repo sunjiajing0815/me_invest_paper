@@ -1,6 +1,6 @@
 # Investor Assistant — Phase 4
 
-A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a second Sonnet pass critiques all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a 7-section **weekly review email** covers realised PnL, suggestion outcomes, drift state, material news, and a next-Sunday preview.
+A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a second Sonnet pass critiques all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday an 8-section **weekly review email** covers realised PnL, suggestion outcomes, drift state, material news, a next-Sunday preview, and a Tavily-powered weekly market context narrative.
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
@@ -51,6 +51,8 @@ Required variables (see `.env.example` for the full list):
 | `OPEND_HOST` | Moomoo OpenD host (default `host.docker.internal`) — only needed when `BROKER=moomoo` |
 | `OPEND_PORT` | Moomoo OpenD port (default `11111`) |
 | `OPEND_SECURITY_FIRM` | Moomoo security firm (default `FUTUSECURITIES`) |
+| `TAVILY_API_KEY` | Tavily search API key ([free tier](https://tavily.com), 1 000 searches/month); empty = weekly market context section omitted |
+| `TAVILY_MONTHLY_CAP` | Monthly search cap (default `200`; prevents accidental overuse) |
 
 ### 2. Configure target allocation
 
@@ -101,7 +103,7 @@ The scheduler starts automatically with the server and fires:
 | 16:30 | Mon–Fri | **Movers email** — threshold crossings + AI-triaged news |
 | 16:45 | Mon–Fri | **Daily reconciliation** — match broker fills to suggestions, FIFO PnL |
 | 16:50 | Mon–Fri | **Moomoo parallel-run** — compare Moomoo vs Alpaca positions (soak stage) |
-| 17:00 | Friday | **Weekly review email** — 7-section reflection on the past week |
+| 17:00 | Friday | **Weekly review email** — 8-section reflection on the past week |
 | 18:00 | Sunday | **Weekly suggestions** — indicators, levels, LLM scoring, review graph, email |
 
 ### Updating targets
@@ -402,7 +404,8 @@ Fires Friday at 17:00 America/New_York. A backward-looking reflection on the wee
 | 4. Material news | LLM-material events for held tickers this week |
 | 5. Next Sunday preview | Suggestions run without persisting (non-authoritative, labelled as such) |
 | 6. Auto-trade activity | Mode changes, placements, cap spend, kill-switch events if any |
-| 7. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
+| 7. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. |
+| 8. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
 
 Subject: `Weekly Review — week of MMM DD`
 
@@ -730,6 +733,7 @@ src/investor/
     news_arbitrate_v1.txt     Sonnet final-decision prompt for flagged items
     suggestion_reason_v1.txt  Sonnet per-draft rationale prompt (2–4 sentences, cite evidence)
     suggestion_critic_v1.txt  Sonnet cross-draft critic prompt (five severity-ordered criteria)
+    weekly_context_v1.txt     Sonnet weekly market context synthesis prompt (no price targets; JSON output) (Phase 4.5)
   services/
     snapshot.py       Position + account ingestion
     gap.py            Gap computation + UntrackedPosition detection
@@ -748,13 +752,15 @@ src/investor/
     email.py          SMTPEmailer + FakeEmailer
     reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl() (Phase 4)
     auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch() (Phase 4)
+    tavily.py         TavilyClient Protocol + TavilyConcreteClient + FakeTavilyClient + factory (Phase 4.5)
+    weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis (Phase 4.5)
   jobs/
     daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
     suggestion_expiry.py   Mon-Fri 16:20 ET — mark stale pending suggestions expired
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
     reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL (Phase 4)
     moomoo_parallel.py     Mon-Fri 16:50 ET — compare Moomoo vs Alpaca positions (Phase 4)
-    weekly_review.py       Fri 17:00 ET — 7-section reflection email (Phase 4)
+    weekly_review.py       Fri 17:00 ET — 8-section reflection email (Phase 4)
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
     auto_trade.py          Mon-Fri 09:35 ET — place orders for accepted suggestions (Phase 4)
 config/
@@ -766,7 +772,7 @@ templates/
   weekly_suggestions.txt.j2    Weekly suggestions plain-text email
   movers.html.j2               Movers HTML email (one card per mover, top-3 material headlines)
   movers.txt.j2                Movers plain-text fallback
-  weekly_review.html.j2        Weekly review HTML email (7 sections) (Phase 4)
+  weekly_review.html.j2        Weekly review HTML email (8 sections) (Phase 4)
   weekly_review.txt.j2         Weekly review plain-text fallback (Phase 4)
 scripts/
   load_targets.py     Seed/update target_allocation from targets.yaml
@@ -803,6 +809,8 @@ tests/
   test_moomoo.py                        Prefix stripping, positions/activities mapping, remark→client_order_id, get_bars guard (11 tests) (Phase 4)
   test_weekly_review.py                 WeeklyReview + SuggestionAudit frozen dataclasses, _week_start() helper (7 tests) (Phase 4)
   test_no_unauthorized_submit_order.py  Grep CI gate: submit_order single-call-site enforcement (1 test) (Phase 4)
+  test_tavily.py                        FakeTavilyClient, TavilyConcreteClient, factory, cap enforcement (11 tests) (Phase 4.5)
+  test_weekly_context.py                build_weekly_market_context: happy path, empty→None, LLM failure, dedup, cap (5 tests) (Phase 4.5)
   test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -823,6 +831,7 @@ docs/adr/
   0017-reconciliation-matching.md     Four matching rules (priority order); FIFO cost-basis; 1h overlap window; sug-N namespace
   0018-moomoo-parallel-run.md         Five soak criteria; OpenD-on-host rule; bars-on-Alpaca; remark↔client_order_id; prefix stripping
   0019-weekly-review-composition.md   Seven sections; Friday-reflection vs Sunday-action cadence; Moomoo-section sunset criteria
+  0020-tavily-weekly-context.md       Why Tavily; Protocol swap path; Nebius acquisition risk; informational-only hard constraint
 ```
 
 ---
@@ -831,7 +840,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 240 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # ~261 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/

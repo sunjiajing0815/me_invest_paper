@@ -30,6 +30,7 @@ dependencies = [
     "claude-agent-sdk>=0.1.81,<0.2",
     "opentelemetry-api>=1.41.1",
     "futu-api>=9.3",
+    "tavily-python>=0.6,<0.7",
 ]
 
 [dependency-groups]

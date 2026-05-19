@@ -64,12 +64,14 @@ src/investor/
     email.py          SMTPEmailer + FakeEmailer
     reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl()
     auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch()
+    tavily.py         TavilyClient Protocol + TavilyConcreteClient + FakeTavilyClient + make_tavily_client()
+    weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis
   jobs/
     daily_report.py   Mon-Fri 16:15 ET — sync, indicators, compose, email
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
     reconciliation.py Mon-Fri 16:45 ET — match broker fills to suggestions
     moomoo_parallel.py  Mon-Fri 16:50 ET — compare Moomoo vs Alpaca (parallel-run soak)
-    weekly_review.py  Fri 17:00 ET — 7-section reflection email
+    weekly_review.py  Fri 17:00 ET — 8-section reflection email (section 7 = Tavily market context)
     auto_trade.py     Mon-Fri 09:35 ET — place orders for accepted suggestions
   graphs/           LangGraph graph definitions and node helpers
 config/targets.yaml   user's target allocation (hand-edited or via /targets API)
@@ -172,6 +174,7 @@ uv run mypy src/
 - **Never authenticate the Agent SDK with consumer OAuth tokens for automated/unattended use.** Anthropic's ToS prohibits using consumer Claude.ai OAuth for automated scripts. `ANTHROPIC_API_KEY` is always required, even when `LLM_BACKEND=agent_sdk`.
 - **Never make the `revise_node` LLM-driven — LLMs propose changes, Python applies them.** The `revise_node` in `graphs/suggestion_review.py` is intentionally deterministic Python: `_apply_changes()` validates every critic-proposed change against known scored levels and rejects invented prices or unknown methods. A second LLM-driven revision would add hallucination risk, create loop risk (the critic might then revise its own revision), and add cost with no benefit. See ADR-0013.
 - **Never extend `LLM_BACKEND=agent_sdk` consumer-OAuth login into multi-user deployment.** The current single-user setup is personal automation (permitted by Anthropic's ToS). A shared consumer OAuth session across multiple users violates ToS. Phase 5 multi-tenant must use individual API keys per user.
+- **Never feed Tavily results into the suggestion engine or order-execution path.** Tavily output is informational only — it flows into the `WeeklyMarketContext` dataclass and from there into the email template. It must never reach `generate_suggestions()`, `run_auto_trade_pass()`, or any broker adapter. See ADR-0020.
 
 ## Common gotchas
 
@@ -198,6 +201,9 @@ uv run mypy src/
 16. **Reconciliation is matching, not creation.** `services/reconciliation.py` writes `order_execution` rows by matching broker activities to existing `order_suggestion` rows. It never invents executions. Four matching rules and priority order are fixed in ADR-0017. Every reconciliation and wash-sale query must include `WHERE dry_run = false` to prevent simulated DRY_RUN rows from interfering with real trade logic.
 17. **Auto-trade mode defaults to OFF forever.** `meta.auto_trade_mode` is seeded `'OFF'` by the Alembic migration. `_get_mode()` falls back to `'OFF'` if the row is absent or unrecognised. Promotion to `DRY_RUN` or `LIVE` requires the separate `AUTO_TRADE_PROMOTION_TOKEN` and soak-window enforcement. See ADR-0014.
 18. **`submit_order()` is a single-call-site privilege.** Only `services/auto_trade.py` and `brokers/` may call `adapter.submit_order()`. The grep CI test `tests/test_no_unauthorized_submit_order.py` enforces this on every run.
+21. **Tavily acquired by Nebius (Feb 2026) — pin `tavily-python>=0.6,<0.7`.** The SDK is pre-1.0; Nebius ownership means the API surface may change. Tight pinning prevents silent breakage. Swap path if needed: create a new concrete client implementing `TavilyClient` Protocol and update `make_tavily_client()` factory — no call-site changes needed. See ADR-0020.
+22. **Tavily monthly cap is per-instance, not persisted.** `TavilyConcreteClient._used_this_month` resets to 0 when the process restarts. If the app restarts mid-month, the counter resets. For conservative usage this is fine (weekly review adds ~12–16 searches/week × 4 = ~60/month well under the 200 default). Don't raise `TAVILY_MONTHLY_CAP` above the free-tier limit without checking Tavily's current pricing.
+23. **Monday movers use a 48-hour news lookback.** `jobs/movers.py` widens the lookback from 24h to 48h specifically on Mondays (`datetime.weekday() == 0`) to catch Friday/weekend news that drives Monday moves. Other days use 24h.
 
 ## Required env vars
 
@@ -214,6 +220,8 @@ Phase 3a adds: `ANTHROPIC_API_KEY` (Sonnet scoring), `MAGIC_LINK_SECRET` (HMAC f
 Phase 3b adds: `FINNHUB_API_KEY` (Finnhub free tier; optional but needed as Alpaca fallback). `LLM_DAILY_COST_CAP_USD=3.0` (updated from 1.0 in Phase 3a). `LLM_BACKEND=anthropic_api` (or `agent_sdk` to route through `claude-agent-sdk`; see ADR-0016).
 
 Phase 4 adds: `OPEND_HOST=host.docker.internal`, `OPEND_PORT=11111`, `OPEND_SECURITY_FIRM=FUTUSECURITIES` (Moomoo/Futu OpenD daemon settings — only needed when `BROKER=moomoo`). `AUTO_TRADE_PROMOTION_TOKEN` — separate from `ADMIN_TOKEN`; required for auto-trade mode promotions.
+
+Phase 4.5 adds: `TAVILY_API_KEY` (optional; empty = graceful skip of weekly market context section), `TAVILY_MONTHLY_CAP=200` (default 200; cap reached → silent empty + WARNING log).
 
 ## Where to find more
 
