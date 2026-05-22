@@ -18,6 +18,7 @@ Endpoints:
   POST  /admin/run-auto-trade           — manual auto-trade trigger (admin token)
   POST  /admin/auto-trade/promote       — promote auto-trade mode (promotion token)
   POST  /admin/auto-trade/caps          — update spending caps (promotion token)
+  POST  /admin/cancel-all-orders         — cancel all open broker orders (admin token)
   POST  /admin/auto-trade/emergency-stop — trigger kill switch immediately (admin token)
 """
 
@@ -143,7 +144,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
     weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
-    expiry_fn = sweep_expired_suggestions
+    expiry_fn = partial(sweep_expired_suggestions, adapter)
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
     weekly_review_fn = partial(run_weekly_review, _settings, adapter, emailer, llm, tavily)
@@ -573,7 +574,7 @@ class AutoTradePromoteRequest(BaseModel):
 SOAK_WINDOWS: dict[tuple[str, str], int] = {
     # (broker_scope, to_mode) → minimum days in previous mode
     ("alpaca_paper", "DRY_RUN"): 0,
-    ("alpaca_paper", "LIVE"): 14,
+    ("alpaca_paper", "LIVE"): 0,    # paper has no real money; soak only required before alpaca_live
     ("alpaca_live", "LIVE"): 28,
     ("moomoo", "LIVE"): 28,
 }
@@ -603,11 +604,12 @@ def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
                     .order_by(AutoTradePromotionLog.ts.desc())
                     .first()
                 )
-                if last_entry is None or (
-                    datetime.now(UTC) - last_entry.ts
+                entry_ts = last_entry.ts.replace(tzinfo=UTC) if last_entry else None
+                if entry_ts is None or (
+                    datetime.now(UTC) - entry_ts
                 ) < timedelta(days=soak_days):
                     days_elapsed = (
-                        (datetime.now(UTC) - last_entry.ts).days if last_entry else 0
+                        (datetime.now(UTC) - entry_ts).days if entry_ts else 0
                     )
                     days_remaining = soak_days - days_elapsed
                     raise HTTPException(
@@ -672,6 +674,49 @@ def admin_auto_trade_caps(body: AutoTradeCapsRequest) -> dict[str, Any]:
         "per_day_max_usd": body.per_day_max_usd,
         "per_week_max_usd_per_ticker": body.per_week_max_usd_per_ticker,
         "per_day_max_orders": body.per_day_max_orders,
+    }
+
+
+@app.post(
+    "/admin/cancel-all-orders",
+    summary="Cancel all open broker orders",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
+    """Cancel every open (accepted_for_routing, dry_run=False) broker order.
+
+    Does NOT change auto-trade mode. Use emergency-stop if you also want mode → OFF.
+    """
+    from .models import OrderExecution
+
+    adapter = request.app.state.adapter
+    with session_scope() as session:
+        open_execs = session.scalars(
+            select(OrderExecution).where(
+                OrderExecution.status == "accepted_for_routing",
+                OrderExecution.dry_run.is_(False),
+                OrderExecution.broker_order_id.is_not(None),
+            )
+        ).all()
+
+        cancelled: list[str] = []
+        failed: list[str] = []
+        for exe in open_execs:
+            oid = exe.broker_order_id
+            assert oid is not None  # guaranteed by IS NOT NULL filter above
+            try:
+                adapter.cancel_order(oid)
+                exe.status = "broker_cancelled"
+                cancelled.append(oid)
+            except Exception as exc:
+                logger.warning("cancel-all-orders: cancel_order(%s) failed: %s", oid, exc)
+                failed.append(oid)
+
+    return {
+        "cancelled": cancelled,
+        "failed": failed,
+        "total_cancelled": len(cancelled),
+        "total_failed": len(failed),
     }
 
 

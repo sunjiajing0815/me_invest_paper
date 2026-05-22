@@ -288,6 +288,15 @@ curl -X POST localhost:8000/admin/auto-trade/caps \
   -d '{"per_order_max_usd": 500, "per_day_max_usd": 1500, "per_week_max_usd_per_ticker": 1000, "per_day_max_orders": 5}'
 ```
 
+### `POST /admin/cancel-all-orders` *(requires X-Admin-Token)*
+
+Cancels every open broker order (`accepted_for_routing`, `dry_run=False`). Sets the matching `order_execution` row status to `broker_cancelled` so the idempotency guard is cleared — auto-trade will re-place the order on its next run. Does **not** change auto-trade mode.
+
+```bash
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/cancel-all-orders
+# → {"cancelled": ["ord-abc"], "failed": [], "total_cancelled": 1, "total_failed": 0}
+```
+
 ### `POST /admin/auto-trade/emergency-stop` *(requires X-Admin-Token)*
 
 Immediately fires the kill switch: flips mode to `OFF`, cancels all open auto-trade orders placed in the last 24h, writes a `kill_switch_log` row, and sends an alert email. Recovery requires manual re-promotion.

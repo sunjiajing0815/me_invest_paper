@@ -82,6 +82,7 @@ def _fetch_accepted_unexecuted(session: Session) -> list[OrderSuggestion]:
             select(OrderExecution.client_order_id).where(
                 OrderExecution.client_order_id.in_(client_ids),
                 OrderExecution.dry_run.is_(False),
+                OrderExecution.status != "broker_cancelled",
             )
         ).all()
     )
@@ -95,6 +96,7 @@ def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> No
         select(OrderExecution).where(
             OrderExecution.client_order_id == f"sug-{sug.id}",
             OrderExecution.dry_run.is_(dry_run_flag),
+            OrderExecution.status != "broker_cancelled",
         )
     )
     if existing is not None:
@@ -384,7 +386,7 @@ def run_auto_trade_pass(
                 side=sug.side,  # type: ignore[arg-type]
                 qty=sug.qty,
                 limit_price=sug.limit_price,
-                time_in_force="day",
+                time_in_force="gtc",
             )
             try:
                 conf = adapter.submit_order(req)

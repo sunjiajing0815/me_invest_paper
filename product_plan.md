@@ -377,9 +377,11 @@ Deliverable: you can add funds (even $1,000) and within 24 h get an email saying
 - **Trigger discipline:** fires only on `order_suggestion.status='accepted'`. Never on `pending`. Never on fresh suggestions the user hasn't seen.
 - **Hard caps:** per-order $, per-day $, per-week $-per-ticker, per-day order-count. Hitting any cap flips mode to `OFF` and emails a notification.
 - **Wash-sale guard upgraded from stub to blocking:** if a sell at a loss for the same ticker happened in the last 30 days, the buy is dropped with a logged reason. (Phase 4 reconciliation provides the `order_execution` history this check needs.)
-- **Idempotency:** every order's client ID is derived from the suggestion ID (`client_order_id = f"sug-{suggestion.id}"`). Same suggestion cannot be placed twice even on a double-fire.
+- **Idempotency:** every order's client ID is derived from the suggestion ID (`client_order_id = f"sug-{suggestion.id}"`). Same suggestion cannot be placed twice even on a double-fire. The guard is cleared (status → `broker_cancelled`) when an order is cancelled via `POST /admin/cancel-all-orders`, allowing auto-trade to re-place it.
+- **GTC limit orders:** orders are placed as `time_in_force="gtc"` — they stay open at the broker until filled or explicitly cancelled. The daily expiry sweep (16:20 ET) cancels any open GTC order whose suggestion has passed `expires_at`, then marks the suggestion expired.
 - **Read-back reconciliation within 60 seconds:** every placed order is fetched back from the broker. Mismatch flips mode to `OFF`, alerts.
-- **Kill switch:** `POST /admin/emergency-stop` flips mode to `OFF` and cancels all auto-trade-placed open orders from the last 24 hours.
+- **Kill switch:** `POST /admin/auto-trade/emergency-stop` flips mode to `OFF` and cancels all auto-trade-placed open orders from the last 24 hours.
+- **Manual cancel:** `POST /admin/cancel-all-orders` cancels open orders without touching mode — useful for repricing when limit prices are stale mid-week. Suggestions stay `accepted` and are re-placed on the next auto-trade run.
 
 **Broker scope progression (each step gated on a soak window):**
 

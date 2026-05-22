@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 def run_moomoo_parallel(settings: Settings, alpaca_adapter: BrokerAdapter) -> None:
     """Compare Moomoo positions + account against Alpaca. Log divergences."""
+    if not settings.opend_host:
+        logger.debug("run_moomoo_parallel: OPEND_HOST not set; skipping")
+        return
     try:
         from ..brokers.moomoo import MoomooAdapter
 
