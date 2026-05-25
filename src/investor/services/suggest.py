@@ -39,6 +39,9 @@ class OrderSuggestionRow:
     expires_at: datetime
     confidence_at_creation: float | None = None
     anchor_method: str | None = None
+    base_qty: float | None = None
+    size_factor: float = 1.0
+    context_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -390,6 +393,9 @@ def persist_suggestions(
                 existing.reason = r.reason
                 existing.anchor_method = r.anchor_method
                 existing.confidence_at_creation = r.confidence_at_creation
+                existing.base_qty = r.base_qty
+                existing.size_factor = r.size_factor
+                existing.context_note = r.context_note
             # accepted/rejected rows are never touched
             ids.append(existing.id)
             continue
@@ -407,6 +413,9 @@ def persist_suggestions(
             expires_at=r.expires_at,
             confidence_at_creation=r.confidence_at_creation,
             anchor_method=r.anchor_method,
+            base_qty=r.base_qty,
+            size_factor=r.size_factor,
+            context_note=r.context_note,
         )
         session.add(new_row)
         session.flush()
