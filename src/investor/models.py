@@ -134,6 +134,9 @@ class OrderSuggestion(Base):
         DateTime(timezone=True), nullable=True, default=None
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    base_qty: Mapped[float | None] = mapped_column(Double, nullable=True)
+    size_factor: Mapped[float] = mapped_column(Double, nullable=False, server_default="1.0")
+    context_note: Mapped[str | None] = mapped_column(String, nullable=True)
     __table_args__ = (
         UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
     )
@@ -277,3 +280,17 @@ class AutoTradeCaps(Base):
     per_day_max_orders: Mapped[int] = mapped_column(Integer, nullable=False)
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WeeklyMarketContextRow(Base):
+    """Persisted weekly market context produced by the Friday review job."""
+
+    __tablename__ = "weekly_market_context"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    week_of: Mapped[date] = mapped_column(Date, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    __table_args__ = (Index("ix_wmc_week_of", "week_of"),)  # NOT unique — re-runs allowed
