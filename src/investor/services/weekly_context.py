@@ -7,14 +7,18 @@ or order-execution path (see ADR-0020).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date
-from typing import TYPE_CHECKING
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from ..models import WeeklyMarketContextRow
 from .llm import SONNET, LLMClient, load_prompt
 from .tavily import NewsResult, TavilyClient
 
@@ -89,6 +93,70 @@ class _WeeklyContextSynthesis(BaseModel):
     sector_summary: str
     ticker_catchup: dict[str, str]
     forward_events: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Persistence helpers
+# ---------------------------------------------------------------------------
+
+
+def persist_weekly_context(s: Session, ctx: WeeklyMarketContext) -> None:
+    """Serialize ctx and add a WeeklyMarketContextRow. Caller commits."""
+    s.add(WeeklyMarketContextRow(
+        week_of=ctx.week_of,
+        payload_json=json.dumps(dataclasses.asdict(ctx), default=str),
+    ))
+
+
+def load_latest_weekly_context(
+    s: Session, *, week_of: date, max_age_days: int
+) -> WeeklyMarketContext | None:
+    """Load the most recent context for week_of; return None if absent or stale."""
+    row = s.scalars(
+        select(WeeklyMarketContextRow)
+        .where(WeeklyMarketContextRow.week_of == week_of)
+        .order_by(WeeklyMarketContextRow.created_at.desc())
+    ).first()
+    if row is None:
+        return None
+    cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+    if row.created_at < cutoff:
+        log.info(
+            "load_latest_weekly_context: context for %s is stale (created %s)",
+            week_of,
+            row.created_at,
+        )
+        return None
+    return _weekly_context_from_dict(json.loads(row.payload_json))
+
+
+def _weekly_context_from_dict(data: dict[str, Any]) -> WeeklyMarketContext:
+    """Reconstruct WeeklyMarketContext from asdict() output."""
+    citations = [
+        NewsResult(
+            title=c.get("title", ""),
+            url=c.get("url", ""),
+            content=c.get("content", ""),
+            published_date=(
+                date.fromisoformat(c["published_date"])
+                if c.get("published_date")
+                else None
+            ),
+            source_domain=c.get("source_domain", ""),
+            score=float(c.get("score", 0.0)),
+        )
+        for c in data.get("citations", [])
+    ]
+    week_of_raw = data["week_of"]
+    week_of = date.fromisoformat(week_of_raw) if isinstance(week_of_raw, str) else week_of_raw
+    return WeeklyMarketContext(
+        week_of=week_of,
+        macro_summary=data.get("macro_summary", ""),
+        sector_summary=data.get("sector_summary", ""),
+        ticker_catchup=data.get("ticker_catchup", {}),
+        forward_events=data.get("forward_events", []),
+        citations=citations,
+    )
 
 
 # ---------------------------------------------------------------------------
