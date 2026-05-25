@@ -135,8 +135,10 @@ class OrderSuggestion(Base):
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     base_qty: Mapped[float | None] = mapped_column(Double, nullable=True)
-    size_factor: Mapped[float] = mapped_column(Double, nullable=False, server_default="1.0")
-    context_note: Mapped[str | None] = mapped_column(String, nullable=True)
+    size_factor: Mapped[float] = mapped_column(
+        Double, nullable=False, default=1.0, server_default="1.0"
+    )
+    context_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     __table_args__ = (
         UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
     )
