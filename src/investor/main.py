@@ -138,12 +138,16 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     from .services.earnings import make_earnings_client
     earnings = make_earnings_client(_settings)
 
+    from .services.sentiment import make_sentiment_client
+    sentiment = make_sentiment_client(_settings)
+
     app.state.settings = _settings
     app.state.adapter = adapter
     app.state.emailer = emailer
     app.state.llm = llm
     app.state.tavily = tavily
     app.state.earnings = earnings
+    app.state.sentiment = sentiment
 
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
     weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm, earnings)
@@ -151,7 +155,9 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     expiry_fn = partial(sweep_expired_suggestions, adapter)
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
-    weekly_review_fn = partial(run_weekly_review, _settings, adapter, emailer, llm, tavily)
+    weekly_review_fn = partial(
+        run_weekly_review, _settings, adapter, emailer, llm, tavily, sentiment
+    )
     auto_trade_fn = partial(run_auto_trade_job, _settings, adapter, emailer)
     scheduler = make_scheduler(
         daily_fn,
@@ -489,6 +495,7 @@ def admin_run_weekly_review(request: Request) -> dict[str, str]:
         run_weekly_review(
             settings, adapter, emailer,
             request.app.state.llm, request.app.state.tavily,
+            request.app.state.sentiment,
         )
     except Exception as exc:
         logger.error("Weekly review failed: %s", exc)

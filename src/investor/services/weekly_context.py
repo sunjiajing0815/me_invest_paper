@@ -10,7 +10,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -21,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..models import WeeklyMarketContextRow
 from .llm import SONNET, LLMClient, load_prompt
+from .sentiment import SentimentClient
 from .tavily import NewsResult, TavilyClient
 
 log = logging.getLogger(__name__)
@@ -94,43 +94,6 @@ class _WeeklyContextSynthesis(BaseModel):
     sector_summary: str
     ticker_catchup: dict[str, str]
     forward_events: list[str]
-
-
-# ---------------------------------------------------------------------------
-# Sentiment fetch helpers (best-effort; return None on any failure)
-# ---------------------------------------------------------------------------
-
-
-def _fetch_vix(api_key: str) -> float | None:
-    """Return the latest CBOE VIX value via Finnhub quote endpoint."""
-    if not api_key:
-        return None
-    try:
-        import finnhub  # lazy — already a project dep from Phase 3b
-        q = finnhub.Client(api_key=api_key).quote("^VIX")
-        c = q.get("c") if q else None
-        return float(c) if c else None
-    except Exception as exc:
-        log.warning("_fetch_vix: %s", exc)
-        return None
-
-
-def _fetch_fear_greed() -> tuple[int | None, str | None]:
-    """Return (score, label) from CNN Fear & Greed Index public endpoint."""
-    try:
-        req = urllib.request.Request(
-            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
-            headers={"User-Agent": "investor-assistant/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read())
-        fg = data.get("fear_and_greed", {})
-        score = fg.get("score")
-        label = fg.get("rating") or None
-        return (int(float(score)) if score is not None else None, label)
-    except Exception as exc:
-        log.warning("_fetch_fear_greed: %s", exc)
-        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -209,13 +172,15 @@ def build_weekly_market_context(
     watchlist: list[str],
     week_of: date,
     prompt_version: str = "1",
-    finnhub_api_key: str = "",
+    sentiment_client: SentimentClient | None = None,
 ) -> WeeklyMarketContext | None:
     """Fanout Tavily queries, synthesise with Sonnet, return WeeklyMarketContext.
 
     Returns None when Tavily returns nothing (capped or unavailable) so the
     caller can omit the section gracefully rather than render a broken one.
     """
+    from .sentiment import FakeSentimentClient
+    _sentiment = sentiment_client if sentiment_client is not None else FakeSentimentClient()
     # 1. Macro queries
     macro: list[NewsResult] = []
     macro += tavily.search_news("US Federal Reserve policy this week", days=7, max_results=4)
@@ -261,14 +226,10 @@ def build_weekly_market_context(
     citations = unique_citations[:15]
 
     # 6. Market sentiment (best-effort; None if key absent or endpoint unavailable)
-    vix = _fetch_vix(finnhub_api_key)
-    fear_greed_score, fear_greed_label = _fetch_fear_greed()
-    if vix is not None:
-        log.info("build_weekly_market_context: VIX=%.2f", vix)
-    if fear_greed_score is not None:
-        log.info(
-            "build_weekly_market_context: Fear&Greed=%d (%s)", fear_greed_score, fear_greed_label
-        )
+    sd = _sentiment.get_sentiment()
+    vix = sd.vix
+    fear_greed_score = sd.fear_greed_score
+    fear_greed_label = sd.fear_greed_label
 
     # 7. Sonnet synthesis
     user_payload = json.dumps(

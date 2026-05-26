@@ -26,6 +26,7 @@ from ..services.levels import build_nearby_levels, compute_levels
 from ..services.llm import LLMClient
 from ..services.news import load_recent_material_news
 from ..services.render import render_template
+from ..services.sentiment import SentimentClient
 from ..services.snapshot import take_snapshot
 from ..services.suggest import HALF_THE_GAP, _next_monday, generate_suggestions
 from ..services.tavily import TavilyClient
@@ -208,6 +209,7 @@ def run_weekly_review(
     emailer: EmailSender,
     llm: LLMClient,
     tavily: TavilyClient,
+    sentiment_client: SentimentClient | None = None,
 ) -> None:
     """Build the weekly review data, render templates, and email.
 
@@ -276,7 +278,7 @@ def run_weekly_review(
             watchlist=tickers,
             week_of=week_of,
             prompt_version=settings.weekly_context_prompt_version,
-            finnhub_api_key=settings.finnhub_api_key,
+            sentiment_client=sentiment_client,
         )
     except Exception as exc:
         logger.warning(
