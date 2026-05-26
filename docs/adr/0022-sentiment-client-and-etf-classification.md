@@ -65,7 +65,7 @@ targets:
     # asset_class omitted → defaults to "equity"
 ```
 
-`load_targets()` validates `asset_class` against `{"index_etf", "leveraged_etf", "equity"}` and raises `ValueError` on unrecognised values. Absent → `"equity"`.
+`load_targets()` validates `asset_class` against `{"index_etf", "leveraged_etf", "equity"}`. Unrecognised values are logged as a WARNING and coerced to `"equity"` (safe degradation — the app keeps running with equity-level sizing for the offending ticker). Absent → `"equity"`.
 
 `gather_context_node` reads `target_asset_classes: dict[str, str]` from the loaded targets and stores it on `ReviewContext`. `context_adjust_node` passes it to Sonnet as `asset_classes[ticker]` in the user payload.
 
