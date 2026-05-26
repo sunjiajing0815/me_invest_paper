@@ -404,6 +404,9 @@ def run_auto_trade_pass(
                         rejected_reason=f"broker_validation: {val_exc}",
                     )
                 )
+                # Note: suggestion stays 'accepted' — it will retry next morning.
+                # For permanent rejections (e.g. always sub-penny), manually
+                # reject the suggestion via the API to stop the retry loop.
                 continue   # keep LIVE, try next suggestion
             except Exception as broker_exc:
                 _trigger_kill_switch(
