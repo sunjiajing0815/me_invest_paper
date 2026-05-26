@@ -99,3 +99,65 @@ uv run ruff check src/ tests/        → clean
 ```
 
 No schema changes. No Docker changes. No new env vars.
+
+---
+
+# Post-Phase 4 Update — Reload-Targets Bar Backfill + Watchlist Update
+
+**Date:** 2026-05-27  
+**Commit:** `fb21708`  
+**Scope:** UX improvement to `reload-targets`; watchlist expansion; stale test fixes.
+
+---
+
+## Problem
+
+After editing `targets.yaml` to add new tickers, two manual steps were required: `POST /admin/reload-targets` (to update the DB) and `uv run python scripts/backfill_bars.py` (to fetch price history). The bars step was easy to forget, which would cause the next weekly suggestions run to fail on indicator computation for the new tickers.
+
+---
+
+## What changed
+
+### 1 — `reload-targets` triggers bar backfill (`main.py`)
+
+`POST /admin/reload-targets` now calls `update_bars()` in a background thread immediately after `load_targets_into_db()` completes. New tickers get a 2-year history backfill; existing tickers get an incremental update from their last bar.
+
+The HTTP response returns immediately with `"bars_sync": "started in background"`. Check app logs for `reload-targets: bar backfill complete` to confirm completion.
+
+### 2 — Watchlist expanded (`config/targets.yaml`)
+
+| Change | Detail |
+|---|---|
+| Removed | SCHD, AAPL |
+| Added | BTC (Grayscale Bitcoin Mini Trust), ISRG (Intuitive Surgical), BRK.B (Berkshire B), GOOG |
+| Adjusted | VOO and QQQ both to 25% (was 30%/25%); bands updated to `[21, 29]` |
+| Fixed | `BRKB` → `BRK.B` (Alpaca canonical symbol) |
+
+Pct sum: 95 + 5 cash = 100 ✓. All 10 tickers have `asset_class` set (index/leveraged ETFs explicit; BTC/ISRG/BRK.B/equities default to `"equity"`).
+
+### 3 — Stale test fixes (`tests/`)
+
+- `test_real_targets_yaml_validates`: hardcoded count `8` → `10` to match new watchlist.
+- `test_wash_sale_guard_blocks_real_buy`: the loss `filled_at` was anchored to `_NOW = 2026-05-01`. As real time advanced past `_NOW + 25 days`, the 30-day wash-sale window no longer covered the loss. Changed to `datetime.now(UTC) - timedelta(days=5)` so it stays fresh indefinitely.
+
+---
+
+## Files changed
+
+| File | Change |
+|---|---|
+| `src/investor/main.py` | `admin_reload_targets()` spawns background thread to call `update_bars()` after DB reload |
+| `config/targets.yaml` | Watchlist and targets updated (10 tickers, pct rebalanced, `BRK.B` fix) |
+| `tests/test_config.py` | Count assertion updated to 10 |
+| `tests/test_auto_trade.py` | Wash-sale test anchored to `datetime.now(UTC)` instead of stale `_NOW` |
+
+---
+
+## Test coverage
+
+```
+uv run pytest tests/   → 298 passed, 1 skipped
+uv run ruff check src/ tests/   → clean
+```
+
+No schema changes. No Docker changes. No new env vars.
