@@ -1,6 +1,7 @@
 """Friday weekly review email — 7-section reflection on the past week."""
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -28,7 +29,11 @@ from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.suggest import HALF_THE_GAP, _next_monday, generate_suggestions
 from ..services.tavily import TavilyClient
-from ..services.weekly_context import WeeklyMarketContext, build_weekly_market_context
+from ..services.weekly_context import (
+    WeeklyMarketContext,
+    build_weekly_market_context,
+    persist_weekly_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +284,18 @@ def run_weekly_review(
             exc_info=True,
         )
         market_context = None
+
+    # Persist context keyed to the *upcoming* Monday so Sunday's loader finds it.
+    if market_context is not None:
+        persist_week_of = _next_monday()
+        try:
+            with session_scope() as s:
+                persist_weekly_context(
+                    s, dataclasses.replace(market_context, week_of=persist_week_of)
+                )
+                s.commit()
+        except Exception as exc:
+            logger.warning("run_weekly_review: failed to persist weekly context: %s", exc)
 
     # Rebuild review with preview + market_context (dataclass is frozen — create new instance)
     review = WeeklyReview(
