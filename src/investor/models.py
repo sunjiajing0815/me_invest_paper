@@ -8,7 +8,6 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Date,
-    DateTime,
     Double,
     Float,
     Index,
@@ -18,6 +17,23 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import DateTime as _SADateTime
+from sqlalchemy.types import TypeDecorator
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """DateTime that always returns tz-aware UTC datetimes from SQLite.
+    SQLite stores without timezone; this re-attaches UTC on read."""
+
+    impl = _SADateTime(timezone=True)
+    cache_ok = True
+
+    def process_result_value(
+        self, value: datetime | None, dialect: object
+    ) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
 
 
 class Base(DeclarativeBase):
@@ -34,9 +50,9 @@ class TargetAllocation(Base):
     target_pct: Mapped[float] = mapped_column(Double, nullable=False)
     band_low_pct: Mapped[float] = mapped_column(Double, nullable=False)
     band_high_pct: Mapped[float] = mapped_column(Double, nullable=False)
-    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     effective_to: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
+        UTCDateTime(), nullable=True, default=None
     )
 
 
@@ -47,7 +63,7 @@ class PositionsSnapshot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     qty: Mapped[float] = mapped_column(Double, nullable=False)
     avg_cost: Mapped[float] = mapped_column(Double, nullable=False)
@@ -75,12 +91,12 @@ class BrokerAccount(Base):
     mode: Mapped[str] = mapped_column(String, nullable=False)
     cash_usd: Mapped[float] = mapped_column(Double, nullable=False)
     equity_usd: Mapped[float] = mapped_column(Double, nullable=False)
-    last_sync: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_sync: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     effective_from: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     effective_to: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
+        UTCDateTime(), nullable=True, default=None
     )
 
 
@@ -96,12 +112,12 @@ class SRLevel(Base):
     method: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "pivot_weekly_S1", "sma_50"
     as_of: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     llm_rationale: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     scored_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
+        UTCDateTime(), nullable=True, default=None
     )
     scored_by_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     prompt_version: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -125,13 +141,13 @@ class OrderSuggestion(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     target_allocation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     confidence_at_creation: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     anchor_method: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     acted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
+        UTCDateTime(), nullable=True, default=None
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     base_qty: Mapped[float | None] = mapped_column(Double, nullable=True)
@@ -151,7 +167,7 @@ class LLMCallLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ts: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
     purpose: Mapped[str] = mapped_column(String, nullable=False)       # e.g. "score_levels"
     model: Mapped[str] = mapped_column(String, nullable=False)
@@ -172,10 +188,10 @@ class NewsEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ts: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
     ticker: Mapped[str] = mapped_column(String, nullable=False)
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)       # "alpaca" | "finnhub"
     headline: Mapped[str] = mapped_column(String, nullable=False)
     url: Mapped[str] = mapped_column(String, nullable=False)
@@ -198,7 +214,7 @@ class MoverState(Base):
     last_triggered_threshold: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
     # 0.0 = never triggered (or reset); 5.0 = 5% threshold last triggered; increments by 5.0
     last_triggered_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
+        UTCDateTime(), nullable=True, default=None
     )
     last_pct_change: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
@@ -218,7 +234,7 @@ class OrderExecution(Base):
     filled_qty: Mapped[float] = mapped_column(Double, nullable=False)
     limit_price: Mapped[float | None] = mapped_column(Double, nullable=True)
     filled_price: Mapped[float | None] = mapped_column(Double, nullable=True)
-    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)  # "alpaca" | "moomoo"
     # NULL for DRY_RUN rows
     broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -233,7 +249,7 @@ class OrderExecution(Base):
     match_method: Mapped[str] = mapped_column(String, nullable=False)
     match_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
     __table_args__ = (
         UniqueConstraint("broker_order_id", "broker", name="uq_broker_order_id"),
@@ -247,7 +263,7 @@ class AutoTradePromotionLog(Base):
     __tablename__ = "auto_trade_promotion_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     from_mode: Mapped[str] = mapped_column(String, nullable=False)
     to_mode: Mapped[str] = mapped_column(String, nullable=False)
     # alpaca_paper|alpaca_live|moomoo
@@ -263,7 +279,7 @@ class KillSwitchLog(Base):
     __tablename__ = "kill_switch_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     # manual|cap_breach|readback_mismatch|broker_error
     trigger: Mapped[str] = mapped_column(String, nullable=False)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -280,8 +296,8 @@ class AutoTradeCaps(Base):
     per_day_max_usd: Mapped[float] = mapped_column(Double, nullable=False)
     per_week_max_usd_per_ticker: Mapped[float] = mapped_column(Double, nullable=False)
     per_day_max_orders: Mapped[int] = mapped_column(Integer, nullable=False)
-    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class WeeklyMarketContextRow(Base):
@@ -293,6 +309,6 @@ class WeeklyMarketContextRow(Base):
     week_of: Mapped[date] = mapped_column(Date, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
     __table_args__ = (Index("ix_wmc_week_of", "week_of"),)  # NOT unique — re-runs allowed
