@@ -53,6 +53,8 @@ class ReviewContext:
     market_context: WeeklyMarketContext | None = None  # None → skip narrative pass
     # empty → gate no-ops
     earnings_by_ticker: dict[str, date] = dataclasses.field(default_factory=dict)
+    # ticker -> "index_etf" | "leveraged_etf" | "equity"
+    target_asset_classes: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,14 @@ def gather_context_node(
     targets_id: int | None
 
     week_of: date = state["week_of"]
+
+    from ..config import load_targets
+    try:
+        _targets_cfg = load_targets(settings.targets_path)
+        target_asset_classes = {t.ticker: t.asset_class for t in _targets_cfg.targets}
+    except Exception:
+        target_asset_classes = {}
+
     earnings_by_ticker = earnings_client.upcoming_earnings(
         watchlist,
         start=week_of,
@@ -185,6 +195,7 @@ def gather_context_node(
         untracked_positions=untracked,
         market_context=market_context,
         earnings_by_ticker=earnings_by_ticker,
+        target_asset_classes=target_asset_classes,
     )
 
     return {**state, "context": ctx, "targets_id": targets_id}
@@ -392,6 +403,10 @@ def context_adjust_node(
                 "bounds": {
                     "min": settings.context_size_min,
                     "max": settings.context_size_max,
+                },
+                "asset_classes": {
+                    d.ticker: ctx.target_asset_classes.get(d.ticker, "equity")
+                    for d in drafts
                 },
             },
             default=str,

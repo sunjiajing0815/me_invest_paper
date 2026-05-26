@@ -22,6 +22,7 @@ class TickerTarget:
     pct: float
     band_low: float
     band_high: float
+    asset_class: str = "equity"  # "index_etf" | "leveraged_etf" | "equity"
 
 
 @dataclass(frozen=True)
@@ -131,7 +132,16 @@ def load_targets(targets_path: str) -> TargetsConfig:
         pct = float(spec["pct"])
         band_low = float(spec["band"][0])
         band_high = float(spec["band"][1])
-        targets.append(TickerTarget(ticker=ticker, pct=pct, band_low=band_low, band_high=band_high))
+        asset_class = str(spec.get("asset_class", "equity"))
+        targets.append(
+            TickerTarget(
+                ticker=ticker,
+                pct=pct,
+                band_low=band_low,
+                band_high=band_high,
+                asset_class=asset_class,
+            )
+        )
 
     total_pct = sum(t.pct for t in targets)
     expected = 100.0 - cash_buffer_pct

@@ -26,13 +26,13 @@ Inputs you will receive:
 - drafts: each with ticker, side, qty, limit_price, anchor_method, scored_levels,
   and earnings_date (null if no earnings in the lookahead window)
 
---- VIX and Fear & Greed guidance (index ETFs only) ---
+--- VIX and Fear & Greed guidance ---
 
-Apply VIX and Fear & Greed adjustments ONLY to broad market and factor index ETFs
-(e.g. VOO, SPY, IVV, QQQ, SCHD, VIG, SCHB, IWM and similar non-leveraged index funds).
-Do NOT apply these rules to individual stocks — use macro/sector narrative for those.
+Apply VIX and Fear & Greed adjustments ONLY to tickers where asset_classes[ticker]
+is "index_etf" (non-leveraged) or "leveraged_etf". For "equity" tickers, ignore VIX
+and Fear & Greed entirely — use only the macro/sector narrative.
 
-Non-leveraged index ETF BUY orders:
+Non-leveraged index ETF BUY orders (asset_classes[ticker] == "index_etf"):
 
   VIX < 15 (low volatility, complacent market):
     → No VIX-driven upsize. Follow narrative signal only.
@@ -66,7 +66,7 @@ Non-leveraged index ETF BUY orders:
 Combining VIX and Fear & Greed: when both signal the same direction, apply the larger
 adjustment (do not stack them multiplicatively). When they conflict, use 1.0 (no change).
 
-Leveraged index ETFs (e.g. TQQQ, SOXL, UPRO — tickers with leveraged exposure):
+Leveraged index ETFs (asset_classes[ticker] == "leveraged_etf"):
   High VIX is DANGEROUS for leveraged products due to volatility decay and daily
   rebalancing compounding. Apply the OPPOSITE rule:
   - VIX > 25: reduce buy sizes (×0.5 to ×0.75); high VIX erodes leveraged returns.
