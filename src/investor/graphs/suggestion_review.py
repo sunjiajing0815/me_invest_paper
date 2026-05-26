@@ -349,6 +349,7 @@ def context_adjust_node(
 
     # --- 4b: Narrative multiplier (Sonnet, bounded) ---
     narrative_adjustments: dict[int, DraftSizeAdjustment] = {}
+    context_tel: dict[str, object] = {}
     if ctx.market_context is not None:
         system = load_prompt(f"context_size_v{settings.context_adjust_prompt_version}.txt")
         user_payload = json.dumps(
@@ -391,7 +392,7 @@ def context_adjust_node(
             default=str,
         )
         with session_factory() as s:
-            parsed, _ = llm_node_call(
+            parsed, context_tel = llm_node_call(
                 purpose="context_adjust",
                 model=SONNET,
                 system=system,
@@ -436,20 +437,23 @@ def context_adjust_node(
             lv = earnings_anchors[i]
             new_limit = lv.price
             new_anchor = lv.method
-            note_parts.append(
-                f"earnings {ctx.earnings_by_ticker[d.ticker]}: reanchored to {new_anchor}"
+            size_suffix = f", size ×{ef}" if ef != 1.0 else ""
+            earnings_note = (
+                f"earnings {ctx.earnings_by_ticker[d.ticker]}: "
+                f"reanchored to {new_anchor}{size_suffix}"
             )
+            note_parts.append(earnings_note)
         elif prefer_anchor is not None:
             found = _find_level(ticker_levels, prefer_anchor, d.side)
             if found is not None:
                 new_limit = found.price
                 new_anchor = found.method
 
-        if ef != 1.0:
+        if ef != 1.0 and i not in earnings_anchors:
             note_parts.append(f"earnings {ctx.earnings_by_ticker.get(d.ticker)}: size ×{ef}")
 
-        base_qty = d.qty
-        new_qty = float(int(base_qty * size_factor))  # floor to whole shares
+        base_qty = d.qty if size_factor != 1.0 else None
+        new_qty = float(int((base_qty or d.qty) * size_factor))  # floor to whole shares
         if new_qty < 1:
             log.info(
                 "context_adjust: dropping %s/%s draft (size ×%.2f → qty %.0f)",
@@ -474,7 +478,12 @@ def context_adjust_node(
         old_to_new[old]: text for old, text in rationales.items() if old in old_to_new
     }
 
-    return {**state, "drafts": adjusted, "rationales": rekeyed_rationales}
+    return {
+        **state,
+        "drafts": adjusted,
+        "rationales": rekeyed_rationales,
+        "telemetry": {**state.get("telemetry", {}), **context_tel},
+    }
 
 
 def critic_node(
