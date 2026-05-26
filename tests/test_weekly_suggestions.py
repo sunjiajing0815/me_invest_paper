@@ -52,7 +52,7 @@ class TestScoreAllTickersParallel:
                 llm=mock_llm,
                 bars_dir="data/bars",
                 recent_news_by_ticker={},
-                prompt_version="v2",
+                prompt_version="2",
                 max_workers=4,
             )
             elapsed = time.monotonic() - t0
@@ -97,7 +97,7 @@ class TestScoreAllTickersParallel:
                     llm=mock_llm,
                     bars_dir="data/bars",
                     recent_news_by_ticker={},
-                    prompt_version="v2",
+                    prompt_version="2",
                     max_workers=4,
                 )
 
@@ -150,7 +150,7 @@ class TestScoreAllTickersParallel:
                     llm=mock_llm,
                     bars_dir="data/bars",
                     recent_news_by_ticker={},
-                    prompt_version="v2",
+                    prompt_version="2",
                     max_workers=4,
                 )
 

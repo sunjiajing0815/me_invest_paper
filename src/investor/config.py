@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     )
     @classmethod
     def strip_v_prefix(cls, v: str) -> str:
-        return v.lstrip("v")
+        return v.removeprefix("v")
 
     @field_validator("broker")
     @classmethod
