@@ -12,7 +12,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -21,9 +21,6 @@ from sqlalchemy.orm import Session
 from ..models import WeeklyMarketContextRow
 from .llm import SONNET, LLMClient, load_prompt
 from .tavily import NewsResult, TavilyClient
-
-if TYPE_CHECKING:
-    pass
 
 log = logging.getLogger(__name__)
 
@@ -112,20 +109,15 @@ def load_latest_weekly_context(
     s: Session, *, week_of: date, max_age_days: int
 ) -> WeeklyMarketContext | None:
     """Load the most recent context for week_of; return None if absent or stale."""
+    cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
     row = s.scalars(
         select(WeeklyMarketContextRow)
         .where(WeeklyMarketContextRow.week_of == week_of)
+        .where(WeeklyMarketContextRow.created_at >= cutoff)
         .order_by(WeeklyMarketContextRow.created_at.desc())
     ).first()
     if row is None:
-        return None
-    cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
-    if row.created_at < cutoff:
-        log.info(
-            "load_latest_weekly_context: context for %s is stale (created %s)",
-            week_of,
-            row.created_at,
-        )
+        log.info("load_latest_weekly_context: no fresh context for %s", week_of)
         return None
     return _weekly_context_from_dict(json.loads(row.payload_json))
 
