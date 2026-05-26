@@ -17,7 +17,9 @@ Phase 4.7 adds a new **`context_adjust` node** to the Sunday suggestion-review g
 
 The Friday weekly-review job now also persists the Tavily+Sonnet market context to a new `weekly_market_context` DB table so Sunday's graph can load it without re-querying Tavily.
 
-All planned deliverables were met across 13 tasks. Nine bugs were found and fixed during implementation review.
+A post-implementation addition extended the narrative multiplier with **VIX and CNN Fear & Greed Index** signals, giving the Sonnet sizing model structured market-sentiment data specifically for index ETF sizing decisions. See §2a and §3a.
+
+All planned deliverables were met across 13 tasks. Eleven bugs were found and fixed (9 during implementation review, 2 post-deploy).
 
 ---
 
@@ -29,6 +31,7 @@ All planned deliverables were met across 13 tasks. Nine bugs were found and fixe
 |---|---|
 | `src/investor/services/earnings.py` | `EarningsClient` Protocol + `FinnhubEarningsClient` (per-ticker Finnhub calendar, exception → WARNING + continue) + `FakeEarningsClient` (canned results, call recording, window filtering) + `make_earnings_client()` factory (empty key → Fake + WARNING) |
 | `src/investor/prompts/context_size_v1.txt` | Sonnet size-multiplier system prompt — hard rules: multiplier within `[bounds.min, bounds.max]`, `prefer_anchor` must be a method from `scored_levels`, no price targets, no buy/sell/hold recommendations, JSON-only output |
+| `src/investor/prompts/context_size_v2.txt` | v1 + VIX and CNN Fear & Greed Index guidance for index ETFs: non-leveraged ETFs upsize on high VIX / Extreme Fear, reduce on Extreme Greed; leveraged ETFs (TQQQ etc.) invert VIX rule due to volatility decay; individual stocks use macro/sector narrative only |
 | `src/investor/prompts/suggestion_critic_v2.txt` | Copy of `suggestion_critic_v1.txt` + rule 6: "Sizing already adjusted — RESPECT these. Only override if the adjustment created a NEW problem." |
 | `tests/test_earnings.py` | 5 tests — `FakeEarningsClient` call recording, window filtering, factory no-key → Fake, factory with key → Concrete, SDK exception → `{}` |
 | `tests/test_context_adjust.py` | 8 tests — earnings gate shrinks qty, reanchor to deeper level, no deeper anchor keeps original, narrative clamp high, narrative clamp low, sub-1-share draft dropped, rationale re-keying after drop, price invariant on wrong-side prefer_anchor |
@@ -47,10 +50,10 @@ All planned deliverables were met across 13 tasks. Nine bugs were found and fixe
 |---|---|
 | `src/investor/models.py` | Added `WeeklyMarketContextRow` ORM class; added `base_qty`, `size_factor` (with `default=1.0, server_default="1.0"`), `context_note` columns to `OrderSuggestion` |
 | `src/investor/services/suggest.py` | Added `base_qty: float \| None = None`, `size_factor: float = 1.0`, `context_note: str \| None = None` to `OrderSuggestionRow` frozen dataclass; updated `persist_suggestions()` insert and update branches to write all three fields |
-| `src/investor/services/weekly_context.py` | Added `persist_weekly_context(s, ctx)` — serialises via `dataclasses.asdict` + `json.dumps(default=str)`; `load_latest_weekly_context(s, *, week_of, max_age_days)` — staleness check in SQL WHERE (not Python, to avoid naive/aware `TypeError`); `_weekly_context_from_dict(data)` — reconstructs `WeeklyMarketContext` + `NewsResult` citations |
-| `src/investor/jobs/weekly_review.py` | After `build_weekly_market_context()`, persists context via `dataclasses.replace(market_context, week_of=_next_monday())` with exception guard (failure logs WARNING, does not block the review email) |
-| `src/investor/config.py` | Added 8 new settings: `earnings_size_factor=0.5`, `earnings_reanchor=True`, `earnings_lookahead_days=7`, `context_size_min=0.25`, `context_size_max=1.5`, `context_max_age_days=4`, `context_adjust_prompt_version="v1"`, `critic_prompt_version="v2"` |
-| `src/investor/graphs/suggestion_review.py` | Extended `ReviewContext` with `market_context: WeeklyMarketContext \| None` and `earnings_by_ticker: dict[str, date]`; updated `gather_context_node` (earnings fetch BEFORE session, market context load INSIDE session); added `DraftSizeAdjustment` / `DraftSizeAdjustments` Pydantic schemas; added `_deeper_anchor()` and `_find_level()` helpers; added `context_adjust_node` (three sub-passes); updated `critic_node` (v2 prompt; adds base_qty/size_factor/context_note/earnings_by_ticker to payload); updated `build_suggestion_review_graph` (new params, wired `reason → context_adjust → critic`) |
+| `src/investor/services/weekly_context.py` | Added `persist_weekly_context(s, ctx)` — serialises via `dataclasses.asdict` + `json.dumps(default=str)`; `load_latest_weekly_context(s, *, week_of, max_age_days)` — staleness check in SQL WHERE (not Python, to avoid naive/aware `TypeError`); `_weekly_context_from_dict(data)` — reconstructs `WeeklyMarketContext` + `NewsResult` citations; **post-impl:** added `vix`, `fear_greed_score`, `fear_greed_label` fields to `WeeklyMarketContext`; `_fetch_vix()` (Finnhub `^VIX`); `_fetch_fear_greed()` (CNN public endpoint, no key); `build_weekly_market_context()` now accepts `finnhub_api_key` and populates sentiment fields; `_weekly_context_from_dict()` reads them back |
+| `src/investor/jobs/weekly_review.py` | After `build_weekly_market_context()`, persists context via `dataclasses.replace(market_context, week_of=_next_monday())` with exception guard (failure logs WARNING, does not block the review email); **post-impl:** passes `finnhub_api_key=settings.finnhub_api_key` to `build_weekly_market_context()` |
+| `src/investor/config.py` | Added 8 new settings: `earnings_size_factor=0.5`, `earnings_reanchor=True`, `earnings_lookahead_days=7`, `context_size_min=0.25`, `context_size_max=1.5`, `context_max_age_days=4`, `context_adjust_prompt_version="v2"` (bumped from v1 after VIX/F&G addition), `critic_prompt_version="v2"` |
+| `src/investor/graphs/suggestion_review.py` | Extended `ReviewContext` with `market_context: WeeklyMarketContext \| None` and `earnings_by_ticker: dict[str, date]`; updated `gather_context_node` (earnings fetch BEFORE session, market context load INSIDE session); added `DraftSizeAdjustment` / `DraftSizeAdjustments` Pydantic schemas; added `_deeper_anchor()` and `_find_level()` helpers; added `context_adjust_node` (three sub-passes); updated `critic_node` (v2 prompt; adds base_qty/size_factor/context_note/earnings_by_ticker to payload); updated `build_suggestion_review_graph` (new params, wired `reason → context_adjust → critic`); **post-impl:** added `sentiment` block to Sonnet user payload containing `vix`, `fear_greed_score`, `fear_greed_label` from persisted context |
 | `src/investor/jobs/weekly_suggestions.py` | Added `earnings_client` parameter; passes `settings=settings, earnings_client=earnings_client` to `build_suggestion_review_graph()` |
 | `src/investor/main.py` | Calls `make_earnings_client(_settings)` in lifespan; stores result on `app.state.earnings`; updated `weekly_fn` partial and `admin_run_weekly_suggestions` endpoint to pass earnings client |
 | `templates/weekly_suggestions.html.j2` | Qty cell: adds `(base N · ×F)` badge when `size_factor != 1.0 and base_qty is not none`; rationale cell: adds grey `context_note` line when present |
@@ -58,6 +61,50 @@ All planned deliverables were met across 13 tasks. Nine bugs were found and fixe
 | `CLAUDE.md` | Updated Tavily ban (now bounded exception for context_adjust); added gotchas 24–26 (week-of alignment, stale context skip, earnings gate uses Finnhub not Tavily); added Phase 4.7 env vars to required env list |
 | `product_plan.md` | Added Phase 4.7 section |
 | `README.md` | Updated header, intro, env vars table, scheduler table, weekly suggestions section (6-node graph, context_adjust description, email display), weekly review section, `order_suggestion` data model (+3 cols), new `weekly_market_context` table, updated llm_call_log purpose values, new SQL queries, updated project layout, updated test count (261 → 277), added ADR-0021 |
+
+---
+
+## 2a. Post-implementation: VIX and Fear & Greed index ETF sizing
+
+After initial deploy, a further enhancement was added: the Sonnet sizing call now receives structured market-sentiment data — CBOE VIX and CNN Fear & Greed Index — and `context_size_v2.txt` adds explicit sizing rules for index ETFs.
+
+### Data sourcing
+
+| Signal | Source | API key required | Fetch location |
+|---|---|---|---|
+| CBOE VIX | Finnhub `quote("^VIX")` | Yes — `FINNHUB_API_KEY` (already in config) | `_fetch_vix()` in `weekly_context.py`, called in `build_weekly_market_context()` |
+| CNN Fear & Greed | `https://production.dataviz.cnn.io/index/fearandgreed/graphdata` (public) | No | `_fetch_fear_greed()` in `weekly_context.py`, stdlib `urllib.request` |
+
+Both are fetched on **Friday** during `run_weekly_review`, persisted inside `WeeklyMarketContext.payload_json`, and loaded on **Sunday** by `gather_context_node` — same Friday→Sunday bridge as the narrative. If either fetch fails (network error, API key absent, endpoint changed), the field is `None` and the prompt skips that signal.
+
+### `WeeklyMarketContext` new fields
+
+```python
+vix: float | None = None             # CBOE VIX at time of Friday synthesis
+fear_greed_score: int | None = None  # 0–100
+fear_greed_label: str | None = None  # "Extreme Fear" … "Extreme Greed"
+```
+
+All three default to `None` — existing persisted rows deserialise cleanly without migration.
+
+### Prompt v2 sizing rules (index ETFs only)
+
+Non-leveraged index ETFs (VOO, QQQ, SCHD, SPY, IVV, …):
+
+| Condition | Adjustment for BUY orders |
+|---|---|
+| VIX 25–35 (elevated fear) | ×1.1 – ×1.2 upsize |
+| VIX > 35 (crisis) | upsize to `bounds.max` |
+| Fear & Greed 0–25 (Extreme Fear) | ×1.15 – ×1.25 upsize |
+| Fear & Greed 26–45 (Fear) | ×1.05 – ×1.1 upsize |
+| Fear & Greed 55–74 (Greed) | no change (1.0) |
+| Fear & Greed 75–100 (Extreme Greed) | ×0.75 – ×0.9 downsize |
+| Signals conflict | 1.0 (no change) |
+| Both signal same direction | larger of the two (not stacked) |
+
+Leveraged ETFs (TQQQ, SOXL, UPRO, …) — **inverse VIX rule**: VIX > 25 → ×0.5 – ×0.75 downsize (volatility decay and daily rebalancing compound losses in high-VIX regimes).
+
+Individual stocks: VIX/F&G ignored; macro/sector narrative drives sizing as before.
 
 ---
 
@@ -234,12 +281,12 @@ uv run alembic current               → head
 | `CONTEXT_SIZE_MIN` | `0.25` | Lower clamp on narrative multiplier |
 | `CONTEXT_SIZE_MAX` | `1.5` | Upper clamp on narrative multiplier |
 | `CONTEXT_MAX_AGE_DAYS` | `4` | Max age of Friday context row for Sunday to use |
-| `CONTEXT_ADJUST_PROMPT_VERSION` | `v1` | Selects `context_size_v{version}.txt` |
+| `CONTEXT_ADJUST_PROMPT_VERSION` | `v2` | Selects `context_size_v{version}.txt` (bumped from `v1` after VIX/F&G addition) |
 | `CRITIC_PROMPT_VERSION` | `v2` | Selects `suggestion_critic_v{version}.txt` |
 
-**`FINNHUB_API_KEY`** — already present since Phase 3b; now dual-purpose (news fallback + earnings gate). Empty key is safe: earnings gate becomes a no-op with a one-time WARNING log.
+**`FINNHUB_API_KEY`** — already present since Phase 3b; now triple-purpose: news fallback, earnings gate, and VIX fetch. Empty key disables all three with WARNING logs; no crash.
 
-**`TAVILY_API_KEY`** — already present since Phase 4.5; no change. If absent, Friday runs skip context persistence; Sunday runs skip the narrative sub-pass. The earnings gate is independent and still applies.
+**`TAVILY_API_KEY`** — already present since Phase 4.5; no change. If absent, Friday runs skip context persistence (including VIX/F&G); Sunday runs skip the full narrative+sentiment sub-pass. The earnings gate is independent and still applies.
 
 ---
 
@@ -250,17 +297,18 @@ Before tagging `v0.4.7.0`:
 | # | Item | Status |
 |---|---|---|
 | 1 | `uv run alembic upgrade head` applied — `weekly_market_context` table and 3 audit columns present | ⏳ Pending |
-| 2 | Friday review email runs and `SELECT * FROM weekly_market_context` shows a row with `week_of` = next Monday | ⏳ Pending first live Friday run |
+| 2 | Friday review email runs and `SELECT * FROM weekly_market_context` shows a row with `week_of` = next Monday; `payload_json` contains `vix` and `fear_greed_score` fields | ⏳ Pending first live Friday run |
 | 3 | Sunday suggestions email shows at least one suggestion with `(base N · ×F)` badge and `context_note` | ⏳ Pending first live Sunday run |
 | 4 | Earnings gate: `SELECT * FROM order_suggestion WHERE size_factor != 1.0` returns rows for any earnings-week ticker | ⏳ Pending |
-| 5 | Second Sunday email confirms consistent behaviour | ⏳ Pending |
-| 6 | Remove `TAVILY_API_KEY` and re-run weekly suggestions: email arrives normally, no crash, no size badges | ⏳ Pending |
-| 7 | Remove `FINNHUB_API_KEY` and re-run weekly suggestions: `WARNING: FINNHUB_API_KEY not set` in logs, no size adjustments, no crash | ⏳ Pending |
-| 8 | `uv run pytest -m "not integration"` — 277 tests pass | ✅ Done |
-| 9 | `uv run ruff check src/ tests/` — clean | ✅ Done |
-| 10 | `uv run mypy src/` — no new errors in Phase 4.7 files | ✅ Done |
-| 11 | ADR-0021 written and accepted | ✅ Done |
-| 12 | CLAUDE.md updated (Tavily ban updated, gotchas 24–26, Phase 4.7 env vars) | ✅ Done |
-| 13 | README updated (6-node graph, context_adjust description, env vars, new table, SQL queries, test count, project layout, ADR list) | ✅ Done |
-| 14 | `product_plan.md` updated with Phase 4.7 section | ✅ Done |
-| 15 | `plans/phase_4_7_completion.md` written | ✅ Done |
+| 5 | VIX/F&G signal visible in `context_note` for at least one index ETF suggestion (e.g. "VIX 28 + Extreme Fear") | ⏳ Pending |
+| 6 | Second Sunday email confirms consistent behaviour | ⏳ Pending |
+| 7 | Remove `TAVILY_API_KEY` and re-run weekly suggestions: email arrives normally, no crash, no size badges | ⏳ Pending |
+| 8 | Remove `FINNHUB_API_KEY` and re-run weekly suggestions: `WARNING: FINNHUB_API_KEY not set` in logs, no earnings or VIX adjustments, no crash | ⏳ Pending |
+| 9 | `uv run pytest -m "not integration"` — 277 tests pass | ✅ Done |
+| 10 | `uv run ruff check src/ tests/` — clean | ✅ Done |
+| 11 | `uv run mypy src/` — no new errors in Phase 4.7 files | ✅ Done |
+| 12 | ADR-0021 written and accepted | ✅ Done |
+| 13 | CLAUDE.md updated (Tavily ban updated, gotchas 24–26, Phase 4.7 env vars) | ✅ Done |
+| 14 | README updated (6-node graph, context_adjust description, env vars, new table, SQL queries, test count, project layout, ADR list) | ✅ Done |
+| 15 | `product_plan.md` updated with Phase 4.7 section | ✅ Done |
+| 16 | `plans/phase_4_7_completion.md` updated with VIX/F&G addition (§2a, §3a) | ✅ Done |
