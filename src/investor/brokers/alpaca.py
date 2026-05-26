@@ -102,6 +102,8 @@ class AlpacaAdapter:
 
     def submit_order(self, req: OrderRequest) -> OrderConfirmation:
         """Submit a limit order to Alpaca and return the broker confirmation."""
+        if req.limit_price is None:
+            raise ValueError(f"limit_price is required for a limit order (ticker={req.ticker})")
         _order = self._client.submit_order(
             LimitOrderRequest(
                 symbol=req.ticker,
@@ -109,8 +111,8 @@ class AlpacaAdapter:
                 side=OrderSide.BUY if req.side == "buy" else OrderSide.SELL,
                 time_in_force=TimeInForce.DAY if req.time_in_force == "day" else TimeInForce.GTC,
                 limit_price=(
-                    _floor2dp(req.limit_price or 0.0) if req.side == "buy"
-                    else _ceil2dp(req.limit_price or 0.0)
+                    _floor2dp(req.limit_price) if req.side == "buy"
+                    else _ceil2dp(req.limit_price)
                 ),
                 client_order_id=req.client_order_id,
             )
