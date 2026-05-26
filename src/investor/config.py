@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     magic_link_secret: str = ""
     app_base_url: str = "http://localhost:8000"
-    level_prompt_version: str = "v2"
+    level_prompt_version: str = "2"
     llm_daily_cost_cap_usd: float = 3.0
     llm_backend: str = "anthropic_api"
     llm_cli_path: str = ""  # override claude CLI for agent_sdk; empty = use bundled
@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     # Tavily search API (Phase 4.5 weekly market context)
     tavily_api_key: str = ""
     tavily_monthly_cap: int = 200
-    weekly_context_prompt_version: str = "v1"
+    weekly_context_prompt_version: str = "1"
 
     # Context-aware order sizing (Phase 4.7)
     earnings_size_factor: float = 0.5
@@ -86,8 +86,16 @@ class Settings(BaseSettings):
     context_size_min: float = 0.25
     context_size_max: float = 1.5
     context_max_age_days: int = 4
-    context_adjust_prompt_version: str = "v2"
-    critic_prompt_version: str = "v2"
+    context_adjust_prompt_version: str = "1"
+    critic_prompt_version: str = "2"
+
+    @field_validator(
+        "level_prompt_version", "weekly_context_prompt_version",
+        "context_adjust_prompt_version", "critic_prompt_version",
+    )
+    @classmethod
+    def strip_v_prefix(cls, v: str) -> str:
+        return v.lstrip("v")
 
     @field_validator("broker")
     @classmethod

@@ -351,7 +351,7 @@ def context_adjust_node(
     narrative_adjustments: dict[int, DraftSizeAdjustment] = {}
     context_tel: dict[str, object] = {}
     if ctx.market_context is not None:
-        system = load_prompt(f"context_size_{settings.context_adjust_prompt_version}.txt")
+        system = load_prompt(f"context_size_v{settings.context_adjust_prompt_version}.txt")
         user_payload = json.dumps(
             {
                 "week_of": str(state["week_of"]),
@@ -498,7 +498,7 @@ def critic_node(
     settings: Any,
 ) -> SuggestionReviewState:
     """Sonnet reviews each draft + rationale and returns approve/revise/reject."""
-    system = load_prompt(f"suggestion_critic_{settings.critic_prompt_version}.txt")
+    system = load_prompt(f"suggestion_critic_v{settings.critic_prompt_version}.txt")
 
     ctx = state["context"]
     drafts = state["drafts"]

@@ -33,6 +33,26 @@ class TestSettings:
         with pytest.raises(Exception, match="ALPACA_API_KEY is required"):
             Settings()
 
+    def test_prompt_version_validator_strips_v_prefix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BROKER", "alpaca_paper")
+        monkeypatch.setenv("ALPACA_API_KEY", "key")
+        monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+        monkeypatch.setenv("CONTEXT_ADJUST_PROMPT_VERSION", "v2")
+        s = Settings()
+        assert s.context_adjust_prompt_version == "2"
+
+    def test_prompt_version_validator_bare_number_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BROKER", "alpaca_paper")
+        monkeypatch.setenv("ALPACA_API_KEY", "key")
+        monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+        monkeypatch.setenv("CONTEXT_ADJUST_PROMPT_VERSION", "2")
+        s = Settings()
+        assert s.context_adjust_prompt_version == "2"
+
 
 class TestLoadTargets:
     def test_valid_yaml_loads(self, tmp_path: Path) -> None:

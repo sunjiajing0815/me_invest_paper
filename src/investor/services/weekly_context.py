@@ -208,7 +208,7 @@ def build_weekly_market_context(
     llm: LLMClient,
     watchlist: list[str],
     week_of: date,
-    prompt_version: str = "v1",
+    prompt_version: str = "1",
     finnhub_api_key: str = "",
 ) -> WeeklyMarketContext | None:
     """Fanout Tavily queries, synthesise with Sonnet, return WeeklyMarketContext.
@@ -308,7 +308,7 @@ def build_weekly_market_context(
         default=str,
     )
 
-    system_prompt = load_prompt(f"weekly_context_{prompt_version}.txt")
+    system_prompt = load_prompt(f"weekly_context_v{prompt_version}.txt")
     _, parsed = llm.call(
         model=SONNET,
         system=system_prompt,

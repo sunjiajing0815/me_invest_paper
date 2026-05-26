@@ -56,7 +56,7 @@ def score_levels_for_ticker(
     computed_levels: list[SRLevelRow],
     bars_dir: str,
     recent_news: list[dict[str, str]] | None = None,
-    prompt_version: str = "v2",
+    prompt_version: str = "2",
 ) -> list[ScoredLevel]:
     """Score S/R levels for one ticker using Claude Sonnet.
 
@@ -109,7 +109,7 @@ def score_levels_for_ticker(
         payload["recent_material_news"] = recent_news
 
     user = json.dumps(payload, default=str)
-    system = load_prompt(f"score_levels_{prompt_version}.txt")
+    system = load_prompt(f"score_levels_v{prompt_version}.txt")
 
     resp: LLMResponse
     try:
