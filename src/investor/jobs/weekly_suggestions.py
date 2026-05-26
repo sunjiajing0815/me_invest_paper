@@ -6,6 +6,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from typing import Any
 
 import pydantic
 
@@ -116,7 +117,11 @@ def score_all_tickers_parallel(
 
 
 def run_weekly_suggestions(
-    settings: Settings, adapter: BrokerAdapter, emailer: EmailSender, llm: LLMClient
+    settings: Settings,
+    adapter: BrokerAdapter,
+    emailer: EmailSender,
+    llm: LLMClient,
+    earnings_client: Any,
 ) -> None:
     """Compute indicators + levels, generate suggestions, review via graph, and email.
 
@@ -207,6 +212,8 @@ def run_weekly_suggestions(
         session_factory=session_scope,
         watchlist=tickers,
         bars_dir=settings.bars_dir,
+        settings=settings,
+        earnings_client=earnings_client,
     )
     result = graph.invoke(
         {

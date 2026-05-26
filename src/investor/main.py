@@ -135,14 +135,18 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     from .services.tavily import make_tavily_client
     tavily = make_tavily_client(_settings)
 
+    from .services.earnings import make_earnings_client
+    earnings = make_earnings_client(_settings)
+
     app.state.settings = _settings
     app.state.adapter = adapter
     app.state.emailer = emailer
     app.state.llm = llm
     app.state.tavily = tavily
+    app.state.earnings = earnings
 
     daily_fn = partial(run_daily_report, _settings, adapter, emailer)
-    weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm)
+    weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm, earnings)
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
     expiry_fn = partial(sweep_expired_suggestions, adapter)
     recon_fn = partial(run_daily_reconciliation, _settings, adapter)
@@ -462,7 +466,8 @@ def admin_run_weekly_suggestions(request: Request) -> dict[str, str]:
     emailer = request.app.state.emailer
     logger.info("Weekly suggestions triggered via POST /admin/run-weekly-suggestions")
     try:
-        run_weekly_suggestions(settings, adapter, emailer, request.app.state.llm)
+        earnings = request.app.state.earnings
+        run_weekly_suggestions(settings, adapter, emailer, request.app.state.llm, earnings)
     except Exception as exc:
         logger.error("Weekly suggestions failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly suggestions failed: {exc}") from exc
