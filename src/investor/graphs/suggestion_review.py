@@ -1,6 +1,6 @@
 """Suggestion review LangGraph workflow.
 
-gather_context → reason → critic → revise/skip_revise → finalize
+gather_context → reason → context_adjust → critic → revise/skip_revise → finalize
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import dataclasses
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -25,6 +25,7 @@ from ..services.llm import SONNET, load_prompt
 from ..services.llm_levels import ScoredLevel, load_latest_scored_levels
 from ..services.news import load_recent_material_news
 from ..services.suggest import OrderSuggestionRow, persist_suggestions
+from ..services.weekly_context import WeeklyMarketContext, load_latest_weekly_context
 from . import make_checkpointer
 from ._nodes import llm_node_call
 
@@ -49,6 +50,9 @@ class ReviewContext:
     indicators: dict[str, IndicatorRow]                # keyed by ticker
     account: AccountSnapshot
     untracked_positions: list[UntrackedPosition]
+    market_context: WeeklyMarketContext | None = None  # None → skip narrative pass
+    # empty → gate no-ops
+    earnings_by_ticker: dict[str, date] = dataclasses.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,17 @@ class CriticDecisions(BaseModel):
     items: list[CriticDecisionOut]
 
 
+class DraftSizeAdjustment(BaseModel):
+    draft_index: int
+    size_multiplier: float
+    prefer_anchor: str | None = None
+    note: str
+
+
+class DraftSizeAdjustments(BaseModel):
+    items: list[DraftSizeAdjustment]
+
+
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
@@ -107,6 +122,8 @@ def gather_context_node(
     session_factory: Any,
     watchlist: list[str],
     bars_dir: str,
+    settings: Any,
+    earnings_client: Any,
 ) -> SuggestionReviewState:
     """Load all DB data and compute indicators; build frozen ReviewContext.
 
@@ -121,12 +138,22 @@ def gather_context_node(
     account: AccountSnapshot
     targets_id: int | None
 
+    week_of: date = state["week_of"]
+    earnings_by_ticker = earnings_client.upcoming_earnings(
+        watchlist,
+        start=week_of,
+        end=week_of + timedelta(days=settings.earnings_lookahead_days),
+    )
+
     with session_factory() as s:
         gap_rows = compute_gap(s)
         scored_levels = load_latest_scored_levels(s)
         recent_news = load_recent_material_news(s, days=7)
         untracked = get_untracked_positions(s)
         targets_id = get_active_targets_id(s)
+        market_context = load_latest_weekly_context(
+            s, week_of=week_of, max_age_days=settings.context_max_age_days
+        )
 
         orm_account = (
             s.query(BrokerAccount)
@@ -156,6 +183,8 @@ def gather_context_node(
         indicators=indicators,
         account=account,
         untracked_positions=untracked,
+        market_context=market_context,
+        earnings_by_ticker=earnings_by_ticker,
     )
 
     return {**state, "context": ctx, "targets_id": targets_id}
@@ -279,13 +308,183 @@ def reason_node(
     }
 
 
+def _deeper_anchor(
+    draft: OrderSuggestionRow, scored_levels: dict[str, list[ScoredLevel]]
+) -> ScoredLevel | None:
+    """For buy: nearest support below current limit; for sell: nearest resistance above."""
+    levels = scored_levels.get(draft.ticker, [])
+    if draft.side == "buy":
+        candidates = [lv for lv in levels if lv.type == "support" and lv.price < draft.limit_price]
+        return max(candidates, key=lambda lv: lv.price) if candidates else None
+    candidates = [lv for lv in levels if lv.type == "resistance" and lv.price > draft.limit_price]
+    return min(candidates, key=lambda lv: lv.price) if candidates else None
+
+
+def _find_level(levels: list[ScoredLevel], method: str, side: str) -> ScoredLevel | None:
+    """Return level matching method only if correct type for side; None otherwise."""
+    expected_type = "support" if side == "buy" else "resistance"
+    return next((lv for lv in levels if lv.method == method and lv.type == expected_type), None)
+
+
+def context_adjust_node(
+    state: SuggestionReviewState,
+    llm: Any,
+    session_factory: Any,
+    settings: Any,
+) -> SuggestionReviewState:
+    """Adjust draft quantities: earnings gate + bounded Sonnet narrative multiplier."""
+    ctx = state["context"]
+    drafts = list(state["drafts"])
+
+    # --- 4a: Earnings gate (deterministic Python) ---
+    earnings_factors: dict[int, float] = {}
+    earnings_anchors: dict[int, ScoredLevel] = {}
+    for i, d in enumerate(drafts):
+        if d.ticker in ctx.earnings_by_ticker:
+            earnings_factors[i] = settings.earnings_size_factor
+            if settings.earnings_reanchor:
+                deeper = _deeper_anchor(d, ctx.scored_levels)
+                if deeper is not None:
+                    earnings_anchors[i] = deeper
+
+    # --- 4b: Narrative multiplier (Sonnet, bounded) ---
+    narrative_adjustments: dict[int, DraftSizeAdjustment] = {}
+    if ctx.market_context is not None:
+        system = load_prompt(f"context_size_v{settings.context_adjust_prompt_version}.txt")
+        user_payload = json.dumps(
+            {
+                "week_of": str(state["week_of"]),
+                "market_context": {
+                    "macro_summary": ctx.market_context.macro_summary,
+                    "sector_summary": ctx.market_context.sector_summary,
+                },
+                "drafts": [
+                    {
+                        "draft_index": i,
+                        "ticker": d.ticker,
+                        "side": d.side,
+                        "qty": d.qty,
+                        "limit_price": d.limit_price,
+                        "anchor_method": d.anchor_method,
+                        "scored_levels": [
+                            {
+                                "method": lv.method,
+                                "price": lv.price,
+                                "type": lv.type,
+                                "confidence": lv.confidence,
+                            }
+                            for lv in ctx.scored_levels.get(d.ticker, [])[:5]
+                        ],
+                        "earnings_date": (
+                            str(ctx.earnings_by_ticker[d.ticker])
+                            if d.ticker in ctx.earnings_by_ticker
+                            else None
+                        ),
+                    }
+                    for i, d in enumerate(drafts)
+                ],
+                "bounds": {
+                    "min": settings.context_size_min,
+                    "max": settings.context_size_max,
+                },
+            },
+            default=str,
+        )
+        with session_factory() as s:
+            parsed, _ = llm_node_call(
+                purpose="context_adjust",
+                model=SONNET,
+                system=system,
+                user=user_payload,
+                schema=DraftSizeAdjustments,
+                fallback_factory=lambda: DraftSizeAdjustments(items=[]),
+                llm=llm,
+                session=s,
+            )
+        narrative_adjustments = {it.draft_index: it for it in parsed.items}
+
+    # --- 4c: Apply adjustments (Python), drop sub-1-share drafts, re-key rationales ---
+    rationales = dict(state.get("rationales", {}))
+    adjusted: list[OrderSuggestionRow] = []
+    old_to_new: dict[int, int] = {}
+
+    for i, d in enumerate(drafts):
+        ef = earnings_factors.get(i, 1.0)
+        narrative = narrative_adjustments.get(i)
+
+        nf = 1.0
+        prefer_anchor: str | None = None
+        note_parts: list[str] = []
+
+        if narrative is not None:
+            nf = max(
+                settings.context_size_min,
+                min(settings.context_size_max, narrative.size_multiplier),
+            )
+            prefer_anchor = narrative.prefer_anchor
+            if narrative.note:
+                note_parts.append(narrative.note)
+
+        size_factor = ef * nf
+
+        # Determine new anchor/limit (earnings anchor takes precedence over narrative prefer_anchor)
+        new_limit = d.limit_price
+        new_anchor = d.anchor_method
+        ticker_levels = ctx.scored_levels.get(d.ticker, [])
+
+        if i in earnings_anchors:
+            lv = earnings_anchors[i]
+            new_limit = lv.price
+            new_anchor = lv.method
+            note_parts.append(
+                f"earnings {ctx.earnings_by_ticker[d.ticker]}: reanchored to {new_anchor}"
+            )
+        elif prefer_anchor is not None:
+            found = _find_level(ticker_levels, prefer_anchor, d.side)
+            if found is not None:
+                new_limit = found.price
+                new_anchor = found.method
+
+        if ef != 1.0:
+            note_parts.append(f"earnings {ctx.earnings_by_ticker.get(d.ticker)}: size ×{ef}")
+
+        base_qty = d.qty
+        new_qty = float(int(base_qty * size_factor))  # floor to whole shares
+        if new_qty < 1:
+            log.info(
+                "context_adjust: dropping %s/%s draft (size ×%.2f → qty %.0f)",
+                i, d.ticker, size_factor, new_qty,
+            )
+            continue
+
+        context_note = "; ".join(note_parts) if note_parts else None
+        adjusted_draft = dataclasses.replace(
+            d,
+            qty=new_qty,
+            limit_price=new_limit,
+            anchor_method=new_anchor,
+            base_qty=base_qty,
+            size_factor=size_factor,
+            context_note=context_note,
+        )
+        old_to_new[i] = len(adjusted)
+        adjusted.append(adjusted_draft)
+
+    rekeyed_rationales = {
+        old_to_new[old]: text for old, text in rationales.items() if old in old_to_new
+    }
+
+    return {**state, "drafts": adjusted, "rationales": rekeyed_rationales}
+
+
 def critic_node(
     state: SuggestionReviewState,
     llm: Any,
     session_factory: Any,
+    settings: Any,
 ) -> SuggestionReviewState:
     """Sonnet reviews each draft + rationale and returns approve/revise/reject."""
-    system = load_prompt("suggestion_critic_v1.txt")
+    system = load_prompt(f"suggestion_critic_{settings.critic_prompt_version}.txt")
 
     ctx = state["context"]
     drafts = state["drafts"]
@@ -301,6 +500,9 @@ def critic_node(
             "confidence_at_creation": d.confidence_at_creation,
             "anchor_method": d.anchor_method,
             "rationale": rationales.get(i, ""),
+            "base_qty": d.base_qty,
+            "size_factor": d.size_factor,
+            "context_note": d.context_note,
         }
         for i, d in enumerate(drafts)
     ]
@@ -335,6 +537,17 @@ def critic_node(
                 for u in ctx.untracked_positions
             ],
             "recent_material_news_by_ticker": news_by_ticker,
+            "earnings_by_ticker": {
+                t: str(dt) for t, dt in ctx.earnings_by_ticker.items()
+            },
+            "market_context": (
+                {
+                    "macro_summary": ctx.market_context.macro_summary,
+                    "sector_summary": ctx.market_context.sector_summary,
+                }
+                if ctx.market_context is not None
+                else None
+            ),
         },
         default=str,
     )
@@ -499,13 +712,17 @@ def build_suggestion_review_graph(
     session_factory: Any,
     watchlist: list[str],
     bars_dir: str,
+    settings: Any,
+    earnings_client: Any,
 ) -> Any:
     """Build and compile the suggestion review graph.
 
+    gather_context → reason → context_adjust → critic → revise/skip_revise → finalize
+
     Nodes are bound at compile time via lambdas — ``llm``, ``session_factory``,
-    ``watchlist``, and ``bars_dir`` are closed over rather than passed through
-    LangGraph's configurable config (simpler than news_triage pattern since we
-    don't need per-invoke session injection).
+    ``watchlist``, ``bars_dir``, ``settings``, and ``earnings_client`` are closed
+    over rather than passed through LangGraph's configurable config (simpler than
+    news_triage pattern since we don't need per-invoke session injection).
 
     Example invoke::
 
@@ -529,17 +746,21 @@ def build_suggestion_review_graph(
 
     g.add_node(
         "gather_context",
-        lambda s: gather_context_node(s, session_factory, watchlist, bars_dir),
+        lambda s: gather_context_node(
+            s, session_factory, watchlist, bars_dir, settings, earnings_client
+        ),
     )
     g.add_node("reason", lambda s: reason_node(s, llm, session_factory))
-    g.add_node("critic", lambda s: critic_node(s, llm, session_factory))
+    g.add_node("context_adjust", lambda s: context_adjust_node(s, llm, session_factory, settings))
+    g.add_node("critic", lambda s: critic_node(s, llm, session_factory, settings))
     g.add_node("revise", revise_node)
     g.add_node("skip_revise", skip_revise_node)
     g.add_node("finalize", lambda s: finalize_node(s, session_factory))
 
     g.add_edge(START, "gather_context")
     g.add_edge("gather_context", "reason")
-    g.add_edge("reason", "critic")
+    g.add_edge("reason", "context_adjust")
+    g.add_edge("context_adjust", "critic")
     g.add_conditional_edges(
         "critic",
         route_after_critic,

@@ -435,8 +435,11 @@ class TestCriticNode:
 
         state = _make_state(drafts=drafts)
 
+        mock_settings = MagicMock()
+        mock_settings.critic_prompt_version = "v1"
+
         with patch("investor.graphs.suggestion_review.load_prompt", return_value="system prompt"):
-            result = critic_node(state, mock_llm, mock_factory)
+            result = critic_node(state, mock_llm, mock_factory, mock_settings)
 
         return result
 
@@ -497,12 +500,22 @@ class TestGatherContextNodeSessionLeak:
             targets_id=None,
         )
 
+        mock_settings = MagicMock()
+        mock_settings.earnings_lookahead_days = 7
+        mock_settings.context_max_age_days = 4
+
+        mock_earnings_client = MagicMock()
+        mock_earnings_client.upcoming_earnings.return_value = {}
+
         with (
             patch("investor.graphs.suggestion_review.compute_indicators", return_value=[]),
             patch("investor.graphs.suggestion_review.load_recent_material_news", return_value={}),
             patch("investor.graphs.suggestion_review.load_latest_scored_levels", return_value={}),
+            patch("investor.graphs.suggestion_review.load_latest_weekly_context", return_value=None),
         ):
-            result = gather_context_node(state, test_session_factory, [], "data/bars")
+            result = gather_context_node(
+                state, test_session_factory, [], "data/bars", mock_settings, mock_earnings_client
+            )
 
         ctx = result["context"]
         # Must not raise DetachedInstanceError — all data extracted while session was open
