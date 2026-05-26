@@ -16,6 +16,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from ..config import load_targets
 from ..models import BrokerAccount
 from ..services.daily_report import AccountSnapshot
 from ..services.gap import GapRow, UntrackedPosition, compute_gap, get_untracked_positions
@@ -142,11 +143,15 @@ def gather_context_node(
 
     week_of: date = state["week_of"]
 
-    from ..config import load_targets
     try:
-        _targets_cfg = load_targets(settings.targets_path)
-        target_asset_classes = {t.ticker: t.asset_class for t in _targets_cfg.targets}
-    except Exception:
+        targets_cfg = load_targets(settings.targets_path)
+        target_asset_classes = {t.ticker: t.asset_class for t in targets_cfg.targets}
+    except Exception as exc:
+        log.warning(
+            "gather_context_node: failed to load targets for asset_classes, "
+            "defaulting to equity for all tickers: %s",
+            exc,
+        )
         target_asset_classes = {}
 
     earnings_by_ticker = earnings_client.upcoming_earnings(

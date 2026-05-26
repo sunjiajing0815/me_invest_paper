@@ -124,3 +124,41 @@ class TestLoadTargets:
         assert len(config.targets) == 8  # VOO QQQ SCHD TQQQ AMZN AAPL MSFT MU
         total = sum(t.pct for t in config.targets)
         assert abs(total - 95.0) <= 0.5
+
+    def test_load_targets_reads_asset_class(self, tmp_path: Path) -> None:
+        yaml_text = textwrap.dedent("""\
+            watchlist: [VOO]
+            targets:
+              VOO: { pct: 95, band: [85, 100], asset_class: index_etf }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        config = load_targets(str(f))
+        assert config.targets[0].asset_class == "index_etf"
+
+    def test_load_targets_defaults_asset_class_to_equity(self, tmp_path: Path) -> None:
+        yaml_text = textwrap.dedent("""\
+            watchlist: [AAPL]
+            targets:
+              AAPL: { pct: 95, band: [85, 100] }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        config = load_targets(str(f))
+        assert config.targets[0].asset_class == "equity"
+
+    def test_load_targets_unknown_asset_class_coerces_to_equity(
+        self, tmp_path: Path
+    ) -> None:
+        yaml_text = textwrap.dedent("""\
+            watchlist: [TLT]
+            targets:
+              TLT: { pct: 95, band: [85, 100], asset_class: bond_etf }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        config = load_targets(str(f))
+        assert config.targets[0].asset_class == "equity"

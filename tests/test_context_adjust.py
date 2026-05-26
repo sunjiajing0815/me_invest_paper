@@ -385,3 +385,53 @@ def test_reanchor_sell_price_ceiled() -> None:
 
     assert result["drafts"][0].limit_price == expected
     assert result["drafts"][0].anchor_method == "sma_200"
+
+
+def test_context_adjust_includes_asset_classes_in_payload() -> None:
+    """The JSON payload sent to the LLM contains an 'asset_classes' key with per-ticker values."""
+    import dataclasses as _dc
+
+    draft_voo = _make_draft(ticker="VOO", qty=10.0, limit_price=400.0, anchor_method="sma_50")
+    draft_tqqq = _make_draft(ticker="TQQQ", qty=5.0, limit_price=50.0, anchor_method="sma_50")
+
+    mock_market_ctx = MagicMock()
+    mock_market_ctx.macro_summary = "neutral"
+    mock_market_ctx.sector_summary = "neutral"
+    mock_market_ctx.vix = 18.0
+    mock_market_ctx.fear_greed_score = 50
+    mock_market_ctx.fear_greed_label = "Neutral"
+
+    ctx = _make_ctx(market_context=mock_market_ctx)
+
+    # Inject asset classes into the ReviewContext via dataclasses.replace
+    ctx_with_classes = _dc.replace(
+        ctx,
+        target_asset_classes={"VOO": "index_etf", "TQQQ": "leveraged_etf"},
+    )
+
+    state = _make_state([draft_voo, draft_tqqq], ctx_with_classes)
+    settings = _make_settings(
+        earnings_reanchor=False, context_size_max=1.5, context_size_min=0.25
+    )
+
+    adjustments = [
+        {"draft_index": 0, "size_multiplier": 1.0, "prefer_anchor": None, "note": ""},
+        {"draft_index": 1, "size_multiplier": 1.0, "prefer_anchor": None, "note": ""},
+    ]
+    llm = _make_llm(adjustments)
+
+    mock_session = MagicMock()
+    session_factory = lambda: _mock_session_factory(mock_session)  # noqa: E731
+
+    with patch("investor.graphs.suggestion_review.load_prompt", return_value="system prompt"):
+        context_adjust_node(state, llm, session_factory, settings)
+
+    # llm.call is called by llm_node_call with keyword args: model=, system=, user=, ...
+    assert llm.call.called, "LLM was never called — market_context branch did not fire"
+    _, call_kwargs = llm.call.call_args
+    user_json = call_kwargs["user"]
+    payload = json.loads(user_json)
+
+    assert "asset_classes" in payload, "payload missing 'asset_classes' key"
+    assert payload["asset_classes"]["VOO"] == "index_etf"
+    assert payload["asset_classes"]["TQQQ"] == "leveraged_etf"

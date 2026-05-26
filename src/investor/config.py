@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 VALID_BROKERS = {"alpaca_paper", "alpaca_live", "moomoo"}
+_VALID_ASSET_CLASSES = {"index_etf", "leveraged_etf", "equity"}
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,13 @@ def load_targets(targets_path: str) -> TargetsConfig:
         band_low = float(spec["band"][0])
         band_high = float(spec["band"][1])
         asset_class = str(spec.get("asset_class", "equity"))
+        if asset_class not in _VALID_ASSET_CLASSES:
+            logger.warning(
+                "targets.yaml: unknown asset_class %r for ticker %s, defaulting to 'equity'",
+                asset_class,
+                ticker,
+            )
+            asset_class = "equity"
         targets.append(
             TickerTarget(
                 ticker=ticker,
