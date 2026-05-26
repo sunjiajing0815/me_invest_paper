@@ -17,7 +17,7 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..brokers.base import BrokerAdapter, OrderRequest
+from ..brokers.base import BrokerAdapter, BrokerValidationError, OrderRequest
 from ..models import (
     AutoTradeCaps,
     KillSwitchLog,
@@ -390,6 +390,21 @@ def run_auto_trade_pass(
             )
             try:
                 conf = adapter.submit_order(req)
+            except BrokerValidationError as val_exc:
+                logger.warning(
+                    "sug-%d: broker rejected order (validation), skipping: %s",
+                    sug.id, val_exc,
+                )
+                outcomes.append(
+                    AutoTradeOutcome(
+                        suggestion_id=sug.id,
+                        placed=False,
+                        dry_run=False,
+                        broker_order_id=None,
+                        rejected_reason=f"broker_validation: {val_exc}",
+                    )
+                )
+                continue   # keep LIVE, try next suggestion
             except Exception as broker_exc:
                 _trigger_kill_switch(
                     session,

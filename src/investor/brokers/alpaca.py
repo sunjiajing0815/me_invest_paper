@@ -11,13 +11,21 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.models import Order as AlpacaOrder
 from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest
 
 from ..services.suggest import _ceil2dp, _floor2dp
-from .base import Account, Activity, OrderConfirmation, OrderRequest, Position
+from .base import (
+    Account,
+    Activity,
+    BrokerValidationError,
+    OrderConfirmation,
+    OrderRequest,
+    Position,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,19 +112,26 @@ class AlpacaAdapter:
         """Submit a limit order to Alpaca and return the broker confirmation."""
         if req.limit_price is None:
             raise ValueError(f"limit_price is required for a limit order (ticker={req.ticker})")
-        _order = self._client.submit_order(
-            LimitOrderRequest(
-                symbol=req.ticker,
-                qty=req.qty,
-                side=OrderSide.BUY if req.side == "buy" else OrderSide.SELL,
-                time_in_force=TimeInForce.DAY if req.time_in_force == "day" else TimeInForce.GTC,
-                limit_price=(
-                    _floor2dp(req.limit_price) if req.side == "buy"
-                    else _ceil2dp(req.limit_price)
-                ),
-                client_order_id=req.client_order_id,
+        try:
+            _order = self._client.submit_order(
+                LimitOrderRequest(
+                    symbol=req.ticker,
+                    qty=req.qty,
+                    side=OrderSide.BUY if req.side == "buy" else OrderSide.SELL,
+                    time_in_force=(
+                        TimeInForce.DAY if req.time_in_force == "day" else TimeInForce.GTC
+                    ),
+                    limit_price=(
+                        _floor2dp(req.limit_price) if req.side == "buy"
+                        else _ceil2dp(req.limit_price)
+                    ),
+                    client_order_id=req.client_order_id,
+                )
             )
-        )
+        except APIError as api_exc:
+            if api_exc.status_code == 422:
+                raise BrokerValidationError(str(api_exc)) from api_exc
+            raise
         order = cast(AlpacaOrder, _order)
         return OrderConfirmation(
             broker_order_id=str(order.id),

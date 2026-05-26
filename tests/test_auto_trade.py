@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from investor.brokers.base import Account, OrderConfirmation
+from investor.brokers.base import Account, BrokerValidationError, OrderConfirmation
 from investor.db import override_engine_for_testing
 from investor.models import (
     AutoTradeCaps,
@@ -435,3 +435,76 @@ def test_dry_run_multiple_suggestions_all_inserted(db_session: Session) -> None:
         select(OrderExecution).where(OrderExecution.dry_run.is_(True))
     ).all()
     assert len(rows) == 2
+
+
+# ── BrokerValidationError ─────────────────────────────────────────────────────
+
+def test_validation_error_skips_suggestion_stays_live(db_session: Session) -> None:
+    """BrokerValidationError on sug-1: sug-1 skipped, sug-2 processed, no kill switch."""
+    _set_mode(db_session, "LIVE")
+    sug1 = _add_suggestion(db_session, ticker="AAPL")
+    sug2 = _add_suggestion(db_session, ticker="MSFT")
+    _add_caps(db_session)
+
+    client_oid2 = f"sug-{sug2.id}"
+    conf2 = OrderConfirmation(
+        broker_order_id="broker-msft",
+        client_order_id=client_oid2,
+        status="accepted",
+        submitted_at=_NOW,
+    )
+    # First call raises BrokerValidationError; second call succeeds
+    adapter = MagicMock()
+    adapter.get_account.return_value = Account(
+        account_id="test",
+        cash_usd=100_000.0,
+        equity_usd=100_000.0,
+        buying_power_usd=100_000.0,
+        as_of=_NOW,
+    )
+    adapter.submit_order.side_effect = [
+        BrokerValidationError("invalid limit_price: sub-penny"),
+        conf2,
+    ]
+    adapter.get_order.return_value = conf2
+
+    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+
+    assert len(outcomes) == 2
+    # sug-1 skipped with validation reason
+    assert outcomes[0].suggestion_id == sug1.id
+    assert outcomes[0].placed is False
+    assert "broker_validation" in (outcomes[0].rejected_reason or "")
+    # sug-2 successfully placed
+    assert outcomes[1].suggestion_id == sug2.id
+    assert outcomes[1].placed is True
+    assert outcomes[1].broker_order_id == "broker-msft"
+
+    # Kill switch must NOT have fired — mode stays LIVE
+    meta = db_session.get(Meta, "auto_trade_mode")
+    assert meta is not None and meta.value == "LIVE"
+    kill_rows = db_session.scalars(select(KillSwitchLog)).all()
+    assert kill_rows == []
+
+
+def test_real_broker_error_fires_kill_switch(db_session: Session) -> None:
+    """Non-validation exception fires kill switch and stops processing."""
+    _set_mode(db_session, "LIVE")
+    _add_suggestion(db_session, ticker="AAPL")
+    _add_suggestion(db_session, ticker="MSFT")
+    _add_caps(db_session)
+
+    adapter = _mock_adapter(submit_order_return=RuntimeError("connection refused"))
+
+    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+
+    # Only one outcome — processing stopped after the first failure
+    assert len(outcomes) == 1
+    assert outcomes[0].placed is False
+    assert "broker_error" in (outcomes[0].rejected_reason or "")
+
+    # Kill switch fired — mode is OFF
+    meta = db_session.get(Meta, "auto_trade_mode")
+    assert meta is not None and meta.value == "OFF"
+    kill_rows = db_session.scalars(select(KillSwitchLog)).all()
+    assert any(k.trigger == "broker_error" for k in kill_rows)
