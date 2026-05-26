@@ -24,7 +24,7 @@ from ..services.levels import get_active_targets_id
 from ..services.llm import SONNET, load_prompt
 from ..services.llm_levels import ScoredLevel, load_latest_scored_levels
 from ..services.news import load_recent_material_news
-from ..services.suggest import OrderSuggestionRow, persist_suggestions
+from ..services.suggest import OrderSuggestionRow, _ceil2dp, _floor2dp, persist_suggestions
 from ..services.weekly_context import WeeklyMarketContext, load_latest_weekly_context
 from . import make_checkpointer
 from ._nodes import llm_node_call
@@ -440,7 +440,7 @@ def context_adjust_node(
 
         if i in earnings_anchors:
             lv = earnings_anchors[i]
-            new_limit = lv.price
+            new_limit = _floor2dp(lv.price) if d.side == "buy" else _ceil2dp(lv.price)
             new_anchor = lv.method
             size_suffix = f", size ×{ef}" if ef != 1.0 else ""
             earnings_note = (
@@ -451,13 +451,14 @@ def context_adjust_node(
         elif prefer_anchor is not None:
             found = _find_level(ticker_levels, prefer_anchor, d.side)
             if found is not None:
-                new_limit = found.price
+                new_limit = _floor2dp(found.price) if d.side == "buy" else _ceil2dp(found.price)
                 new_anchor = found.method
 
         if ef != 1.0 and i not in earnings_anchors:
             note_parts.append(f"earnings {ctx.earnings_by_ticker.get(d.ticker)}: size ×{ef}")
 
         base_qty = d.qty if size_factor != 1.0 else None
+        # int() truncation = floor — intentional: never exceed authorized share count
         new_qty = float(int((base_qty or d.qty) * size_factor))  # floor to whole shares
         if new_qty < 1:
             log.info(

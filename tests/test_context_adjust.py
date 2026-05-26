@@ -323,3 +323,65 @@ def test_price_invariant() -> None:
 
     assert result["drafts"][0].limit_price == 150.0
     assert result["drafts"][0].anchor_method == "sma_50"
+
+
+def test_reanchor_buy_price_floored() -> None:
+    """Earnings reanchor floors the limit_price for a buy draft."""
+    import math
+
+    lv_price = 150.123456
+    expected = math.floor(lv_price * 100) / 100  # 150.12
+
+    draft = _make_draft(
+        ticker="AAPL", side="buy", qty=10.0, limit_price=160.0, anchor_method="sma_50"
+    )
+    ctx = _make_ctx(
+        earnings_by_ticker={"AAPL": date(2026, 6, 2)},
+        scored_levels={
+            "AAPL": [
+                _make_level("sma_50", 160.0, "support"),
+                _make_level("sma_200", lv_price, "support"),
+            ]
+        },
+    )
+    state = _make_state([draft], ctx)
+    settings = _make_settings(earnings_reanchor=True)
+    llm = MagicMock()
+    mock_session = MagicMock()
+    session_factory = lambda: _mock_session_factory(mock_session)  # noqa: E731
+
+    result = context_adjust_node(state, llm, session_factory, settings)
+
+    assert result["drafts"][0].limit_price == expected
+    assert result["drafts"][0].anchor_method == "sma_200"
+
+
+def test_reanchor_sell_price_ceiled() -> None:
+    """Earnings reanchor ceils the limit_price for a sell draft."""
+    import math
+
+    lv_price = 150.123456
+    expected = math.ceil(lv_price * 100) / 100  # 150.13
+
+    draft = _make_draft(
+        ticker="AAPL", side="sell", qty=10.0, limit_price=140.0, anchor_method="sma_50"
+    )
+    ctx = _make_ctx(
+        earnings_by_ticker={"AAPL": date(2026, 6, 2)},
+        scored_levels={
+            "AAPL": [
+                _make_level("sma_50", 140.0, "resistance"),
+                _make_level("sma_200", lv_price, "resistance"),
+            ]
+        },
+    )
+    state = _make_state([draft], ctx)
+    settings = _make_settings(earnings_reanchor=True)
+    llm = MagicMock()
+    mock_session = MagicMock()
+    session_factory = lambda: _mock_session_factory(mock_session)  # noqa: E731
+
+    result = context_adjust_node(state, llm, session_factory, settings)
+
+    assert result["drafts"][0].limit_price == expected
+    assert result["drafts"][0].anchor_method == "sma_200"

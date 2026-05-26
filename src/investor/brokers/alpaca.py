@@ -16,6 +16,7 @@ from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.models import Order as AlpacaOrder
 from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest
 
+from ..services.suggest import _ceil2dp, _floor2dp
 from .base import Account, Activity, OrderConfirmation, OrderRequest, Position
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,10 @@ class AlpacaAdapter:
                 qty=req.qty,
                 side=OrderSide.BUY if req.side == "buy" else OrderSide.SELL,
                 time_in_force=TimeInForce.DAY if req.time_in_force == "day" else TimeInForce.GTC,
-                limit_price=round(req.limit_price, 2),
+                limit_price=(
+                    _floor2dp(req.limit_price or 0.0) if req.side == "buy"
+                    else _ceil2dp(req.limit_price or 0.0)
+                ),
                 client_order_id=req.client_order_id,
             )
         )

@@ -11,6 +11,7 @@ Guards baked in:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
@@ -88,6 +89,16 @@ def _round_qty(dollars: float, price: float) -> float:
     if price <= 0:
         return 0.0
     return float(int(dollars / price))
+
+
+def _floor2dp(price: float) -> float:
+    """Floor to 2 decimal places — use for buy limit prices (never overpay)."""
+    return math.floor(price * 100) / 100
+
+
+def _ceil2dp(price: float) -> float:
+    """Ceiling to 2 decimal places — use for sell limit prices (never undersell)."""
+    return math.ceil(price * 100) / 100
 
 
 # ---------------------------------------------------------------------------
