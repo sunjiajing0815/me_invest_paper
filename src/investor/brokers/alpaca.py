@@ -107,7 +107,7 @@ class AlpacaAdapter:
                 qty=req.qty,
                 side=OrderSide.BUY if req.side == "buy" else OrderSide.SELL,
                 time_in_force=TimeInForce.DAY if req.time_in_force == "day" else TimeInForce.GTC,
-                limit_price=req.limit_price,
+                limit_price=round(req.limit_price, 2),
                 client_order_id=req.client_order_id,
             )
         )

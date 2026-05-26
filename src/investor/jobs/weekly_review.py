@@ -276,6 +276,7 @@ def run_weekly_review(
             watchlist=tickers,
             week_of=week_of,
             prompt_version=settings.weekly_context_prompt_version,
+            finnhub_api_key=settings.finnhub_api_key,
         )
     except Exception as exc:
         logger.warning(

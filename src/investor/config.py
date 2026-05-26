@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     context_size_min: float = 0.25
     context_size_max: float = 1.5
     context_max_age_days: int = 4
-    context_adjust_prompt_version: str = "v1"
+    context_adjust_prompt_version: str = "v2"
     critic_prompt_version: str = "v2"
 
     @field_validator("broker")

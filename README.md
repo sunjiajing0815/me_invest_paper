@@ -1,11 +1,11 @@
-# Investor Assistant — Phase 4
+# Investor Assistant — Phase 4.7
 
-A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a second Sonnet pass critiques all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday an 8-section **weekly review email** covers realised PnL, suggestion outcomes, drift state, material news, a next-Sunday preview, and a Tavily-powered weekly market context narrative.
+A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a new **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday an 8-section **weekly review email** covers realised PnL, suggestion outcomes, drift state, material news, a next-Sunday preview, and a Tavily-powered weekly market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
-**Current phase:** 4 — Reconciliation, Moomoo adapter, weekly review, opt-in auto-trade  
-**Status:** Code complete 2026-05-18. Tag `v0.4.0-phase-4-code-complete` pending first Friday review email.
+**Current phase:** 4.7 — Context-aware weekly order sizing (earnings gate + narrative multiplier)  
+**Status:** Code complete 2026-05-26. Tag `v0.4.7.0` pending two consecutive Sunday emails with context-adjusted suggestions.
 
 ---
 
@@ -43,7 +43,7 @@ Required variables (see `.env.example` for the full list):
 | `ANTHROPIC_API_KEY` | Anthropic API key for Haiku + Sonnet news triage and level scoring |
 | `MAGIC_LINK_SECRET` | HMAC signing key for email buttons (`openssl rand -hex 32`, distinct from `ADMIN_TOKEN`) |
 | `APP_BASE_URL` | Public base URL for magic links, e.g. `http://localhost:8000` |
-| `FINNHUB_API_KEY` | Finnhub API key for news fallback ([free tier](https://finnhub.io), 60 req/min) |
+| `FINNHUB_API_KEY` | Finnhub API key — news fallback AND Phase 4.7 earnings gate ([free tier](https://finnhub.io), 60 req/min); empty = earnings gate is a no-op |
 | `LLM_DAILY_COST_CAP_USD` | Daily LLM spend cap in USD (default `3.0`) |
 | `LLM_BACKEND` | `anthropic_api` (default) or `agent_sdk` (routes calls through `claude-agent-sdk`) |
 | `LLM_CLI_PATH` | Path to system `claude` CLI for `agent_sdk` backend; empty = use SDK-bundled binary |
@@ -53,6 +53,14 @@ Required variables (see `.env.example` for the full list):
 | `OPEND_SECURITY_FIRM` | Moomoo security firm (default `FUTUSECURITIES`) |
 | `TAVILY_API_KEY` | Tavily search API key ([free tier](https://tavily.com), 1 000 searches/month); empty = weekly market context section omitted |
 | `TAVILY_MONTHLY_CAP` | Monthly search cap (default `200`; prevents accidental overuse) |
+| `EARNINGS_SIZE_FACTOR` | Qty multiplier for tickers with earnings this week (default `0.5`; Phase 4.7) |
+| `EARNINGS_REANCHOR` | Move limit price to a deeper S/R level when earnings are near (default `true`; Phase 4.7) |
+| `EARNINGS_LOOKAHEAD_DAYS` | Days forward from week_of to check for earnings (default `7`; Phase 4.7) |
+| `CONTEXT_SIZE_MIN` | Lower clamp on narrative size multiplier (default `0.25`; Phase 4.7) |
+| `CONTEXT_SIZE_MAX` | Upper clamp on narrative size multiplier (default `1.5`; Phase 4.7) |
+| `CONTEXT_MAX_AGE_DAYS` | Max age of persisted Friday context for Sunday to use it (default `4`; Phase 4.7) |
+| `CONTEXT_ADJUST_PROMPT_VERSION` | Context-adjust prompt version (default `v1`; Phase 4.7) |
+| `CRITIC_PROMPT_VERSION` | Suggestion critic prompt version (default `v2`; Phase 4.7) |
 
 ### 2. Configure target allocation
 
@@ -103,7 +111,7 @@ The scheduler starts automatically with the server and fires:
 | 16:30 | Mon–Fri | **Movers email** — threshold crossings + AI-triaged news |
 | 16:45 | Mon–Fri | **Daily reconciliation** — match broker fills to suggestions, FIFO PnL |
 | 16:50 | Mon–Fri | **Moomoo parallel-run** — compare Moomoo vs Alpaca positions (soak stage) |
-| 17:00 | Friday | **Weekly review email** — 8-section reflection on the past week |
+| 17:00 | Friday | **Weekly review email** — 8-section reflection on the past week; persists market context to DB for Sunday sizing |
 | 18:00 | Sunday | **Weekly suggestions** — indicators, levels, LLM scoring, review graph, email |
 
 ### Updating targets
@@ -345,18 +353,21 @@ Suggestions use "half-the-gap" sizing: each order deploys half the dollar shortf
 Before suggestions are persisted and emailed they pass through the **suggestion review graph** (`graphs/suggestion_review.py`):
 
 ```
-gather_context → reason (Sonnet) → critic (Sonnet) → revise or skip_revise → finalize
+gather_context → reason (Sonnet) → context_adjust → critic (Sonnet) → revise or skip_revise → finalize
 ```
 
-- **gather_context**: Materialises gap rows, scored levels, material news, indicators, account, and untracked positions into a frozen `ReviewContext` before any LLM node runs.
+- **gather_context**: Materialises gap rows, scored levels, material news, indicators, account, and untracked positions into a frozen `ReviewContext` before any LLM node runs. Also fetches the upcoming-earnings calendar from Finnhub and loads the most recent persisted Friday market context.
 - **reason**: Writes a 2–4 sentence rationale per draft citing specific evidence (confidence score, RSI, news sentiment, MA distance, gap %). Rationales appear as the "Rationale" column in the weekly email.
-- **critic**: Reviews all drafts as a set; emits `approve / revise / reject` with structured `suggested_changes` (e.g. `{"anchor_method": "sma_50"}`). Calibration target: 10–25% revise-or-reject rate per weekly run.
+- **context_adjust** *(Phase 4.7)*: Three sub-passes — (a) **earnings gate**: if a ticker has earnings within `EARNINGS_LOOKAHEAD_DAYS`, Python halves the qty (`EARNINGS_SIZE_FACTOR`) and optionally moves the anchor to a deeper S/R level; (b) **narrative multiplier**: if a fresh Friday context exists, Sonnet returns a `size_multiplier` that Python clamps to `[CONTEXT_SIZE_MIN, CONTEXT_SIZE_MAX]`; (c) **apply**: factors are combined, qty is rounded down, sub-1-share drafts are dropped, and rationale indices are re-keyed. Adjusted suggestions carry `base_qty`, `size_factor`, and `context_note` in both the DB and the email.
+- **critic**: Reviews all drafts as a set; emits `approve / revise / reject` with structured `suggested_changes` (e.g. `{"anchor_method": "sma_50"}`). Calibration target: 10–25% revise-or-reject rate per weekly run. Rule 6 (v2 prompt): respect prior defensive shrinks from context_adjust.
 - **revise**: Deterministic Python applies the critic's changes, validating every field against known scored levels. Invented prices or unknown methods are silently rejected (original draft kept). **LLMs propose changes; Python applies them.**
 - **finalize**: Persists approved and revised drafts via `persist_suggestions()`.
 
-The mechanical `order_suggestion.reason` stays in the DB as the immutable audit trail; the Sonnet-written rationale appears in the email. If the reason node fails, the email falls back to the mechanical reason.
+The mechanical `order_suggestion.reason` stays in the DB as the immutable audit trail; the Sonnet-written rationale appears in the email. If the reason node fails, the email falls back to the mechanical reason. If no fresh Friday context exists (first run, stale, or `TAVILY_API_KEY` not set), the narrative sub-pass is silently skipped; the earnings gate still applies when `FINNHUB_API_KEY` is set.
 
-See [ADR-0006](docs/adr/0006-sr-methodology.md), [ADR-0007](docs/adr/0007-position-sizing.md), and [ADR-0013](docs/adr/0013-suggestion-review-pipeline.md) for the full methodology.
+**Email display**: When a suggestion was size-adjusted, the qty cell shows `N (base B · ×F)` and a grey `context_note` line appears below the rationale. In plain-text email the format is `N (base B xF.FF)` inline.
+
+See [ADR-0006](docs/adr/0006-sr-methodology.md), [ADR-0007](docs/adr/0007-position-sizing.md), [ADR-0013](docs/adr/0013-suggestion-review-pipeline.md), and [ADR-0021](docs/adr/0021-context-aware-order-sizing.md) for the full methodology.
 
 ---
 
@@ -413,7 +424,7 @@ Fires Friday at 17:00 America/New_York. A backward-looking reflection on the wee
 | 4. Material news | LLM-material events for held tickers this week |
 | 5. Next Sunday preview | Suggestions run without persisting (non-authoritative, labelled as such) |
 | 6. Auto-trade activity | Mode changes, placements, cap spend, kill-switch events if any |
-| 7. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. |
+| 7. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. **Persisted to `weekly_market_context` table** (keyed to the upcoming Monday) so Sunday's suggestion graph can read it. |
 | 8. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
 
 Subject: `Weekly Review — week of MMM DD`
@@ -527,6 +538,9 @@ One row per week × ticker × side. Status lifecycle: `pending` → `accepted` /
 | `acted_at` | timestamptz | When accept/reject was recorded (Phase 3a) |
 | `note` | text | Optional note from the accept/reject action (Phase 3a) |
 | `anchor_method` | varchar | Scored level method used as limit-price anchor, e.g. `sma_50` (Phase 3c; NULL on older rows) |
+| `base_qty` | double | Pre-adjustment qty before context_adjust node ran; NULL when no size adjustment was made (Phase 4.7) |
+| `size_factor` | double | Combined size multiplier applied by context_adjust (1.0 = no adjustment; Phase 4.7) |
+| `context_note` | text | Human-readable audit note explaining the size adjustment, e.g. "earnings 2026-06-01, ×0.50" (Phase 4.7) |
 
 ### `llm_call_log` (Phase 3a)
 
@@ -535,7 +549,7 @@ One row per LLM API call. Used for cost tracking and debugging.
 | Column | Type | Description |
 |---|---|---|
 | `ts` | timestamptz | Call timestamp (UTC) |
-| `purpose` | varchar | `score_levels`, `news_classify`, `news_critic`, `news_arbitrate`, `suggestion_reason`, or `suggestion_critic` |
+| `purpose` | varchar | `score_levels`, `news_classify`, `news_critic`, `news_arbitrate`, `suggestion_reason`, `suggestion_critic`, `context_adjust`, or `weekly_context` |
 | `model` | varchar | e.g. `claude-haiku-4-5`, `claude-sonnet-4-6` |
 | `prompt_hash` | varchar | First 12 hex chars of SHA-256 of system+user prompt |
 | `input_tokens` | int | Prompt tokens consumed |
@@ -576,6 +590,17 @@ One row per watchlist ticker. Tracks the tiered threshold state for movers detec
 | `last_triggered_threshold` | float | Most recent milestone crossed (5.0, 10.0, 15.0, …); 0.0 = never or reset |
 | `last_triggered_at` | timestamptz | When the threshold was last crossed |
 | `last_pct_change` | float | % change at the time of the last trigger |
+
+### `weekly_market_context` (Phase 4.7)
+
+Append-only. One row written each Friday by `run_weekly_review` when a Tavily context is successfully built. Keyed to the *upcoming* Monday so Sunday's graph can load it by matching `week_of`. Multiple rows per week are allowed (re-runs); the loader picks the most recent one within `CONTEXT_MAX_AGE_DAYS`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int | Primary key |
+| `week_of` | date | The Monday of the upcoming trading week (Friday→Sunday bridge key) |
+| `payload_json` | text | Full `WeeklyMarketContext` serialised as JSON (macro/sector/per-ticker/forward events/citations) |
+| `created_at` | timestamptz | Row insertion timestamp (UTC) |
 
 ### `order_execution` (Phase 4)
 
@@ -712,6 +737,24 @@ SELECT id, ticker, side, filled_qty, filled_price, filled_at, match_confidence
 FROM order_execution
 WHERE match_method = 'manual_review' AND dry_run = false
 ORDER BY filled_at DESC;
+
+-- persisted weekly market contexts (Phase 4.7)
+SELECT id, week_of, created_at, length(payload_json) AS payload_bytes
+FROM weekly_market_context
+ORDER BY created_at DESC LIMIT 10;
+
+-- suggestions with context-driven size adjustments this week (Phase 4.7)
+SELECT ticker, side, qty, base_qty, size_factor, limit_price, anchor_method, context_note, status
+FROM order_suggestion
+WHERE week_of = date('now', 'weekday 1', '-7 days')
+  AND size_factor != 1.0
+ORDER BY ticker;
+
+-- LLM cost for context_adjust calls (Phase 4.7)
+SELECT date(ts) AS day, sum(cost_usd) AS total_usd, count(*) AS calls
+FROM llm_call_log
+WHERE purpose = 'context_adjust'
+GROUP BY 1 ORDER BY 1 DESC;
 ```
 
 ---
@@ -723,7 +766,7 @@ src/investor/
   main.py             FastAPI app + lifespan
   config.py           pydantic-settings + targets.yaml loader
   db.py               SQLite engine + session factory
-  models.py           SQLAlchemy ORM models (Phase 3b: NewsEvent, MoverState; Phase 3c: anchor_method; Phase 4: OrderExecution, AutoTradePromotionLog, KillSwitchLog, AutoTradeCaps)
+  models.py           SQLAlchemy ORM models (Phase 3b: NewsEvent, MoverState; Phase 3c: anchor_method; Phase 4: OrderExecution, AutoTradePromotionLog, KillSwitchLog, AutoTradeCaps; Phase 4.7: WeeklyMarketContextRow, OrderSuggestion.base_qty/size_factor/context_note)
   scheduler.py        APScheduler bootstrap
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses (Activity, OrderRequest, OrderConfirmation)
@@ -733,7 +776,7 @@ src/investor/
     __init__.py           make_checkpointer() — MemorySaver (in-memory, avoids SQLite write contention)
     _nodes.py             llm_node_call() — generic LLM node helper (Phase 3a lessons applied)
     news_triage.py        Three-node triage graph: classify → critic → conditional arbitrate
-    suggestion_review.py  Five-node review graph: gather_context → reason → critic → revise/skip → finalize
+    suggestion_review.py  Six-node review graph: gather_context → reason → context_adjust → critic → revise/skip → finalize (Phase 4.7: context_adjust node, earnings gate, narrative multiplier)
   prompts/
     score_levels_v1.txt       Sonnet 4.6 scoring prompt (hard rules: no invented prices, no trade recs)
     score_levels_v2.txt       News-augmented scoring prompt (bearish news ↓ support conf; bullish ↓ resistance conf)
@@ -742,6 +785,8 @@ src/investor/
     news_arbitrate_v1.txt     Sonnet final-decision prompt for flagged items
     suggestion_reason_v1.txt  Sonnet per-draft rationale prompt (2–4 sentences, cite evidence)
     suggestion_critic_v1.txt  Sonnet cross-draft critic prompt (five severity-ordered criteria)
+    suggestion_critic_v2.txt  v1 + rule 6: respect prior context_adjust defensive shrinks (Phase 4.7)
+    context_size_v1.txt       Sonnet size-multiplier prompt — bounded [min, max], prefer_anchor from scored_levels only (Phase 4.7)
     weekly_context_v1.txt     Sonnet weekly market context synthesis prompt (no price targets; JSON output) (Phase 4.5)
   services/
     snapshot.py       Position + account ingestion
@@ -753,7 +798,7 @@ src/investor/
     llm_levels.py     ScoredLevel + score_levels_for_ticker() (news-augmented, v2 prompt); load_latest_scored_levels()
     magic_link.py     sign_action() / verify_action() — HMAC-SHA256 email tokens
     news.py           NewsRaw, fetch_alpaca_news(), fetch_finnhub_news(), get_news_for_movers(), load_recent_material_news()
-    suggest.py        OrderSuggestionRow, select_anchor() + generate_suggestions() / persist_suggestions()
+    suggest.py        OrderSuggestionRow (+ base_qty/size_factor/context_note in Phase 4.7), select_anchor() + generate_suggestions() / persist_suggestions()
     daily_report.py   DailyReport dataclass + compose_daily_report()
     bars.py           update_bars() — smart backfill + incremental Parquet append
     targets.py        Hash-based idempotent target loader
@@ -762,14 +807,15 @@ src/investor/
     reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl() (Phase 4)
     auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch() (Phase 4)
     tavily.py         TavilyClient Protocol + TavilyConcreteClient + FakeTavilyClient + factory (Phase 4.5)
-    weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis (Phase 4.5)
+    weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis (Phase 4.5); persist_weekly_context() / load_latest_weekly_context() (Phase 4.7)
+    earnings.py       EarningsClient Protocol + FinnhubEarningsClient + FakeEarningsClient + make_earnings_client() factory (Phase 4.7)
   jobs/
     daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
     suggestion_expiry.py   Mon-Fri 16:20 ET — mark stale pending suggestions expired
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
     reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL (Phase 4)
     moomoo_parallel.py     Mon-Fri 16:50 ET — compare Moomoo vs Alpaca positions (Phase 4)
-    weekly_review.py       Fri 17:00 ET — 8-section reflection email (Phase 4)
+    weekly_review.py       Fri 17:00 ET — 8-section reflection email (Phase 4); persists WeeklyMarketContext to DB with week_of=_next_monday() (Phase 4.7)
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
     auto_trade.py          Mon-Fri 09:35 ET — place orders for accepted suggestions (Phase 4)
 config/
@@ -820,6 +866,8 @@ tests/
   test_no_unauthorized_submit_order.py  Grep CI gate: submit_order single-call-site enforcement (1 test) (Phase 4)
   test_tavily.py                        FakeTavilyClient, TavilyConcreteClient, factory, cap enforcement (11 tests) (Phase 4.5)
   test_weekly_context.py                build_weekly_market_context: happy path, empty→None, LLM failure, dedup, cap (5 tests) (Phase 4.5)
+  test_earnings.py                      FakeEarningsClient, FinnhubEarningsClient, factory, SDK exception fallback (5 tests) (Phase 4.7)
+  test_context_adjust.py                earnings gate, reanchor, narrative clamp, sub-1-share drop, rationale re-keying, price invariant (8 tests) (Phase 4.7)
   test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -841,6 +889,7 @@ docs/adr/
   0018-moomoo-parallel-run.md         Five soak criteria; OpenD-on-host rule; bars-on-Alpaca; remark↔client_order_id; prefix stripping
   0019-weekly-review-composition.md   Seven sections; Friday-reflection vs Sunday-action cadence; Moomoo-section sunset criteria
   0020-tavily-weekly-context.md       Why Tavily; Protocol swap path; Nebius acquisition risk; informational-only hard constraint
+  0021-context-aware-order-sizing.md  Bounded Tavily exception for qty scaling; carved LLM output exception; Finnhub vs free-text earnings
 ```
 
 ---
@@ -849,7 +898,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # ~261 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # ~277 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/

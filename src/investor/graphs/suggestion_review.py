@@ -351,7 +351,7 @@ def context_adjust_node(
     narrative_adjustments: dict[int, DraftSizeAdjustment] = {}
     context_tel: dict[str, object] = {}
     if ctx.market_context is not None:
-        system = load_prompt(f"context_size_v{settings.context_adjust_prompt_version}.txt")
+        system = load_prompt(f"context_size_{settings.context_adjust_prompt_version}.txt")
         user_payload = json.dumps(
             {
                 "week_of": str(state["week_of"]),
@@ -384,6 +384,11 @@ def context_adjust_node(
                     }
                     for i, d in enumerate(drafts)
                 ],
+                "sentiment": {
+                    "vix": ctx.market_context.vix,
+                    "fear_greed_score": ctx.market_context.fear_greed_score,
+                    "fear_greed_label": ctx.market_context.fear_greed_label,
+                },
                 "bounds": {
                     "min": settings.context_size_min,
                     "max": settings.context_size_max,

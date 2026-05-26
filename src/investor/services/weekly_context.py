@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -81,6 +82,9 @@ class WeeklyMarketContext:
     ticker_catchup: dict[str, str]  # ticker → 1-2 sentence catch-up
     forward_events: list[str]       # bullet points: earnings, Fed, etc.
     citations: list[NewsResult]     # deduped by URL, sorted score desc, capped 15
+    vix: float | None = None            # CBOE VIX close at time of synthesis
+    fear_greed_score: int | None = None  # CNN Fear & Greed 0–100
+    fear_greed_label: str | None = None  # "Extreme Fear" … "Extreme Greed"
 
 
 class _WeeklyContextSynthesis(BaseModel):
@@ -90,6 +94,43 @@ class _WeeklyContextSynthesis(BaseModel):
     sector_summary: str
     ticker_catchup: dict[str, str]
     forward_events: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Sentiment fetch helpers (best-effort; return None on any failure)
+# ---------------------------------------------------------------------------
+
+
+def _fetch_vix(api_key: str) -> float | None:
+    """Return the latest CBOE VIX value via Finnhub quote endpoint."""
+    if not api_key:
+        return None
+    try:
+        import finnhub  # lazy — already a project dep from Phase 3b
+        q = finnhub.Client(api_key=api_key).quote("^VIX")
+        c = q.get("c") if q else None
+        return float(c) if c else None
+    except Exception as exc:
+        log.warning("_fetch_vix: %s", exc)
+        return None
+
+
+def _fetch_fear_greed() -> tuple[int | None, str | None]:
+    """Return (score, label) from CNN Fear & Greed Index public endpoint."""
+    try:
+        req = urllib.request.Request(
+            "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+            headers={"User-Agent": "investor-assistant/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        fg = data.get("fear_and_greed", {})
+        score = fg.get("score")
+        label = fg.get("rating") or None
+        return (int(float(score)) if score is not None else None, label)
+    except Exception as exc:
+        log.warning("_fetch_fear_greed: %s", exc)
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +182,8 @@ def _weekly_context_from_dict(data: dict[str, Any]) -> WeeklyMarketContext:
     ]
     week_of_raw = data["week_of"]
     week_of = date.fromisoformat(week_of_raw) if isinstance(week_of_raw, str) else week_of_raw
+    vix_raw = data.get("vix")
+    fg_score_raw = data.get("fear_greed_score")
     return WeeklyMarketContext(
         week_of=week_of,
         macro_summary=data.get("macro_summary", ""),
@@ -148,6 +191,9 @@ def _weekly_context_from_dict(data: dict[str, Any]) -> WeeklyMarketContext:
         ticker_catchup=data.get("ticker_catchup", {}),
         forward_events=data.get("forward_events", []),
         citations=citations,
+        vix=float(vix_raw) if vix_raw is not None else None,
+        fear_greed_score=int(fg_score_raw) if fg_score_raw is not None else None,
+        fear_greed_label=data.get("fear_greed_label"),
     )
 
 
@@ -163,6 +209,7 @@ def build_weekly_market_context(
     watchlist: list[str],
     week_of: date,
     prompt_version: str = "v1",
+    finnhub_api_key: str = "",
 ) -> WeeklyMarketContext | None:
     """Fanout Tavily queries, synthesise with Sonnet, return WeeklyMarketContext.
 
@@ -213,7 +260,17 @@ def build_weekly_market_context(
             unique_citations.append(r)
     citations = unique_citations[:15]
 
-    # 6. Sonnet synthesis
+    # 6. Market sentiment (best-effort; None if key absent or endpoint unavailable)
+    vix = _fetch_vix(finnhub_api_key)
+    fear_greed_score, fear_greed_label = _fetch_fear_greed()
+    if vix is not None:
+        log.info("build_weekly_market_context: VIX=%.2f", vix)
+    if fear_greed_score is not None:
+        log.info(
+            "build_weekly_market_context: Fear&Greed=%d (%s)", fear_greed_score, fear_greed_label
+        )
+
+    # 7. Sonnet synthesis
     user_payload = json.dumps(
         {
             "week_of": str(week_of),
@@ -272,6 +329,9 @@ def build_weekly_market_context(
             ticker_catchup={},
             forward_events=[],
             citations=citations,
+            vix=vix,
+            fear_greed_score=fear_greed_score,
+            fear_greed_label=fear_greed_label,
         )
 
     synthesis: _WeeklyContextSynthesis = parsed  # type: ignore[assignment]
@@ -282,4 +342,7 @@ def build_weekly_market_context(
         ticker_catchup=synthesis.ticker_catchup,
         forward_events=synthesis.forward_events,
         citations=citations,
+        vix=vix,
+        fear_greed_score=fear_greed_score,
+        fear_greed_label=fear_greed_label,
     )
