@@ -18,7 +18,7 @@ Orders for the week of {{ week_of.strftime('%b %-d, %Y') }}
 {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
 {% set current = ind.close if ind else 0 %}
 {% set cost = s.qty * s.limit_price %}
-{{ s.ticker | ljust(6) }}  {{ s.side.upper() | ljust(4) }}  {{ "{:.0f}".format(s.qty) | rjust(5) }}  {{ "${:,.2f}".format(s.limit_price) | rjust(10) }}  {{ ("${:,.2f}".format(current) if current else "—") | rjust(10) }}  {{ "${:,.0f}".format(cost) | rjust(9) }}  {{ s.reason }}
+{{ s.ticker | ljust(6) }}  {{ s.side.upper() | ljust(4) }}  {{ "{:.0f}".format(s.qty) | rjust(5) }}{% if s.size_factor is defined and s.size_factor != 1.0 and s.base_qty is defined and s.base_qty is not none %} (base {{ "{:.0f}".format(s.base_qty) }} x{{ "%.2f"|format(s.size_factor) }}){% endif %}  {{ "${:,.2f}".format(s.limit_price) | rjust(10) }}  {{ ("${:,.2f}".format(current) if current else "—") | rjust(10) }}  {{ "${:,.0f}".format(cost) | rjust(9) }}  {{ s.reason }}{% if s.context_note is defined and s.context_note %}  [{{ s.context_note }}]{% endif %}
 {% endfor %}
 
 {% set buys = suggestions | selectattr('side', 'equalto', 'buy') | list %}
