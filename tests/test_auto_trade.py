@@ -290,6 +290,7 @@ def test_wash_sale_guard_blocks_real_buy(db_session: Session) -> None:
     _add_suggestion(db_session, ticker="AAPL", side="buy", qty=3.0, limit_price=100.0)
     _add_caps(db_session)
 
+    _recent = datetime.now(UTC) - timedelta(days=5)
     recent_loss = OrderExecution(
         ticker="AAPL",
         side="sell",
@@ -301,8 +302,8 @@ def test_wash_sale_guard_blocks_real_buy(db_session: Session) -> None:
         status="filled",
         match_method="untracked",
         match_confidence=0.0,
-        created_at=_NOW - timedelta(days=5),
-        filled_at=_NOW - timedelta(days=5),
+        created_at=_recent,
+        filled_at=_recent,
         realized_pnl_usd=-30.0,
     )
     db_session.add(recent_loss)

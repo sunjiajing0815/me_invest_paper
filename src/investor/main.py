@@ -447,7 +447,15 @@ def admin_run_daily_report() -> dict[str, str]:
     dependencies=[Depends(admin_auth)],
 )
 def admin_reload_targets() -> dict[str, str]:
-    """Reload target allocations from targets.yaml. No-op if file content is unchanged."""
+    """Reload target allocations from targets.yaml and backfill bars for any new tickers.
+
+    Bar backfill runs in a background thread (new tickers get 2 years of history;
+    existing tickers get an incremental update). Check logs for completion.
+    """
+    import threading
+
+    from .services.bars import update_bars
+
     settings = _get_settings()
     try:
         h = yaml_hash(settings.targets_path)
@@ -457,7 +465,23 @@ def admin_reload_targets() -> dict[str, str]:
     except Exception as exc:
         logger.error("reload-targets failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Reload failed: {exc}") from exc
-    return {"status": "ok", "result": result}
+
+    def _backfill() -> None:
+        try:
+            update_bars(
+                targets_cfg.watchlist,
+                settings.alpaca_api_key,
+                settings.alpaca_secret_key,
+                bars_dir=settings.bars_dir,
+            )
+            logger.info("reload-targets: bar backfill complete for %s", targets_cfg.watchlist)
+        except Exception as exc:
+            logger.warning("reload-targets: bar backfill failed: %s", exc)
+
+    threading.Thread(target=_backfill, daemon=True, name="reload-targets-bars").start()
+    logger.info("reload-targets: bar backfill started in background")
+
+    return {"status": "ok", "result": result, "bars_sync": "started in background"}
 
 
 @app.post(

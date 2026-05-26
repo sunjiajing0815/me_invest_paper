@@ -121,7 +121,7 @@ class TestLoadTargets:
 
     def test_real_targets_yaml_validates(self) -> None:
         config = load_targets("./config/targets.yaml")
-        assert len(config.targets) == 8  # VOO QQQ SCHD TQQQ AMZN AAPL MSFT MU
+        assert len(config.targets) == 10  # VOO QQQ TQQQ BTC ISRG BRK.B AMZN GOOG MSFT MU
         total = sum(t.pct for t in config.targets)
         assert abs(total - 95.0) <= 0.5
 
