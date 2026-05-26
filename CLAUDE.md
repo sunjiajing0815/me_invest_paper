@@ -174,7 +174,7 @@ uv run mypy src/
 - **Never authenticate the Agent SDK with consumer OAuth tokens for automated/unattended use.** Anthropic's ToS prohibits using consumer Claude.ai OAuth for automated scripts. `ANTHROPIC_API_KEY` is always required, even when `LLM_BACKEND=agent_sdk`.
 - **Never make the `revise_node` LLM-driven — LLMs propose changes, Python applies them.** The `revise_node` in `graphs/suggestion_review.py` is intentionally deterministic Python: `_apply_changes()` validates every critic-proposed change against known scored levels and rejects invented prices or unknown methods. A second LLM-driven revision would add hallucination risk, create loop risk (the critic might then revise its own revision), and add cost with no benefit. See ADR-0013.
 - **Never extend `LLM_BACKEND=agent_sdk` consumer-OAuth login into multi-user deployment.** The current single-user setup is personal automation (permitted by Anthropic's ToS). A shared consumer OAuth session across multiple users violates ToS. Phase 5 multi-tenant must use individual API keys per user.
-- **Never feed Tavily results into the suggestion engine or order-execution path.** Tavily output is informational only — it flows into the `WeeklyMarketContext` dataclass and from there into the email template. It must never reach `generate_suggestions()`, `run_auto_trade_pass()`, or any broker adapter. See ADR-0020.
+- **Never feed Tavily results into the suggestion engine or order-execution path — with one bounded exception.** Tavily output flows into `WeeklyMarketContext` and from there into the email template AND the `context_adjust_node` size multiplier (Phase 4.7). The exception is strictly bounded: `context_adjust_node` may scale suggestion *quantities* only, within Python-clamped `[context_size_min, context_size_max]`, using only existing scored S/R level anchors. It must never reach `generate_suggestions()`, `run_auto_trade_pass()`, or any broker adapter. See ADR-0020, ADR-0021.
 
 ## Common gotchas
 
@@ -204,6 +204,9 @@ uv run mypy src/
 21. **Tavily acquired by Nebius (Feb 2026) — pin `tavily-python>=0.6,<0.7`.** The SDK is pre-1.0; Nebius ownership means the API surface may change. Tight pinning prevents silent breakage. Swap path if needed: create a new concrete client implementing `TavilyClient` Protocol and update `make_tavily_client()` factory — no call-site changes needed. See ADR-0020.
 22. **Tavily monthly cap is per-instance, not persisted.** `TavilyConcreteClient._used_this_month` resets to 0 when the process restarts. If the app restarts mid-month, the counter resets. For conservative usage this is fine (weekly review adds ~12–16 searches/week × 4 = ~60/month well under the 200 default). Don't raise `TAVILY_MONTHLY_CAP` above the free-tier limit without checking Tavily's current pricing.
 23. **Monday movers use a 48-hour news lookback.** `jobs/movers.py` widens the lookback from 24h to 48h specifically on Mondays (`datetime.weekday() == 0`) to catch Friday/weekend news that drives Monday moves. Other days use 24h.
+24. **Week-of alignment for context_adjust_node (Friday→Sunday bridge).** `run_weekly_review` persists market context with `week_of=_next_monday()` (the upcoming Monday). Sunday's `gather_context_node` loads with `state["week_of"]` which is also the upcoming Monday. They must match — do not use `week_of - 7 days` as the persist key.
+25. **Stale context is silently skipped.** If `load_latest_weekly_context` finds no row within `context_max_age_days=4` for the upcoming Monday, it returns `None` and `context_adjust_node` skips the narrative pass entirely. The earnings gate still runs independently. No error is raised — check logs for "no fresh context" if the narrative pass seems absent.
+26. **`context_adjust_node` earnings gate uses Finnhub, not Tavily `forward_events`.** The earnings gate calls `earnings_client.upcoming_earnings()` (Finnhub-backed). If `FINNHUB_API_KEY` is empty, `make_earnings_client()` returns a `FakeEarningsClient(_canned={})` and the gate is a no-op with a WARNING log. Do not wire the earnings gate to Tavily's `forward_events` free-text field.
 
 ## Required env vars
 
@@ -222,6 +225,8 @@ Phase 3b adds: `FINNHUB_API_KEY` (Finnhub free tier; optional but needed as Alpa
 Phase 4 adds: `OPEND_HOST=host.docker.internal`, `OPEND_PORT=11111`, `OPEND_SECURITY_FIRM=FUTUSECURITIES` (Moomoo/Futu OpenD daemon settings — only needed when `BROKER=moomoo`). `AUTO_TRADE_PROMOTION_TOKEN` — separate from `ADMIN_TOKEN`; required for auto-trade mode promotions.
 
 Phase 4.5 adds: `TAVILY_API_KEY` (optional; empty = graceful skip of weekly market context section), `TAVILY_MONTHLY_CAP=200` (default 200; cap reached → silent empty + WARNING log).
+
+Phase 4.7 adds: `FINNHUB_API_KEY` (already in config since Phase 3b; now also used for the earnings gate in `context_adjust_node`; empty = no-op gate + WARNING). New sizing settings — all have defaults and are optional: `EARNINGS_SIZE_FACTOR=0.5`, `EARNINGS_REANCHOR=true`, `EARNINGS_LOOKAHEAD_DAYS=7`, `CONTEXT_SIZE_MIN=0.25`, `CONTEXT_SIZE_MAX=1.5`, `CONTEXT_MAX_AGE_DAYS=4`, `CONTEXT_ADJUST_PROMPT_VERSION=v1`, `CRITIC_PROMPT_VERSION=v2`.
 
 ## Where to find more
 

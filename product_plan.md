@@ -398,6 +398,28 @@ Each promotion is a deliberate admin command (not a config edit), logged to `aut
 
 See `phase_4_6_guide.md` for the step-by-step build.
 
+### Phase 4.7 — Context-Aware Weekly Order Sizing (2026-05-26)
+
+**Motivation:** Phase 4.5 built Friday market-context synthesis via Tavily + Sonnet. This phase makes that context *drive* Sunday suggestion sizing: a new `context_adjust_node` is spliced into the suggestion-review graph between `reason` and `critic`. It applies (a) a deterministic earnings gate using a fresh Finnhub calendar fetch and (b) a bounded Sonnet size multiplier from Friday's persisted market narrative.
+
+**Key design decisions (see ADR-0021):**
+- Bounded context influence: Tavily output may now reach `context_adjust_node` for quantity scaling only, within Python-clamped `[context_size_min, context_size_max]` (default 0.25–1.5). The LLM never originates tickers, sets prices, or makes trade recommendations.
+- Earnings gate uses Finnhub structured calendar, not Tavily free-text `forward_events`.
+- Critic bumped to v2 (rule 6: respect prior defensive sizing adjustments).
+- Friday persists context with `week_of=_next_monday()` key; Sunday loader uses the same key.
+
+**New components:**
+- `services/earnings.py` — `EarningsClient` Protocol + `FinnhubEarningsClient` + `FakeEarningsClient` + factory
+- `services/weekly_context.py` — `persist_weekly_context()`, `load_latest_weekly_context()` helpers
+- `graphs/suggestion_review.py` — `context_adjust_node`, `_deeper_anchor`, `_find_level` helpers; `ReviewContext` extended
+- `prompts/context_size_v1.txt`, `prompts/suggestion_critic_v2.txt`
+- `models.py` — `WeeklyMarketContextRow` table; `OrderSuggestion` audit cols: `base_qty`, `size_factor`, `context_note`
+- Email templates: show `(base N · ×X.XX)` and `context_note` for adjusted suggestions
+
+**Deliverable:** Sunday email shows sensible size adjustments with `context_note` on ≥1 suggestion for two consecutive weeks. Tag `v0.4.7.0`.
+
+**ADRs:** ADR-0021 (context-aware sizing design decisions).
+
 ### Phase 6 — Paper → live hardening (1 week work, 4–6 weeks soak)
 - Add kill switches: daily max suggested spend, max position size, max drift before halting new buys.
 - Backtest the suggestion engine against the last 2 years — does "buy at support" actually fill often enough?
