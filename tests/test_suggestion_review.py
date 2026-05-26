@@ -511,7 +511,10 @@ class TestGatherContextNodeSessionLeak:
             patch("investor.graphs.suggestion_review.compute_indicators", return_value=[]),
             patch("investor.graphs.suggestion_review.load_recent_material_news", return_value={}),
             patch("investor.graphs.suggestion_review.load_latest_scored_levels", return_value={}),
-            patch("investor.graphs.suggestion_review.load_latest_weekly_context", return_value=None),
+            patch(
+                "investor.graphs.suggestion_review.load_latest_weekly_context",
+                return_value=None,
+            ),
         ):
             result = gather_context_node(
                 state, test_session_factory, [], "data/bars", mock_settings, mock_earnings_client

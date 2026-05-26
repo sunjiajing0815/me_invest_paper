@@ -477,9 +477,10 @@ def context_adjust_node(
         if ef != 1.0 and i not in earnings_anchors:
             note_parts.append(f"earnings {ctx.earnings_by_ticker.get(d.ticker)}: size ×{ef}")
 
-        base_qty = d.qty if size_factor != 1.0 else None
+        # always set: NULL means node never ran; NOT NULL means node ran (even if neutral)
+        base_qty = d.qty
         # int() truncation = floor — intentional: never exceed authorized share count
-        new_qty = float(int((base_qty or d.qty) * size_factor))  # floor to whole shares
+        new_qty = float(int(base_qty * size_factor))  # floor to whole shares
         if new_qty < 1:
             log.info(
                 "context_adjust: dropping %s/%s draft (size ×%.2f → qty %.0f)",

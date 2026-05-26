@@ -387,6 +387,37 @@ def test_reanchor_sell_price_ceiled() -> None:
     assert result["drafts"][0].anchor_method == "sma_200"
 
 
+def test_base_qty_always_set_when_neutral() -> None:
+    """base_qty is set even when size_factor == 1.0 (neutral context)."""
+    draft = _make_draft(ticker="AAPL", qty=10.0, limit_price=150.0)
+    mock_market_ctx = MagicMock()
+    mock_market_ctx.macro_summary = "neutral"
+    mock_market_ctx.sector_summary = "neutral"
+    mock_market_ctx.vix = 18.0
+    mock_market_ctx.fear_greed_score = 50
+    mock_market_ctx.fear_greed_label = "Neutral"
+    ctx = _make_ctx(market_context=mock_market_ctx)
+    state = _make_state([draft], ctx)
+    settings = _make_settings(earnings_reanchor=False, context_size_max=1.5, context_size_min=0.25)
+
+    # Sonnet returns size_multiplier=1.0 — no earnings, neutral narrative → size_factor == 1.0
+    adjustments = [
+        {"draft_index": 0, "size_multiplier": 1.0, "prefer_anchor": None, "note": "neutral"}
+    ]
+    llm = _make_llm(adjustments)
+    mock_session = MagicMock()
+    session_factory = lambda: _mock_session_factory(mock_session)  # noqa: E731
+
+    with patch("investor.graphs.suggestion_review.load_prompt", return_value="system prompt"):
+        result = context_adjust_node(state, llm, session_factory, settings)
+
+    draft_out = result["drafts"][0]
+    # qty is unchanged (neutral), but base_qty must NOT be None — node ran
+    assert draft_out.qty == 10.0
+    assert draft_out.base_qty == 10.0, "base_qty must be set even for neutral (size_factor=1.0)"
+    assert draft_out.size_factor == 1.0
+
+
 def test_context_adjust_includes_asset_classes_in_payload() -> None:
     """The JSON payload sent to the LLM contains an 'asset_classes' key with per-ticker values."""
     import dataclasses as _dc
