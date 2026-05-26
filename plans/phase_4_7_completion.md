@@ -21,6 +21,8 @@ A post-implementation addition extended the narrative multiplier with **VIX and 
 
 All planned deliverables were met across 13 tasks. Eleven bugs were found and fixed (9 during implementation review, 2 post-deploy).
 
+A subsequent code review of the deployed code identified 7 systemic issues (see §2b). These were fixed before the paper-dry-run soak began.
+
 ---
 
 ## 2. What was built
@@ -108,6 +110,53 @@ Individual stocks: VIX/F&G ignored; macro/sector narrative drives sizing as befo
 
 ---
 
+## 2b. Post-deploy code review fixes (7 tasks)
+
+A second review of the deployed code found 7 systemic issues. All were fixed in a single pass before the paper-dry-run soak.
+
+### Summary
+
+| Task | Area | Issue | Fix |
+|---|---|---|---|
+| 1 | Prompt version safety | `context_adjust_prompt_version="v2"` + format string `f"context_size_v{ver}.txt"` produced `context_size_vv2.txt` again | `@field_validator` strips leading `v` from all 4 version settings; format strings add canonical `v`; default reverted to `"1"` (v2 opt-in via env) |
+| 2 | UTCDateTime | SQLite returns naive datetimes even from `DateTime(timezone=True)` columns; comparisons with `datetime.now(UTC)` were latent `TypeError` bombs | `UTCDateTime` TypeDecorator added to `models.py`; all 22 `DateTime(timezone=True)` columns replaced |
+| 3 | Direction-aware rounding | `round(req.limit_price, 2)` uses banker's rounding and ignores side; buy orders should floor (never overpay), sell orders should ceil (never undersell) | `_floor2dp` / `_ceil2dp` helpers (`math.floor/ceil * 100 / 100`) added to `suggest.py`; applied at `alpaca.py` submit boundary and at `context_adjust_node` reanchor paths |
+| 4 | Kill switch overshooting | Bug 11's fix (`round(req.limit_price, 2)`) improved accuracy but the kill switch still fired for per-suggestion Alpaca 422 rejections (sub-penny, wash-sale), blocking remaining suggestions | New `BrokerValidationError` domain exception in `brokers/base.py`; Alpaca HTTP 422 → `BrokerValidationError`; `auto_trade.py` splits policy: validation errors skip + continue, all other exceptions kill switch + break |
+| 5 | SentimentClient | VIX and CNN Fear & Greed were bare private functions inside `weekly_context.py` — untestable, no injection seam | New `services/sentiment.py`: `SentimentClient` Protocol + `FinnhubCNNSentimentClient` + `FakeSentimentClient` + `make_sentiment_client()` factory; injected via `build_weekly_market_context(sentiment_client=...)` |
+| 6 | ETF classification | `context_size_v2.txt` hardcoded ticker names (VOO, SPY, IVV…); would silently break as watchlist evolves | `asset_class: index_etf \| leveraged_etf \| equity` added to `config/targets.yaml` per ticker (absent → `"equity"`); validated in `load_targets()`; passed as `asset_classes` dict in Sonnet payload; prompt references `asset_classes[ticker]` symbolically |
+| 7 | base_qty invariant | Bug 6's fix (`base_qty = None when size_factor == 1.0`) broke the audit invariant: a neutral context run was indistinguishable from "node never ran" | Reverted to `base_qty = d.qty` unconditionally; `base_qty IS NULL` = node never ran; `base_qty IS NOT NULL` = node ran (even if neutral) |
+
+### New files (post-deploy review)
+
+| File | Description |
+|---|---|
+| `src/investor/services/sentiment.py` | `SentimentClient` Protocol + `FinnhubCNNSentimentClient` (VIX via Finnhub, F&G via CNN public endpoint) + `FakeSentimentClient` (canned data for tests) + `make_sentiment_client()` factory |
+| `docs/adr/0022-sentiment-client-and-etf-classification.md` | Three decisions: SentimentClient as injectable Protocol; CNN F&G endpoint explicit fragility contract (no key, never raise); ETF classification in `targets.yaml` as authoritative source |
+| `tests/test_sentiment.py` | 8 tests covering fake client, factory no-key path, factory with-key path, VIX fetch exception → `None` |
+| `tests/test_db.py` | 1 UTCDateTime round-trip test: insert with `datetime.now(UTC)`, read via ORM, assert `tzinfo is not None` |
+
+### Updated files (post-deploy review only)
+
+| File | Change |
+|---|---|
+| `src/investor/config.py` | `@field_validator` strips `v` prefix from all 4 version settings; `context_adjust_prompt_version` default reverted `"v2"` → `"1"`; `TickerTarget.asset_class` field (default `"equity"`); `_VALID_ASSET_CLASSES` validation in `load_targets()` (unknown → warn + coerce to `"equity"`) |
+| `src/investor/models.py` | `UTCDateTime(TypeDecorator)` defined; all 22 `DateTime(timezone=True)` columns replaced with `UTCDateTime()` |
+| `src/investor/services/suggest.py` | `_floor2dp(price)` and `_ceil2dp(price)` helpers added |
+| `src/investor/services/weekly_context.py` | Removed `_fetch_vix()` and `_fetch_fear_greed()` bare functions; `build_weekly_market_context()` now accepts `sentiment_client: SentimentClient \| None = None` |
+| `src/investor/services/auto_trade.py` | Exception handler split: `BrokerValidationError` → warning log + `continue`; `Exception` → kill switch + `break` |
+| `src/investor/brokers/base.py` | `BrokerValidationError(Exception)` domain exception added |
+| `src/investor/brokers/alpaca.py` | `submit_order()`: explicit `None` guard on `limit_price`; `APIError(422)` → `BrokerValidationError`; `round(...)` replaced with `_floor2dp` / `_ceil2dp` |
+| `src/investor/graphs/suggestion_review.py` | Version format strings add canonical `v`; reanchor paths use `_floor2dp` / `_ceil2dp`; `ReviewContext.target_asset_classes: dict[str, str]`; `context_adjust_node` adds `asset_classes` to Sonnet payload; `base_qty = d.qty` unconditional |
+| `src/investor/jobs/weekly_review.py` | Accepts and passes `sentiment_client: SentimentClient \| None` |
+| `src/investor/main.py` | `make_sentiment_client(_settings)` called in lifespan; stored on `app.state`; passed to `weekly_review_fn` and admin endpoint |
+| `config/targets.yaml` | `asset_class: index_etf` on VOO, QQQ, SCHD; `asset_class: leveraged_etf` on TQQQ |
+| `src/investor/prompts/context_size_v2.txt` | VIX/F&G rules now reference `asset_classes[ticker] == "index_etf"` / `"leveraged_etf"` instead of hardcoded ticker lists |
+| `tests/test_config.py` | 3 new tests: `asset_class` parsed from YAML, default-to-equity, unknown value coerces to equity |
+| `tests/test_context_adjust.py` | 4 new tests: buy/sell reanchor rounding, base_qty set when neutral, `asset_classes` in Sonnet payload |
+| `tests/test_auto_trade.py` | 2 new tests: validation error skips suggestion + stays LIVE; real broker error fires kill switch |
+
+---
+
 ## 3. context_adjust_node design
 
 The node runs three sequential sub-passes on the draft list:
@@ -135,7 +184,7 @@ The node runs three sequential sub-passes on the draft list:
        new_qty = float(int(base_qty * size_factor))   (floor, not round)
        if new_qty < 1: drop draft
        validate prefer_anchor against scored_levels before applying
-       emit replace(d, qty=new_qty, base_qty=(d.qty if size_factor != 1.0 else None),
+       emit replace(d, qty=new_qty, base_qty=d.qty,   # always set; NULL = node never ran
                     size_factor=size_factor, context_note=...)
      re-key rationales: {old_idx: new_idx} over surviving drafts
 ```
@@ -180,6 +229,16 @@ Three decisions:
 
 3. **Finnhub structured calendar over Tavily free-text `forward_events`.** Finnhub's `earnings_calendar` endpoint returns `{ticker: date}` — machine-readable, no parsing required. Tavily's `forward_events` is free text produced by Sonnet and structurally unreliable for a deterministic gate. `FakeEarningsClient` makes the gate testable and fallback-safe.
 
+### ADR-0022 — SentimentClient Protocol and ETF Classification (Accepted, post-deploy review)
+
+Three decisions from the post-deploy code review:
+
+1. **SentimentClient Protocol.** VIX and Fear & Greed extracted into `services/sentiment.py` as an injectable Protocol, mirroring `EarningsClient` and `TavilyClient`. `FinnhubCNNSentimentClient` (concrete), `FakeSentimentClient` (tests), `make_sentiment_client()` (factory). Injected via `build_weekly_market_context(sentiment_client=...)`.
+
+2. **CNN Fear & Greed explicit fragility contract.** The CNN public endpoint requires no API key and can change without notice. Contract: any fetch failure → WARNING + return `None`; `FakeSentimentClient` is the offline fallback; never raise on failure; weekly email is not blocked by a CNN endpoint change.
+
+3. **ETF classification in `targets.yaml` is authoritative.** `asset_class: index_etf | leveraged_etf | equity` (default `"equity"`) per ticker in `config/targets.yaml`. Validated against `{"index_etf", "leveraged_etf", "equity"}` — unknown values warn + coerce to `"equity"`. Passed as `asset_classes` dict in Sonnet payload; prompt references `asset_classes[ticker]` symbolically. Replaces hardcoded ticker lists in the prompt.
+
 ---
 
 ## 6. Bugs found and fixed
@@ -210,10 +269,11 @@ Three decisions:
 **Symptom:** When a ticker had earnings AND a deeper anchor was found, two separate notes were appended: `"→ new_method"` from reanchor and `"earnings YYYY-MM-DD, ×0.50"` from the size pass. Context note ended up duplicated and redundant.  
 **Fix:** Merged reanchor info into the earnings size note (`"earnings YYYY-MM-DD, ×0.50 → new_method"`) and guarded the standalone size note with `if i not in earnings_anchors`.
 
-### Bug 6 — `base_qty` written even when no adjustment made (Minor)
+### Bug 6 — `base_qty` written even when no adjustment made (Minor) ⚠️ superseded by post-deploy review
 
 **Symptom:** Every suggestion row had `base_qty = original_qty` (same as `qty`) when `size_factor == 1.0`, making it impossible to distinguish adjusted from pass-through rows in SQL queries.  
-**Fix:** `base_qty = d.qty if size_factor != 1.0 else None`. Only set when a real adjustment occurred.
+**Initial fix:** `base_qty = d.qty if size_factor != 1.0 else None`.  
+**Superseded (§2b Task 7):** This "fix" itself broke the audit invariant — `base_qty IS NULL` then meant *either* "node never ran" *or* "node ran but was neutral", making pre-4.7 rows indistinguishable from neutral-context rows. Reverted to `base_qty = d.qty` unconditionally. The invariant is now: `base_qty IS NULL` = node never ran (no fresh context or pre-4.7 suggestion); `base_qty IS NOT NULL` = node ran (even if neutral).
 
 ### Bug 7 — `build_suggestion_review_graph()` call site not updated (Critical)
 
@@ -230,19 +290,19 @@ Three decisions:
 **Symptom:** `from typing import Any` was placed after stdlib imports, violating isort order.  
 **Fix:** `uv run ruff check --fix` corrected the ordering automatically.
 
-### Bug 10 — Double-v in `context_size` prompt filename (Critical, post-deploy)
+### Bug 10 — Double-v in `context_size` prompt filename (Critical, post-deploy) ⚠️ fix revised by post-deploy review
 
 **Symptom:** Weekly suggestions failed with `FileNotFoundError: '/app/src/investor/prompts/context_size_vv1.txt'`.  
 **Root cause:** Format string `f"context_size_v{settings.context_adjust_prompt_version}.txt"` with the default `context_adjust_prompt_version="v1"` produced `"context_size_vv1.txt"`. The file on disk is `context_size_v1.txt`. Same class of bug as Phase 4.5's `weekly_context_vv1.txt`.  
-**Fix:** Changed to `f"context_size_{settings.context_adjust_prompt_version}.txt"` — consistent with the `llm_levels.py` pattern (`f"score_levels_{prompt_version}.txt"`).  
-**File:** `src/investor/graphs/suggestion_review.py` line 354.
+**Initial fix:** Changed to `f"context_size_{settings.context_adjust_prompt_version}.txt"` — format string does not add `v`; setting stores `"v1"`.  
+**Revised (§2b Task 1):** Convention changed to: settings store bare digits (`"1"`, `"2"`), format strings add canonical `v` (`f"context_size_v{ver}.txt"`). A `@field_validator` on all 4 version settings strips any leading `v` from env var values (so `CONTEXT_ADJUST_PROMPT_VERSION=v2` normalises to `"2"`). The default was also reverted from `"v2"` to `"1"` — v2 had not completed a full Sunday soak cycle.
 
-### Bug 11 — Sub-penny limit price triggers Alpaca rejection and kill switch (Critical, post-deploy)
+### Bug 11 — Sub-penny limit price triggers Alpaca rejection and kill switch (Critical, post-deploy) ⚠️ fix revised by post-deploy review
 
 **Symptom:** Auto-trade pass raised `{"code":42210000,"message":"invalid limit_price 670.6391. sub-penny increment does not fulfill minimum pricing criteria"}` for sug-19 (VOO, limit `$670.6391`). The `broker_error` trigger fired the kill switch, setting mode to `OFF` and leaving sug-20 through sug-25 unplaced.  
-**Root cause:** Scored S/R level prices carry full float precision (4+ decimal places). `brokers/alpaca.py` passed `req.limit_price` directly to Alpaca without rounding; Alpaca enforces penny-increment minimums.  
-**Fix:** `limit_price=round(req.limit_price, 2)` at the `LimitOrderRequest` construction site in `submit_order()`. The DB retains the full-precision value for audit; only the value sent to Alpaca is rounded.  
-**File:** `src/investor/brokers/alpaca.py` line 110.  
+**Root cause:** Two separate issues: (1) S/R level prices carry full float precision — the broker received unrounded values. (2) Alpaca's HTTP 422 rejection was caught by the generic `Exception` handler which fired the kill switch, when a per-suggestion skip would have been the right response.  
+**Initial fix:** `limit_price=round(req.limit_price, 2)` in `submit_order()`.  
+**Revised (§2b Tasks 3 & 4):** (1) Replaced `round(req.limit_price, 2)` with direction-aware helpers: `_floor2dp(price)` for buy limits (never overpay), `_ceil2dp(price)` for sell limits (never undersell). Applied at both `alpaca.py` and the `context_adjust_node` reanchor paths. (2) Added `BrokerValidationError` domain exception in `brokers/base.py`; `alpaca.py` maps HTTP 422 → `BrokerValidationError`; `auto_trade.py` catches `BrokerValidationError` → skip + continue (system stays LIVE); catches `Exception` → kill switch + break.  
 **Recovery:** Re-promoted to LIVE via `POST /admin/auto-trade/promote`, then ran `POST /admin/run-auto-trade` to place the stalled sug-20 through sug-25 (sug-23/AAPL remained `pending` and was not placed).
 
 ---
@@ -251,13 +311,17 @@ Three decisions:
 
 | Test file | Tests | Notes |
 |---|---|---|
-| `tests/test_earnings.py` | 5 | **New** |
-| `tests/test_context_adjust.py` | 8 | **New** |
-| All prior tests | 264 | Unchanged |
-| **Total** | **277** | Up from 260 at Phase 4.5 close |
+| `tests/test_earnings.py` | 5 | **New (Phase 4.7)** |
+| `tests/test_context_adjust.py` | 12 | **New (Phase 4.7) + 4 from post-deploy review** |
+| `tests/test_sentiment.py` | 8 | **New (post-deploy review)** |
+| `tests/test_db.py` | 1 | **New (post-deploy review) — UTCDateTime round-trip** |
+| `tests/test_config.py` | +3 | **Extended (post-deploy review) — asset_class, validator** |
+| `tests/test_auto_trade.py` | +2 | **Extended (post-deploy review) — kill switch split** |
+| All prior tests | 267 | Unchanged |
+| **Total** | **298** | Up from 260 at Phase 4.5 close |
 
 ```
-uv run pytest -m "not integration"   → 277 passed
+uv run pytest tests/                 → 298 passed, 1 skipped
 uv run ruff check src/ tests/        → clean
 uv run mypy src/                     → no new errors in Phase 4.7 files
 uv run alembic current               → head
@@ -281,8 +345,8 @@ uv run alembic current               → head
 | `CONTEXT_SIZE_MIN` | `0.25` | Lower clamp on narrative multiplier |
 | `CONTEXT_SIZE_MAX` | `1.5` | Upper clamp on narrative multiplier |
 | `CONTEXT_MAX_AGE_DAYS` | `4` | Max age of Friday context row for Sunday to use |
-| `CONTEXT_ADJUST_PROMPT_VERSION` | `v2` | Selects `context_size_v{version}.txt` (bumped from `v1` after VIX/F&G addition) |
-| `CRITIC_PROMPT_VERSION` | `v2` | Selects `suggestion_critic_v{version}.txt` |
+| `CONTEXT_ADJUST_PROMPT_VERSION` | `1` | Selects `context_size_v{version}.txt`; set to `2` to opt in to VIX/F&G sizing (not yet soaked) |
+| `CRITIC_PROMPT_VERSION` | `2` | Selects `suggestion_critic_v{version}.txt` |
 
 **`FINNHUB_API_KEY`** — already present since Phase 3b; now triple-purpose: news fallback, earnings gate, and VIX fetch. Empty key disables all three with WARNING logs; no crash.
 
@@ -304,11 +368,12 @@ Before tagging `v0.4.7.0`:
 | 6 | Second Sunday email confirms consistent behaviour | ⏳ Pending |
 | 7 | Remove `TAVILY_API_KEY` and re-run weekly suggestions: email arrives normally, no crash, no size badges | ⏳ Pending |
 | 8 | Remove `FINNHUB_API_KEY` and re-run weekly suggestions: `WARNING: FINNHUB_API_KEY not set` in logs, no earnings or VIX adjustments, no crash | ⏳ Pending |
-| 9 | `uv run pytest -m "not integration"` — 277 tests pass | ✅ Done |
+| 9 | `uv run pytest tests/` — 298 tests pass | ✅ Done |
 | 10 | `uv run ruff check src/ tests/` — clean | ✅ Done |
 | 11 | `uv run mypy src/` — no new errors in Phase 4.7 files | ✅ Done |
 | 12 | ADR-0021 written and accepted | ✅ Done |
-| 13 | CLAUDE.md updated (Tavily ban updated, gotchas 24–26, Phase 4.7 env vars) | ✅ Done |
-| 14 | README updated (6-node graph, context_adjust description, env vars, new table, SQL queries, test count, project layout, ADR list) | ✅ Done |
-| 15 | `product_plan.md` updated with Phase 4.7 section | ✅ Done |
-| 16 | `plans/phase_4_7_completion.md` updated with VIX/F&G addition (§2a, §3a) | ✅ Done |
+| 13 | ADR-0022 written and accepted (SentimentClient, CNN F&G contract, ETF classification) | ✅ Done |
+| 14 | CLAUDE.md updated (Tavily ban updated, gotchas 24–26, Phase 4.7 env vars) | ✅ Done |
+| 15 | README updated (6-node graph, context_adjust description, env vars, new table, SQL queries, test count, project layout, ADR list) | ✅ Done |
+| 16 | `product_plan.md` updated with Phase 4.7 section | ✅ Done |
+| 17 | `plans/phase_4_7_completion.md` updated with VIX/F&G addition (§2a) and post-deploy code review fixes (§2b) | ✅ Done |
