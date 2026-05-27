@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -248,6 +248,23 @@ class TestDateHelpers:
         assert dt.weekday() == 4  # Friday = 4
         assert dt.hour == 21
         assert dt.tzinfo is not None
+
+    @pytest.mark.parametrize("day_offset,expected_monday_offset", [
+        # Mon–Wed: returns this week's Monday (anchor_monday + 0)
+        (0, 0),   # Monday    → this Monday
+        (1, 0),   # Tuesday   → this Monday
+        (2, 0),   # Wednesday → this Monday
+        # Thu–Sun: returns next Monday (anchor_monday + 7)
+        (3, 7),   # Thursday  → next Monday
+        (4, 7),   # Friday    → next Monday
+        (5, 7),   # Saturday  → next Monday
+        (6, 7),   # Sunday    → next Monday
+    ])
+    def test_next_monday_thursday_cutover(self, day_offset: int, expected_monday_offset: int) -> None:
+        anchor_monday = date(2026, 5, 25)  # a known Monday
+        ref = anchor_monday + timedelta(days=day_offset)
+        result = _next_monday(ref)
+        assert result == anchor_monday + timedelta(days=expected_monday_offset)
 
 
 # ---------------------------------------------------------------------------

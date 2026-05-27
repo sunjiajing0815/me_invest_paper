@@ -71,10 +71,16 @@ HALF_THE_GAP = SizingRule(fraction=0.5)
 # ---------------------------------------------------------------------------
 
 def _next_monday(ref: date | None = None) -> date:
-    """Return the coming Monday (or today if today is Monday)."""
+    """Return the week_of Monday for suggestion generation.
+
+    Mon–Wed: this week's Monday (manual mid-week re-runs stay on the current week).
+    Thu–Sun: the upcoming Monday (Thursday is the cutover for the next week's suggestions).
+    """
     d = ref or datetime.now(UTC).date()
-    days_ahead = (7 - d.weekday()) % 7
-    return d + timedelta(days=days_ahead)
+    weekday = d.weekday()  # 0=Mon … 6=Sun
+    if weekday <= 2:  # Mon, Tue, Wed
+        return d - timedelta(days=weekday)
+    return d + timedelta(days=(7 - weekday) % 7)
 
 
 def _next_friday_eod(ref: date | None = None) -> datetime:
