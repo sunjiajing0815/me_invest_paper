@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..brokers.base import Account, BrokerAdapter
@@ -41,6 +43,29 @@ def take_snapshot(adapter: BrokerAdapter, session: Session, settings: Settings) 
                 weight_pct=weight_pct,
             )
         )
+
+    # Write zero-qty tombstones for any ticker that appeared recently but is no
+    # longer returned by the broker (position fully closed since last sync).
+    current_tickers = {p.ticker for p in positions}
+    cutoff = datetime.now(UTC) - timedelta(days=2)
+    recent_rows = session.execute(
+        text("SELECT DISTINCT ticker FROM positions_snapshot WHERE ts >= :cutoff"),
+        {"cutoff": cutoff.isoformat()},
+    ).fetchall()
+    for (ticker,) in recent_rows:
+        if ticker not in current_tickers:
+            rows.append(
+                PositionsSnapshot(
+                    account_id=account.account_id,
+                    ts=account.as_of,
+                    ticker=ticker,
+                    qty=0.0,
+                    avg_cost=0.0,
+                    market_value=0.0,
+                    weight_pct=0.0,
+                )
+            )
+            logger.info("Snapshot: tombstone written for closed position %s", ticker)
 
     session.add_all(rows)
     _write_broker_account(session, account, broker_name, mode)

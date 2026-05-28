@@ -1,11 +1,11 @@
-# Investor Assistant — Phase 4.7
+# Investor Assistant — Phase 4.8
 
-A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a new **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday an 8-section **weekly review email** covers realised PnL, suggestion outcomes, drift state, material news, a next-Sunday preview, and a Tavily-powered weekly market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
+A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a **weekly review email** covers realised PnL, suggestion outcomes, an **Order Activity summary** (funnel counts, dollar flow, allocation drift Mon→Fri, per-ticker breakdown, 4-week trend), auto-trade status, and a Tavily-powered market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
-**Current phase:** 4.7 — Context-aware weekly order sizing (earnings gate + narrative multiplier)  
-**Status:** Code complete 2026-05-26. Tag `v0.4.7.0` pending two consecutive Sunday emails with context-adjusted suggestions.
+**Current phase:** 4.8 — Weekly order activity summary (funnel, flow, drift, breakdown, 4-week trend)  
+**Status:** Code complete 2026-05-28. Tag `v0.4.8.0` pending two consecutive Friday review emails with the Order Activity section populated and every headline cross-checked against hand-written SQL.
 
 ---
 
@@ -105,13 +105,13 @@ The scheduler starts automatically with the server and fires:
 
 | Time (ET) | Days | Job |
 |---|---|---|
+| 09:00 | Mon–Fri | **Suggestion expiry sweep** — cancels stale GTC orders at the broker and marks suggestions `expired` (runs before auto-trade to prevent duplicate orders) |
 | 09:35 | Mon–Fri | **Auto-trade pass** — place orders for `accepted` suggestions (mode-gated; default OFF) |
 | 16:15 | Mon–Fri | **Daily report** — sync, indicators, compose, email |
-| 16:20 | Mon–Fri | **Suggestion expiry sweep** — marks stale pending suggestions as `expired` |
 | 16:30 | Mon–Fri | **Movers email** — threshold crossings + AI-triaged news |
-| 16:45 | Mon–Fri | **Daily reconciliation** — match broker fills to suggestions, FIFO PnL |
+| 16:45 | Mon–Fri | **Daily reconciliation** — match broker fills to suggestions, FIFO PnL; polls broker for broker-cancelled executions |
 | 16:50 | Mon–Fri | **Moomoo parallel-run** — compare Moomoo vs Alpaca positions (soak stage) |
-| 17:00 | Friday | **Weekly review email** — 8-section reflection on the past week; persists market context to DB for Sunday sizing |
+| 17:00 | Friday | **Weekly review email** — suggestion outcomes, Order Activity summary (funnel/flow/drift), auto-trade status, market context narrative; persists context to DB for Sunday sizing |
 | 18:00 | Sunday | **Weekly suggestions** — indicators, levels, LLM scoring, review graph, email |
 
 ### Updating targets
@@ -305,6 +305,41 @@ curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/cancel-all-or
 # → {"cancelled": ["ord-abc"], "failed": [], "total_cancelled": 1, "total_failed": 0}
 ```
 
+### `POST /admin/reset-week-buy-suggestions` *(requires X-Admin-Token)*
+
+Cancels open broker orders for the current week and resets those suggestions to `pending`. Use when limit prices are stale mid-week and you want to reconsider suggestions before the next Sunday run.
+
+Query param: `side` — `"buy"` (default), `"sell"`, or `"all"`. Default `"buy"` preserves the original behaviour.
+
+- Finds all `accepted` suggestions matching the side filter for `week_of = _next_monday()`.
+- For each, cancels the linked `accepted_for_routing` broker order (`dry_run=False`). Cancel failure is logged but does not block the reset.
+- Sets `OrderSuggestion.status → "pending"`, clears `acted_at`.
+
+```bash
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/reset-week-buy-suggestions
+# → {"week_of": "2026-05-25", "suggestions_reset": [12, 13], "orders_cancelled": ["ord-abc"], "cancel_failed": []}
+
+# Reset sell suggestions too
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "localhost:8000/admin/reset-week-buy-suggestions?side=sell"
+
+# Reset all sides
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "localhost:8000/admin/reset-week-buy-suggestions?side=all"
+```
+
+### `POST /admin/resend-weekly-email` *(requires X-Admin-Token)*
+
+Re-renders and re-sends the weekly suggestions email from existing DB rows — no LLM, no bar updates, no suggestion regeneration. Useful for testing template layout changes or resending after a template fix.
+
+- Reads `pending`/`accepted` suggestions for the current `week_of` from DB (returns 404 if none exist).
+- Recomputes indicators and nearby S/R levels (fast — reads Parquet bars only).
+- Uses the persisted `llm_rationale` if available, otherwise falls back to the technical `reason` string.
+- Subject is prefixed `[Resend]` to distinguish from the real Sunday run.
+
+```bash
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/resend-weekly-email
+# → {"status": "ok", "week_of": "2026-05-25", "suggestions_sent": 4, "message": "Resent 4 suggestions for 2026-05-25"}
+```
+
 ### `POST /admin/auto-trade/emergency-stop` *(requires X-Admin-Token)*
 
 Immediately fires the kill switch: flips mode to `OFF`, cancels all open auto-trade orders placed in the last 24h, writes a `kill_switch_log` row, and sends an alert email. Recovery requires manual re-promotion.
@@ -424,8 +459,9 @@ Fires Friday at 17:00 America/New_York. A backward-looking reflection on the wee
 | 4. Material news | LLM-material events for held tickers this week |
 | 5. Next Sunday preview | Suggestions run without persisting (non-authoritative, labelled as such) |
 | 6. Auto-trade activity | Mode changes, placements, cap spend, kill-switch events if any |
-| 7. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. **Persisted to `weekly_market_context` table** (keyed to the upcoming Monday) so Sunday's suggestion graph can read it. |
-| 8. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
+| 7. **Order Activity** *(Phase 4.8)* | Suggestion funnel (suggested→accepted→routed→filled, DRY_RUN labelled separately), dollar flow (buy/sell routed vs filled), allocation drift table (Mon→Fri per ticker, "→ closer/farther"), per-ticker breakdown, 4-week trend strip |
+| 8. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. **Persisted to `weekly_market_context` table** (keyed to the upcoming Monday) so Sunday's suggestion graph can read it. |
+| 9. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
 
 Subject: `Weekly Review — week of MMM DD`
 
@@ -435,7 +471,7 @@ Subject: `Weekly Review — week of MMM DD`
 
 After market close (16:45 ET), the reconciliation engine fetches fills from the broker and matches them to `order_suggestion` rows using four rules (priority order):
 
-1. `client_order_id = "sug-N"` — auto-trade placed (confidence 1.0)
+1. `client_order_id` matches `sug-N` or `sug-N-rK` (retry) — auto-trade placed (confidence 1.0)
 2. Single accepted suggestion with same ticker + side, within 48h of suggestion creation, price within ±0.5% (confidence 0.9)
 3. Multiple candidates → best-proximity match flagged `manual_review` (confidence 0.5)
 4. No match → `untracked` (confidence 0.0)
@@ -755,6 +791,35 @@ SELECT date(ts) AS day, sum(cost_usd) AS total_usd, count(*) AS calls
 FROM llm_call_log
 WHERE purpose = 'context_adjust'
 GROUP BY 1 ORDER BY 1 DESC;
+
+-- suggestion funnel for the current operations week (Phase 4.8)
+SELECT
+  count(*) AS suggested,
+  count(*) FILTER (WHERE status = 'accepted')  AS accepted,
+  count(*) FILTER (WHERE status = 'rejected')  AS rejected,
+  count(*) FILTER (WHERE status = 'expired')   AS expired
+FROM order_suggestion
+WHERE week_of = date('now', 'weekday 1', '-7 days');
+
+-- allocation drift: target vs Friday weight per ticker (Phase 4.8)
+WITH latest AS (
+  SELECT ticker, market_value,
+         ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ts DESC) AS rn
+  FROM positions_snapshot
+)
+SELECT t.ticker, t.target_pct,
+       round(l.market_value / sum(l.market_value) OVER () * 100, 2) AS current_pct,
+       round(t.target_pct - l.market_value / sum(l.market_value) OVER () * 100, 2) AS gap_pp
+FROM target_allocation t
+LEFT JOIN latest l ON l.ticker = t.ticker AND l.rn = 1
+WHERE t.effective_to IS NULL
+ORDER BY t.target_pct DESC;
+
+-- open executions still at broker (accepted_for_routing) — should be empty after expiry sweep (Phase 4.8)
+SELECT oe.id, oe.ticker, oe.side, oe.broker_order_id, oe.created_at
+FROM order_execution oe
+WHERE oe.status = 'accepted_for_routing' AND oe.dry_run = false
+ORDER BY oe.created_at;
 ```
 
 ---
@@ -804,18 +869,19 @@ src/investor/
     targets.py        Hash-based idempotent target loader
     render.py         Jinja2 template rendering
     email.py          SMTPEmailer + FakeEmailer
-    reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl() (Phase 4)
+    reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl() / sync_open_order_statuses() (Phase 4 + 4.8)
     auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch() (Phase 4)
     tavily.py         TavilyClient Protocol + TavilyConcreteClient + FakeTavilyClient + factory (Phase 4.5)
     weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis (Phase 4.5); persist_weekly_context() / load_latest_weekly_context() (Phase 4.7)
     earnings.py       EarningsClient Protocol + FinnhubEarningsClient + FakeEarningsClient + make_earnings_client() factory (Phase 4.7)
+    weekly_review_metrics.py  OrderFunnel / OrderFlow / AllocationDriftRow / PerTickerWeekRow / WeekTrendRow + 5 compute functions; all queries live, no ORM rows cross session boundary (Phase 4.8)
   jobs/
     daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
-    suggestion_expiry.py   Mon-Fri 16:20 ET — mark stale pending suggestions expired
+    suggestion_expiry.py   Mon-Fri 09:00 ET — cancel stale GTC orders + expire suggestions (pre-market, before auto-trade)
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
-    reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL (Phase 4)
+    reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL, sync broker-cancelled executions (Phase 4)
     moomoo_parallel.py     Mon-Fri 16:50 ET — compare Moomoo vs Alpaca positions (Phase 4)
-    weekly_review.py       Fri 17:00 ET — 8-section reflection email (Phase 4); persists WeeklyMarketContext to DB with week_of=_next_monday() (Phase 4.7)
+    weekly_review.py       Fri 17:00 ET — reflection email + Order Activity metrics (Phase 4.8); persists WeeklyMarketContext to DB with week_of=_next_monday() (Phase 4.7)
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
     auto_trade.py          Mon-Fri 09:35 ET — place orders for accepted suggestions (Phase 4)
 config/
@@ -839,6 +905,10 @@ sql/
   untracked_positions.sql     Positions with no active target allocation
   account_last_sync.sql       Current account state
   targets_active_count.sql    Count of active targets
+  funnel_counts.sql           Suggestion funnel counts for one operations week (Phase 4.8)
+  order_flow.sql              Buy/sell notional routed and filled, LIVE vs DRY_RUN (Phase 4.8)
+  alloc_drift.sql             Per-ticker allocation drift Mon→Fri with holiday fallback (Phase 4.8)
+  per_ticker_breakdown.sql    Per-ticker qty/$ routed and filled for one week (Phase 4.8)
 migrations/           Alembic revisions
 data/
   investor.db         SQLite — bind-mounted, gitignored
@@ -857,17 +927,20 @@ tests/
   test_news.py                URL normalization, news fetch mocks, tiered threshold logic (27 tests)
   test_news_triage.py         Per-node unit tests, graph integration, fence/parse regressions (12 tests)
   test_suggestion_review.py   revise/skip_revise nodes, critic routing, reason/critic with mock LLM, session-leak guard (18 tests)
-  test_suggestion_expiry.py             Expiry sweep: stale → expired, future → unchanged, non-pending → unchanged (3 tests)
+  test_suggestion_expiry.py             Expiry sweep: stale → expired, future → unchanged, GTC cancel, exec status update (9 tests)
   test_weekly_suggestions.py            Parallel scoring wall-clock + failure fallback (2 tests)
-  test_reconciliation.py                Reconciliation rules, FIFO PnL, idempotency, dry-run isolation (14 tests) (Phase 4)
+  test_reconciliation.py                Reconciliation rules, FIFO PnL, idempotency, dry-run isolation, sug-N-rN Rule 1, sync_open_order_statuses, partial-fill guard (20 tests) (Phase 4 + 4.8)
   test_auto_trade.py                    OFF/DRY_RUN/LIVE modes, all guards, kill-switch triggers, promotion soak (20 tests) (Phase 4)
   test_moomoo.py                        Prefix stripping, positions/activities mapping, remark→client_order_id, get_bars guard (11 tests) (Phase 4)
-  test_weekly_review.py                 WeeklyReview + SuggestionAudit frozen dataclasses, _week_start() helper (7 tests) (Phase 4)
+  test_weekly_review.py                 WeeklyReview + SuggestionAudit frozen dataclasses, pending-past-expiry display (8 tests) (Phase 4 + 4.8)
   test_no_unauthorized_submit_order.py  Grep CI gate: submit_order single-call-site enforcement (1 test) (Phase 4)
   test_tavily.py                        FakeTavilyClient, TavilyConcreteClient, factory, cap enforcement (11 tests) (Phase 4.5)
   test_weekly_context.py                build_weekly_market_context: happy path, empty→None, LLM failure, dedup, cap (5 tests) (Phase 4.5)
   test_earnings.py                      FakeEarningsClient, FinnhubEarningsClient, factory, SDK exception fallback (5 tests) (Phase 4.7)
-  test_context_adjust.py                earnings gate, reanchor, narrative clamp, sub-1-share drop, rationale re-keying, price invariant (8 tests) (Phase 4.7)
+  test_context_adjust.py                earnings gate, reanchor, narrative clamp, sub-1-share drop, rationale re-keying, price invariant (12 tests) (Phase 4.7)
+  test_load_targets.py                  Hash-based target dedup, mid-week suggestion expiry on target change (7 tests) (Phase 4.8)
+  test_weekly_review_metrics.py         Order funnel, drift sign/over-correction/fallback, weekday guard, flow zeros, partial-fill trend (11 tests) (Phase 4.8)
+  test_reset_week_suggestions.py        reset-week endpoint: buy/sell/all side param, 422 on invalid side (7 tests) (Phase 4.8)
   test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -890,6 +963,8 @@ docs/adr/
   0019-weekly-review-composition.md   Seven sections; Friday-reflection vs Sunday-action cadence; Moomoo-section sunset criteria
   0020-tavily-weekly-context.md       Why Tavily; Protocol swap path; Nebius acquisition risk; informational-only hard constraint
   0021-context-aware-order-sizing.md  Bounded Tavily exception for qty scaling; carved LLM output exception; Finnhub vs free-text earnings
+  0022-sentiment-client-and-etf-classification.md  SentimentClient Protocol; CNN F&G fragility contract; ETF classification in targets.yaml
+  0023-weekly-order-activity-metrics.md  Allocation drift over fill-rate fiction; live queries over materialised cache; honest manual-placement bucket
 ```
 
 ---
@@ -898,7 +973,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # ~277 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 334 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/

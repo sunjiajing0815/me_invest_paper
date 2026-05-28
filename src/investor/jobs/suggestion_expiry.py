@@ -58,6 +58,7 @@ def sweep_expired_suggestions(
                 if exec_row is not None:
                     try:
                         adapter.cancel_order(exec_row.broker_order_id)  # type: ignore[arg-type]
+                        exec_row.status = "broker_cancelled"
                         cancelled += 1
                         log.info(
                             "sweep_expired_suggestions: cancelled broker order %s for sug-%d (%s)",

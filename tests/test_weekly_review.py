@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
-from investor.jobs.weekly_review import SuggestionAudit, WeeklyReview, _week_start
+from investor.brokers.base import Account
+from investor.db import override_engine_for_testing
+from investor.jobs.weekly_review import SuggestionAudit, WeeklyReview, _build_review, _week_start
+from investor.models import Base, OrderSuggestion
 
 # ── _week_start ────────────────────────────────────────────────────────────────
 
@@ -101,3 +108,63 @@ def test_suggestion_audit_fields() -> None:
     assert audit.filled_price == pytest.approx(799.5)
     assert audit.fill_status == "filled"
     assert audit.acted_at == ts
+
+
+# ── _build_review: pending-past-expires display fix ──────────────────────────
+
+@pytest.fixture()
+def _db_session() -> Session:
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    override_engine_for_testing(engine)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
+
+
+def _mock_adapter() -> MagicMock:
+    adapter = MagicMock()
+    adapter.get_account.return_value = Account(
+        account_id="test",
+        cash_usd=0.0,
+        equity_usd=0.0,
+        buying_power_usd=0.0,
+        as_of=datetime.now(UTC),
+    )
+    adapter.get_positions.return_value = []
+    return adapter
+
+
+def _mock_settings() -> MagicMock:
+    settings = MagicMock()
+    settings.broker = "alpaca_paper"
+    settings.opend_host = None
+    settings.weekly_review_breakdown_top_n = 5
+    settings.weekly_review_trend_weeks = 4
+    return settings
+
+
+def test_pending_past_expires_at_shows_expiry_note(_db_session: Session) -> None:
+    """Pending suggestions whose expires_at has passed should show 'pending (expires Mon)'."""
+    week_of = date(2026, 5, 25)  # Monday of current week
+    _db_session.add(OrderSuggestion(
+        week_of=week_of,
+        ticker="AAPL",
+        side="buy",
+        qty=3.0,
+        limit_price=200.0,
+        reason="test",
+        status="pending",
+        expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    ))
+    _db_session.flush()
+
+    review = _build_review(
+        session=_db_session,
+        adapter=_mock_adapter(),
+        settings=_mock_settings(),
+        week_of=week_of,
+    )
+
+    assert len(review.suggestion_audits) == 1
+    assert review.suggestion_audits[0].status == "pending (expires Mon)"

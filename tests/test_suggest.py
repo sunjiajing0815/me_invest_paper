@@ -260,7 +260,7 @@ class TestDateHelpers:
         (5, 7),   # Saturday  → next Monday
         (6, 7),   # Sunday    → next Monday
     ])
-    def test_next_monday_thursday_cutover(self, day_offset: int, expected_monday_offset: int) -> None:
+    def test_next_monday_thursday_cutover(self, day_offset: int, expected_monday_offset: int) -> None:  # noqa: E501
         anchor_monday = date(2026, 5, 25)  # a known Monday
         ref = anchor_monday + timedelta(days=day_offset)
         result = _next_monday(ref)

@@ -9,7 +9,11 @@ from ..brokers.base import BrokerAdapter
 from ..config import Settings
 from ..db import session_scope
 from ..models import Meta
-from ..services.reconciliation import persist_reconciliation, reconcile_activities
+from ..services.reconciliation import (
+    persist_reconciliation,
+    reconcile_activities,
+    sync_open_order_statuses,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ def run_daily_reconciliation(settings: Settings, adapter: BrokerAdapter) -> None
             since=since,
         )
         persist_reconciliation(session, results, broker=settings.broker)
+        synced = sync_open_order_statuses(session, adapter)
 
         meta_row = session.get(Meta, META_KEY)
         if meta_row is None:
@@ -45,7 +50,8 @@ def run_daily_reconciliation(settings: Settings, adapter: BrokerAdapter) -> None
             meta_row.value = datetime.now(UTC).isoformat()
 
     logger.info(
-        "run_daily_reconciliation: %d activities processed, broker=%s",
+        "run_daily_reconciliation: %d activities processed, %d open executions synced, broker=%s",
         len(results),
+        synced,
         settings.broker,
     )

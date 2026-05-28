@@ -1,11 +1,13 @@
-watchlist: [VOO, QQQ, SCHD, TQQQ, AAPL, MSFT, AMZN, MU]
+watchlist: [VOO, QQQ, TQQQ, BTC, ISRG, BRK.B, AMZN, GOOG, MSFT, MU]
 targets:
-  VOO:  { pct: 30, band: [25, 35], asset_class: index_etf }
-  QQQ:  { pct: 25, band: [21, 29], asset_class: index_etf }
-  SCHD: { pct: 10, band: [7,  13], asset_class: index_etf }
-  TQQQ: { pct: 10, band: [7,  13], asset_class: leveraged_etf }
-  AMZN: { pct: 5,  band: [3,  8]  }
-  AAPL: { pct: 5,  band: [3,  8]  }
-  MSFT: { pct: 5,  band: [3,  8]  }
-  MU:   { pct: 5,  band: [3,  8]  }
+  VOO:   { pct: 25, band: [21, 29], asset_class: index_etf }
+  QQQ:   { pct: 25, band: [21, 29], asset_class: index_etf }
+  TQQQ:  { pct: 10, band: [7,  13], asset_class: leveraged_etf }
+  BTC:   { pct: 5,  band: [3,  8]  }
+  ISRG:  { pct: 5,  band: [3,  8]  }
+  BRK.B: { pct: 5,  band: [3,  8]  }
+  AMZN:  { pct: 5,  band: [3,  8]  }
+  GOOG:  { pct: 5,  band: [3,  8]  }
+  MSFT:  { pct: 5,  band: [3,  8]  }
+  MU:    { pct: 5,  band: [3,  8]  }
 cash_buffer_pct: 5

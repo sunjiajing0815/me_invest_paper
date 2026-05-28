@@ -35,6 +35,18 @@ from ..services.weekly_context import (
     build_weekly_market_context,
     persist_weekly_context,
 )
+from ..services.weekly_review_metrics import (
+    AllocationDriftRow,
+    OrderFlow,
+    OrderFunnel,
+    PerTickerWeekRow,
+    WeekTrendRow,
+    compute_4_week_trend,
+    compute_allocation_drift,
+    compute_order_flow,
+    compute_order_funnel,
+    compute_per_ticker_breakdown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +82,11 @@ class WeeklyReview:
     preview_suggestions: list[dict[str, Any]]  # simplified dicts from generate_suggestions()
     moomoo_status: str  # "parallel_running" | "primary" | "unavailable"
     market_context: WeeklyMarketContext | None = None  # Phase 4.5: Tavily weekly digest
+    order_funnel: OrderFunnel | None = None            # Phase 4.8: order activity metrics
+    order_flow: OrderFlow | None = None
+    drift_rows: list[AllocationDriftRow] | None = None
+    breakdown_rows: list[PerTickerWeekRow] | None = None
+    trend_rows: list[WeekTrendRow] | None = None
 
 
 def _week_start(ref: date | None = None) -> datetime:
@@ -121,18 +138,22 @@ def _build_review(
         OrderSuggestion.week_of == week_of
     ).all()
     suggestion_audits = []
+    now = datetime.now(UTC)
     for s in suggestions_this_week:
         # Find matching fill (by suggestion_id FK on OrderExecution)
         fill = session.query(OrderExecution).filter(
             OrderExecution.suggestion_id == s.id,
             OrderExecution.dry_run.is_(False),
         ).first()
+        audit_status = s.status
+        if s.status == "pending" and s.expires_at is not None and s.expires_at <= now:
+            audit_status = "pending (expires Mon)"
         suggestion_audits.append(SuggestionAudit(
             ticker=s.ticker,
             side=s.side,
             qty=s.qty,
             limit_price=s.limit_price,
-            status=s.status,
+            status=audit_status,
             acted_at=s.acted_at,
             filled_price=fill.filled_price if fill else None,
             fill_status=fill.status if fill else None,
@@ -187,6 +208,31 @@ def _build_review(
     elif settings.opend_host:
         moomoo_status = "parallel_running"
 
+    # Phase 4.8: order activity metrics
+    fri = week_of + timedelta(days=4)
+    order_funnel: OrderFunnel | None = None
+    order_flow: OrderFlow | None = None
+    drift_rows: list[AllocationDriftRow] | None = None
+    breakdown_rows: list[PerTickerWeekRow] | None = None
+    trend_rows: list[WeekTrendRow] | None = None
+    try:
+        order_funnel = compute_order_funnel(session, mon=week_of, fri=fri)
+        order_flow = compute_order_flow(session, mon=week_of, fri=fri)
+        drift_rows = compute_allocation_drift(session, mon=week_of, fri=fri)
+        breakdown_rows = compute_per_ticker_breakdown(
+            session,
+            mon=week_of,
+            fri=fri,
+            top_n=settings.weekly_review_breakdown_top_n,
+        )
+        trend_rows = compute_4_week_trend(
+            session,
+            current_fri=fri,
+            trend_weeks=settings.weekly_review_trend_weeks,
+        )
+    except Exception as exc:
+        logger.warning("_build_review: order activity metrics failed, omitting section: %s", exc)
+
     return WeeklyReview(
         week_of=week_of,
         account=account,
@@ -200,6 +246,11 @@ def _build_review(
         executions_this_week=executions_this_week,
         preview_suggestions=[],  # populated below outside session scope
         moomoo_status=moomoo_status,
+        order_funnel=order_funnel,
+        order_flow=order_flow,
+        drift_rows=drift_rows,
+        breakdown_rows=breakdown_rows,
+        trend_rows=trend_rows,
     )
 
 
@@ -215,6 +266,12 @@ def run_weekly_review(
 
     Re-raises on email failure to match ADR-0005 contract.
     """
+    today = datetime.now(UTC).date()
+    if today.weekday() not in {4, 5, 6}:  # 4=Fri, 5=Sat, 6=Sun
+        raise RuntimeError(
+            f"run_weekly_review: called on {today.strftime('%A')} — week isn't over yet"
+        )
+
     targets = load_targets(settings.targets_path)
     tickers = targets.watchlist
     week_of = _next_monday() - timedelta(days=7)  # last Monday (the week just ended)
@@ -315,6 +372,11 @@ def run_weekly_review(
         preview_suggestions=preview_suggestions,
         moomoo_status=review.moomoo_status,
         market_context=market_context,
+        order_funnel=review.order_funnel,
+        order_flow=review.order_flow,
+        drift_rows=review.drift_rows,
+        breakdown_rows=review.breakdown_rows,
+        trend_rows=review.trend_rows,
     )
 
     subject = f"Weekly review: {week_of:%b %d, %Y}"

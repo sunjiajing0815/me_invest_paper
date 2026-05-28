@@ -155,6 +155,7 @@ class OrderSuggestion(Base):
         Double, nullable=False, default=1.0, server_default="1.0"
     )
     context_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     __table_args__ = (
         UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
     )

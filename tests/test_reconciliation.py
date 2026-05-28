@@ -10,13 +10,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from investor.brokers.base import Activity
+from investor.brokers.base import Activity, OrderConfirmation
 from investor.db import override_engine_for_testing
 from investor.models import Base, OrderExecution, OrderSuggestion
 from investor.services.reconciliation import (
     compute_realized_pnl,
     persist_reconciliation,
     reconcile_activities,
+    sync_open_order_statuses,
 )
 
 _NOW = datetime(2026, 5, 1, 16, 0, tzinfo=UTC)
@@ -203,6 +204,25 @@ def test_rule1_dry_run_rows_ignored_by_reconciliation(db_session: Session) -> No
     assert len(dry_rows) == 1  # untouched
 
 
+def test_rule1_retry_order_id_sug_n_rn_matched(db_session: Session) -> None:
+    """Rule 1 parses 'sug-N-rM' correctly — retry suffix must not break the int parse."""
+    sug = _sug(db_session)
+    act = _act(
+        client_order_id=f"sug-{sug.id}-r1",
+        broker_order_id="b-retry-001",
+        filled_at=datetime.now(UTC),
+        status="filled",
+    )
+    results = reconcile_activities(
+        session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
+    )
+    assert len(results) == 1
+    r = results[0]
+    assert r.suggestion_id == sug.id
+    assert r.method == "auto_matched"
+    assert r.confidence == pytest.approx(1.0)
+
+
 # ── Rule 2: single heuristic candidate ────────────────────────────────────────
 
 def test_rule2_heuristic_single_candidate(db_session: Session) -> None:
@@ -362,6 +382,55 @@ def test_accepted_suggestion_flipped_to_filled(db_session: Session) -> None:
     assert sug.status == "filled"
 
 
+def test_partially_filled_does_not_flip_suggestion_to_filled(db_session: Session) -> None:
+    """A partially_filled activity must NOT advance an accepted suggestion to 'filled'."""
+    sug = _sug(db_session, ticker="AAPL", side="buy", qty=5.0, limit_price=100.0)
+    assert sug.status == "accepted"
+    # client_order_id does NOT start with "sug-" → Rule 1 does not apply; heuristic fires
+    act = _act(
+        ticker="AAPL",
+        side="buy",
+        filled_qty=5.0,
+        filled_price=100.0,
+        broker_order_id="b-partial-001",
+        client_order_id=None,
+        status="partially_filled",
+    )
+    results = reconcile_activities(
+        session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
+    )
+    assert len(results) == 1
+    assert results[0].method == "auto_matched"  # heuristic matched
+    persist_reconciliation(db_session, results, broker="alpaca")
+    db_session.flush()
+    db_session.refresh(sug)
+    assert sug.status == "accepted"  # must remain accepted — GTC order still open
+
+
+def test_filled_activity_does_flip_suggestion(db_session: Session) -> None:
+    """Regression guard: a fully filled activity DOES advance an accepted suggestion to 'filled'."""
+    sug = _sug(db_session, ticker="AAPL", side="buy", qty=5.0, limit_price=100.0)
+    assert sug.status == "accepted"
+    act = _act(
+        ticker="AAPL",
+        side="buy",
+        filled_qty=5.0,
+        filled_price=100.0,
+        broker_order_id="b-filled-001",
+        client_order_id=None,
+        status="filled",
+    )
+    results = reconcile_activities(
+        session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
+    )
+    assert len(results) == 1
+    assert results[0].method == "auto_matched"  # heuristic matched
+    persist_reconciliation(db_session, results, broker="alpaca")
+    db_session.flush()
+    db_session.refresh(sug)
+    assert sug.status == "filled"
+
+
 def test_untracked_activity_does_not_flip_suggestion(db_session: Session) -> None:
     sug = _sug(db_session)
     act = _act(ticker="AAPL", broker_order_id="b-untracked")
@@ -377,3 +446,58 @@ def test_untracked_activity_does_not_flip_suggestion(db_session: Session) -> Non
     r = results[0]
     if r.method != "auto_matched":
         assert sug.status == "accepted"
+
+
+# ── sync_open_order_statuses ──────────────────────────────────────────────────
+
+def test_sync_open_order_statuses_marks_cancelled(db_session: Session) -> None:
+    exe = _exe(db_session, broker_order_id="ord-1", status="accepted_for_routing", dry_run=False)
+    db_session.flush()
+
+    mock_adapter = MagicMock()
+    mock_adapter.get_order.return_value = OrderConfirmation(
+        broker_order_id="ord-1",
+        client_order_id=None,
+        status="canceled",
+        submitted_at=datetime.now(UTC),
+    )
+
+    result = sync_open_order_statuses(db_session, mock_adapter)
+
+    # Check in-memory — the service mutated exe.status via the identity map.
+    # Do not call refresh() before flush(); it would re-read the unflushed DB row.
+    assert exe.status == "broker_cancelled"
+    assert result == 1
+
+
+def test_sync_open_order_statuses_ignores_live_order(db_session: Session) -> None:
+    exe = _exe(db_session, broker_order_id="ord-2", status="accepted_for_routing", dry_run=False)
+    db_session.flush()
+
+    mock_adapter = MagicMock()
+    mock_adapter.get_order.return_value = OrderConfirmation(
+        broker_order_id="ord-2",
+        client_order_id=None,
+        status="new",
+        submitted_at=datetime.now(UTC),
+    )
+
+    result = sync_open_order_statuses(db_session, mock_adapter)
+
+    db_session.refresh(exe)
+    assert exe.status == "accepted_for_routing"
+    assert result == 0
+
+
+def test_sync_open_order_statuses_tolerates_get_order_failure(db_session: Session) -> None:
+    exe = _exe(db_session, broker_order_id="ord-3", status="accepted_for_routing", dry_run=False)
+    db_session.flush()
+
+    mock_adapter = MagicMock()
+    mock_adapter.get_order.side_effect = Exception("broker down")
+
+    result = sync_open_order_statuses(db_session, mock_adapter)
+
+    db_session.refresh(exe)
+    assert exe.status == "accepted_for_routing"
+    assert result == 0

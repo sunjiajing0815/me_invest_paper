@@ -9,12 +9,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import pydantic
+from sqlalchemy import select
 
 from ..brokers.base import BrokerAdapter
 from ..config import Settings, load_targets
 from ..db import session_scope
 from ..graphs.suggestion_review import build_suggestion_review_graph
-from ..models import BrokerAccount
+from ..models import BrokerAccount, OrderSuggestion
 from ..services.bars import update_bars
 from ..services.daily_report import AccountSnapshot
 from ..services.email import EmailSender
@@ -205,6 +206,26 @@ def run_weekly_suggestions(
         )
         # NOTE: do NOT call persist_suggestions here — finalize_node does it.
 
+    # Load cached LLM rationales for this week_of — keyed by (ticker, side).
+    # reason_node will skip drafts whose index already has a rationale in state.
+    with session_scope() as session:
+        cached_rows = session.scalars(
+            select(OrderSuggestion).where(
+                OrderSuggestion.week_of == week_of,
+                OrderSuggestion.llm_rationale.is_not(None),
+            )
+        ).all()
+        cached_rationales: dict[tuple[str, str], str] = {
+            (r.ticker, r.side): r.llm_rationale  # type: ignore[misc]
+            for r in cached_rows
+        }
+
+    pre_rationales = {
+        i: cached_rationales[(d.ticker, d.side)]
+        for i, d in enumerate(drafts)
+        if (d.ticker, d.side) in cached_rationales
+    }
+
     # Suggestion review graph: reason → critic → (revise) → finalize
     # finalize_node persists finals and writes suggestion_ids to state.
     graph = build_suggestion_review_graph(
@@ -220,7 +241,7 @@ def run_weekly_suggestions(
             "week_of": week_of,
             "drafts": drafts,
             "context": None,
-            "rationales": {},
+            "rationales": pre_rationales,
             "critic_decisions": {},
             "finals": [],
             "suggestion_ids": [],
@@ -230,19 +251,47 @@ def run_weekly_suggestions(
         config={"configurable": {"thread_id": f"weekly-{week_of}"}},
     )
 
-    finals = result["finals"]
     rationales: dict[int, str] = result["rationales"]
     suggestion_ids: list[int] = result["suggestion_ids"]
 
+    # Re-read persisted rows so the email always reflects what is in the DB.
+    # state["finals"] can diverge for already-accepted suggestions (persist_suggestions
+    # skips accepted rows, but the graph still computes fresh context-adjusted values
+    # in-memory). Using DB values avoids emailing a qty that auto-trade won't honour.
+    with session_scope() as _s:
+        db_rows: dict[int, OrderSuggestion] = {
+            sid: row
+            for sid in suggestion_ids
+            if (row := _s.get(OrderSuggestion, sid)) is not None
+        }
+        # Extract plain values before session closes (ORM safety rule)
+        db_values: dict[int, dict] = {
+            sid: {
+                "ticker": r.ticker,
+                "side": r.side,
+                "qty": r.qty,
+                "limit_price": r.limit_price,
+                "reason": r.reason or "",
+                "base_qty": r.base_qty,
+                "size_factor": r.size_factor if r.size_factor is not None else 1.0,
+                "context_note": r.context_note,
+                "llm_rationale": r.llm_rationale,
+            }
+            for sid, r in db_rows.items()
+        }
+
     # Build token context list for Accept/Reject buttons
     suggestion_items = []
-    for idx, (suggestion, sid) in enumerate(zip(finals, suggestion_ids, strict=False)):
+    for idx, sid in enumerate(suggestion_ids):
+        if sid not in db_values:
+            continue
+        v = db_values[sid]
         accept_token = sign_action(sid, "accept", settings.magic_link_secret)
         reject_token = sign_action(sid, "reject", settings.magic_link_secret)
         suggestion_items.append({
-            "suggestion": suggestion,
+            "suggestion": v,
             "sid": sid,
-            "rationale": rationales.get(idx, suggestion.reason),
+            "rationale": v["llm_rationale"] or rationales.get(idx, v["reason"]),
             "accept_token": accept_token,
             "reject_token": reject_token,
         })
@@ -269,7 +318,7 @@ def run_weekly_suggestions(
         "weekly_suggestions.txt.j2",
         week_of=week_of,
         account=account,
-        suggestions=finals,
+        suggestions=list(db_values.values()),
         indicators=indicators,
         nearby=nearby,
         untracked=untracked,
@@ -279,6 +328,6 @@ def run_weekly_suggestions(
     emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
     logger.info(
         "run_weekly_suggestions completed: %d suggestions emailed to %s",
-        len(finals),
+        len(suggestion_items),
         settings.email_to,
     )

@@ -19,6 +19,10 @@ from ..models import OrderExecution, OrderSuggestion
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"canceled", "expired", "rejected", "done_for_day", "replaced"}
+)
+
 
 @dataclass(frozen=True)
 class MatchResult:
@@ -56,7 +60,7 @@ def reconcile_activities(
         # Rule 1: client_order_id carries "sug-N" → placed by auto-trade engine
         if act.client_order_id and act.client_order_id.startswith("sug-"):
             try:
-                sid = int(act.client_order_id.removeprefix("sug-"))
+                sid = int(act.client_order_id.removeprefix("sug-").split("-r")[0])
                 results.append(
                     MatchResult(
                         suggestion_id=sid,
@@ -165,7 +169,7 @@ def persist_reconciliation(
                 )
             )
 
-        if r.suggestion_id and r.method == "auto_matched":
+        if r.suggestion_id and r.method == "auto_matched" and r.activity.status == "filled":
             sug = session.get(OrderSuggestion, r.suggestion_id)
             if sug and sug.status == "accepted":
                 sug.status = "filled"
@@ -212,3 +216,39 @@ def compute_realized_pnl(session: Session, sell: Activity) -> float | None:
 
     proceeds = sell.filled_qty * sell.filled_price
     return proceeds - total_cost
+
+
+def sync_open_order_statuses(session: Session, adapter: BrokerAdapter) -> int:
+    """Poll broker for each accepted_for_routing execution and update status if cancelled.
+
+    Returns the number of executions updated. Exceptions per-order are logged and skipped.
+    """
+    open_execs = session.scalars(
+        select(OrderExecution).where(
+            OrderExecution.status == "accepted_for_routing",
+            OrderExecution.dry_run.is_(False),
+            OrderExecution.broker_order_id.is_not(None),
+        )
+    ).all()
+
+    updated = 0
+    for exe in open_execs:
+        try:
+            conf = adapter.get_order(exe.broker_order_id)  # type: ignore[arg-type]
+            if conf.status in _TERMINAL_STATUSES:
+                exe.status = "broker_cancelled"
+                updated += 1
+                logger.info(
+                    "sync_open_order_statuses: sug-%s execution %d marked broker_cancelled "
+                    "(broker status=%s)",
+                    exe.suggestion_id,
+                    exe.id,
+                    conf.status,
+                )
+        except Exception as exc:
+            logger.warning(
+                "sync_open_order_statuses: get_order(%s) failed: %s — skipping",
+                exe.broker_order_id,
+                exc,
+            )
+    return updated

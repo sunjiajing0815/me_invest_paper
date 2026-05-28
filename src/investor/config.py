@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     context_adjust_prompt_version: str = "1"
     critic_prompt_version: str = "2"
 
+    # Phase 4.8: Weekly order activity metrics
+    weekly_review_trend_weeks: int = 4
+    weekly_review_breakdown_top_n: int = 20
+
     @field_validator(
         "level_prompt_version", "weekly_context_prompt_version",
         "context_adjust_prompt_version", "critic_prompt_version",

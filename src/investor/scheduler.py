@@ -1,9 +1,9 @@
 """APScheduler bootstrap — Phase 2/3c/4.
 
 Jobs:
+  suggestion_expiry     — Mon–Fri 09:00 ET, grace 30 min  ← pre-market, before auto_trade
   auto_trade            — Mon–Fri 09:35 ET, grace 15 min
   daily_report          — Mon–Fri 16:15 ET, grace 30 min
-  suggestion_expiry     — Mon–Fri 16:20 ET, grace 30 min
   movers                — Mon–Fri 16:30 ET, grace 1 h
   daily_reconciliation  — Mon–Fri 16:45 ET, grace 30 min
   moomoo_parallel       — Mon–Fri 16:50 ET, grace 30 min
@@ -16,10 +16,30 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from apscheduler.events import (
+    EVENT_JOB_ERROR,
+    EVENT_JOB_EXECUTED,
+    EVENT_JOB_MISSED,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 logger = logging.getLogger(__name__)
+
+
+def _job_listener(event: object) -> None:
+    """Log APScheduler job lifecycle events at INFO/WARNING level."""
+    from apscheduler.events import JobExecutionEvent  # noqa: PLC0415
+
+    if not isinstance(event, JobExecutionEvent):
+        return
+    run_time = event.scheduled_run_time
+    if event.code == EVENT_JOB_MISSED:
+        logger.warning("APScheduler job %s MISSED fire time %s", event.job_id, run_time)
+    elif event.exception:
+        logger.error("APScheduler job %s raised: %s", event.job_id, event.exception)
+    else:
+        logger.info("APScheduler job %s executed OK (scheduled %s)", event.job_id, run_time)
 
 
 def make_scheduler(
@@ -34,6 +54,7 @@ def make_scheduler(
 ) -> BackgroundScheduler:
     """Create and configure the scheduler. Does not start it."""
     sched = BackgroundScheduler(timezone="America/New_York")
+    sched.add_listener(_job_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED)
 
     sched.add_job(
         daily_report_func,
@@ -66,13 +87,13 @@ def make_scheduler(
             suggestion_expiry_func,
             trigger=CronTrigger(
                 day_of_week="mon-fri",
-                hour=16,
-                minute=20,
+                hour=9,
+                minute=0,
                 timezone="America/New_York",
             ),
             id="suggestion_expiry",
             replace_existing=True,
-            misfire_grace_time=60 * 30,
+            misfire_grace_time=60 * 30,  # 30 min grace — must finish before auto_trade at 09:35
         )
 
     sched.add_job(
@@ -145,9 +166,9 @@ def make_scheduler(
         )
 
     logger.info(
-        "APScheduler created. Auto-trade Mon–Fri 09:35 ET; Daily report Mon–Fri 16:15 ET;"
-        " Expiry sweep 16:20 ET; Movers Mon–Fri 16:30 ET; Reconciliation Mon–Fri 16:45 ET;"
-        " Moomoo parallel Mon–Fri 16:50 ET; Weekly suggestions Sun 18:00 ET;"
-        " Weekly review Fri 17:00 ET"
+        "APScheduler created. Expiry sweep Mon–Fri 09:00 ET; Auto-trade Mon–Fri 09:35 ET;"
+        " Daily report Mon–Fri 16:15 ET; Movers Mon–Fri 16:30 ET;"
+        " Reconciliation Mon–Fri 16:45 ET; Moomoo parallel Mon–Fri 16:50 ET;"
+        " Weekly suggestions Sun 18:00 ET; Weekly review Fri 17:00 ET"
     )
     return sched

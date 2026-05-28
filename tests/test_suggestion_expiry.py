@@ -195,3 +195,38 @@ class TestSweepExpiredSuggestions:
 
         db_session.refresh(sug)
         assert sug.status == "expired"
+
+    def test_sweep_updates_exec_status_to_broker_cancelled_after_cancel(
+        self, db_session: Session
+    ) -> None:
+        """Successful cancel_order → execution row status becomes 'broker_cancelled'."""
+        past = datetime.now(UTC) - timedelta(minutes=5)
+        sug = _seed_suggestion(db_session, status="accepted", expires_at=past)
+        exec_row = _seed_execution(db_session, suggestion_id=sug.id, broker_order_id="ord-abc")
+        db_session.commit()
+
+        adapter = MagicMock()
+        sweep_expired_suggestions(
+            adapter=adapter, session_factory=_make_session_factory(db_session)
+        )
+
+        db_session.refresh(exec_row)
+        assert exec_row.status == "broker_cancelled"
+
+    def test_sweep_cancel_failure_leaves_exec_status_unchanged(
+        self, db_session: Session
+    ) -> None:
+        """If cancel_order raises, the execution row status stays 'accepted_for_routing'."""
+        past = datetime.now(UTC) - timedelta(minutes=5)
+        sug = _seed_suggestion(db_session, status="accepted", expires_at=past)
+        exec_row = _seed_execution(db_session, suggestion_id=sug.id, broker_order_id="ord-abc")
+        db_session.commit()
+
+        adapter = MagicMock()
+        adapter.cancel_order.side_effect = Exception("broker down")
+        sweep_expired_suggestions(
+            adapter=adapter, session_factory=_make_session_factory(db_session)
+        )
+
+        db_session.refresh(exec_row)
+        assert exec_row.status == "accepted_for_routing"

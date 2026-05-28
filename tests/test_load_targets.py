@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from investor.config import load_targets
 from investor.db import override_engine_for_testing
-from investor.models import Base, TargetAllocation
+from investor.models import Base, OrderSuggestion, TargetAllocation
 from investor.services.targets import load_targets_into_db, yaml_hash
 
 YAML_V1 = textwrap.dedent("""\
@@ -146,3 +147,99 @@ class TestLoadTargetsIntoDb:
         }
         assert open_rows["VOO"].target_pct == pytest.approx(35.0)
         assert open_rows["AAPL"].target_pct == pytest.approx(10.0)
+
+    def test_target_change_expires_accepted_suggestion_for_removed_ticker(
+        self, db_session: Session, tmp_path: Path
+    ) -> None:
+        # Load v1 with AAPL + TSLA
+        yaml_v1 = textwrap.dedent("""\
+            watchlist: [AAPL, TSLA]
+            targets:
+              AAPL: { pct: 50, band: [40, 60] }
+              TSLA: { pct: 50, band: [40, 60] }
+            cash_buffer_pct: 0
+        """)
+        f1 = tmp_path / "v1.yaml"
+        f1.write_text(yaml_v1)
+        targets_v1 = load_targets(str(f1))
+        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        db_session.commit()
+
+        # Create an accepted suggestion for AAPL for the current week
+        today = datetime.now(UTC).date()
+        current_week_monday = today - timedelta(days=today.weekday())
+        sug = OrderSuggestion(
+            week_of=current_week_monday,
+            ticker="AAPL",
+            side="buy",
+            qty=1.0,
+            limit_price=150.0,
+            reason="test",
+            status="accepted",
+        )
+        db_session.add(sug)
+        db_session.commit()
+
+        # Load v2 with only TSLA (AAPL removed)
+        yaml_v2 = textwrap.dedent("""\
+            watchlist: [TSLA]
+            targets:
+              TSLA: { pct: 100, band: [90, 100] }
+            cash_buffer_pct: 0
+        """)
+        f2 = tmp_path / "v2.yaml"
+        f2.write_text(yaml_v2)
+        targets_v2 = load_targets(str(f2))
+        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        db_session.commit()
+
+        db_session.refresh(sug)
+        assert sug.status == "expired"
+        assert sug.acted_at is not None
+
+    def test_target_change_keeps_suggestion_for_retained_ticker(
+        self, db_session: Session, tmp_path: Path
+    ) -> None:
+        # Load v1 with TSLA only
+        yaml_v1 = textwrap.dedent("""\
+            watchlist: [TSLA]
+            targets:
+              TSLA: { pct: 100, band: [90, 100] }
+            cash_buffer_pct: 0
+        """)
+        f1 = tmp_path / "v1.yaml"
+        f1.write_text(yaml_v1)
+        targets_v1 = load_targets(str(f1))
+        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        db_session.commit()
+
+        # Create an accepted suggestion for TSLA for the current week
+        today = datetime.now(UTC).date()
+        current_week_monday = today - timedelta(days=today.weekday())
+        sug = OrderSuggestion(
+            week_of=current_week_monday,
+            ticker="TSLA",
+            side="buy",
+            qty=2.0,
+            limit_price=200.0,
+            reason="test",
+            status="accepted",
+        )
+        db_session.add(sug)
+        db_session.commit()
+
+        # Load v2 with TSLA at an updated band (still present; pct unchanged to satisfy validation)
+        yaml_v2 = textwrap.dedent("""\
+            watchlist: [TSLA]
+            targets:
+              TSLA: { pct: 100, band: [80, 100] }
+            cash_buffer_pct: 0
+        """)
+        f2 = tmp_path / "v2.yaml"
+        f2.write_text(yaml_v2)
+        targets_v2 = load_targets(str(f2))
+        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        db_session.commit()
+
+        db_session.refresh(sug)
+        assert sug.status == "accepted"

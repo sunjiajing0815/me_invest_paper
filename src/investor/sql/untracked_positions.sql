@@ -10,5 +10,6 @@ active_targets AS (
 SELECT l.ticker, l.qty, l.market_value, l.weight_pct
 FROM latest l
 WHERE l.rn = 1
+  AND l.qty > 0
   AND l.ticker NOT IN (SELECT ticker FROM active_targets)
 ORDER BY l.market_value DESC

@@ -130,6 +130,34 @@ class AlpacaAdapter:
             )
         except APIError as api_exc:
             if api_exc.status_code == 422:
+                if "40010001" in str(api_exc):
+                    # client_order_id already exists at Alpaca — the GTC order is still open.
+                    # Look it up and return as a successful submit so the caller can reconcile.
+                    logger.warning(
+                        "submit_order: client_order_id=%s already exists at Alpaca — "
+                        "recovering existing order",
+                        req.client_order_id,
+                    )
+                    existing = cast(
+                        AlpacaOrder,
+                        self._client.get_order_by_client_id(req.client_order_id or ""),
+                    )
+                    existing_status = str(existing.status.value)
+                    _open_statuses = {"new", "partially_filled", "pending_new", "accepted", "held"}
+                    if existing_status not in _open_statuses:
+                        # Order exists but is closed (cancelled/filled/expired) — treat as a
+                        # fresh validation error so auto_trade skips rather than reactivating
+                        # a dead execution row.
+                        raise BrokerValidationError(
+                            f"client_order_id={req.client_order_id} exists at Alpaca but"
+                            f" status={existing_status!r} (not open) — cannot recover"
+                        ) from None
+                    return OrderConfirmation(
+                        broker_order_id=str(existing.id),
+                        client_order_id=existing.client_order_id or req.client_order_id or "",
+                        status=existing_status,
+                        submitted_at=existing.submitted_at or datetime.now(UTC),
+                    )
                 raise BrokerValidationError(str(api_exc)) from api_exc
             raise
         order = cast(AlpacaOrder, _order)

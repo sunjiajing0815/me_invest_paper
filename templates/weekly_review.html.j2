@@ -240,7 +240,118 @@
 <p style="font-size:12px; color:#27ae60; margin:0 0 20px 0;">No kill switches activated this week.</p>
 {% endif %}
 
-<!-- Section 7: Weekly Market Context (Phase 4.5) -->
+<!-- Section 7: Order Activity (Phase 4.8) -->
+{% if review.order_funnel %}
+<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Order Activity — week of {{ review.order_funnel.week_of.strftime("%b %d") }}</h2>
+
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Suggestion funnel</h3>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:12px;">
+  <tr><td style="padding:2px 0;">Suggested</td><td style="padding:2px 8px;"><strong>{{ review.order_funnel.suggested }}</strong></td></tr>
+  <tr><td style="padding:2px 0;">Accepted</td><td style="padding:2px 8px;"><strong>{{ review.order_funnel.accepted }}</strong></td></tr>
+  <tr><td style="padding:2px 0;">&nbsp;&nbsp;Routed (LIVE)</td><td style="padding:2px 8px;"><strong>{{ review.order_funnel.routed_live }}</strong></td></tr>
+  <tr><td style="padding:2px 0;">&nbsp;&nbsp;Filled</td>
+      <td style="padding:2px 8px;"><strong>{{ review.order_funnel.filled_live }}</strong>
+        {% if review.order_funnel.partial_live %}
+        <span style="color:#888;">(+{{ review.order_funnel.partial_live }} partial)</span>
+        {% endif %}
+      </td></tr>
+  <tr><td style="padding:2px 0;">&nbsp;&nbsp;Accepted, not auto-routed</td>
+      <td style="padding:2px 8px;"><strong>{{ review.order_funnel.accepted_not_routed }}</strong>
+        <span style="color:#888; font-size:11px;">
+          {% if review.auto_trade_mode == 'LIVE' %}(presumed manual){% else %}(auto-trade not LIVE){% endif %}
+        </span></td></tr>
+  <tr><td style="padding:2px 0;">Rejected</td><td style="padding:2px 8px;">{{ review.order_funnel.rejected }}</td></tr>
+  <tr><td style="padding:2px 0;">Expired</td><td style="padding:2px 8px;">{{ review.order_funnel.expired }}</td></tr>
+  {% if review.order_funnel.dry_run_count and review.order_flow %}
+  <tr><td colspan="2" style="color:#888; font-size:11px; padding-top:6px;">
+    DRY_RUN (simulated): {{ review.order_funnel.dry_run_count }} executions —
+    ${{ "%.2f"|format(review.order_flow.dry_run_buy_usd) }} buys,
+    ${{ "%.2f"|format(review.order_flow.dry_run_sell_usd) }} sells
+  </td></tr>
+  {% endif %}
+</table>
+
+{% if review.order_flow %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Dollar flow (LIVE)</h3>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:12px;">
+  <tr>
+    <td style="padding:2px 12px 2px 0;">Buys routed</td><td style="padding:2px 16px 2px 0;">${{ "%.2f"|format(review.order_flow.buy_routed_usd) }}</td>
+    <td style="padding:2px 12px 2px 0;">Buys filled</td><td>${{ "%.2f"|format(review.order_flow.buy_filled_usd) }}</td>
+  </tr>
+  <tr>
+    <td style="padding:2px 12px 2px 0;">Sells routed</td><td style="padding:2px 16px 2px 0;">${{ "%.2f"|format(review.order_flow.sell_routed_usd) }}</td>
+    <td style="padding:2px 12px 2px 0;">Sells filled</td><td>${{ "%.2f"|format(review.order_flow.sell_filled_usd) }}</td>
+  </tr>
+  <tr><td style="padding:2px 0;">Distinct tickers w/ activity</td><td colspan="3" style="padding:2px 8px;"><strong>{{ review.order_flow.distinct_tickers }}</strong></td></tr>
+</table>
+{% endif %}
+
+{% if review.drift_rows %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">Allocation drift (Mon → Fri)</h3>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:12px;">
+  <thead>
+    <tr style="background:#f0f0f0; border-bottom:1px solid #ccc;">
+      <th align="left"  style="padding:3px 8px;">Ticker</th>
+      <th align="right" style="padding:3px 8px;">Target%</th>
+      <th align="right" style="padding:3px 8px;">Mon%</th>
+      <th align="right" style="padding:3px 8px;">Fri%</th>
+      <th align="right" style="padding:3px 8px;">Drift (pp)</th>
+      <th style="padding:3px 8px;"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in review.drift_rows %}
+    <tr style="border-bottom:1px solid #eee;">
+      <td style="padding:3px 8px;">{{ r.ticker }}{% if r.monday_is_fallback %}*{% endif %}</td>
+      <td align="right" style="padding:3px 8px;">{{ "%.1f"|format(r.target_pct) }}</td>
+      <td align="right" style="padding:3px 8px;">{{ "%.1f"|format(r.current_pct_mon) }}</td>
+      <td align="right" style="padding:3px 8px;">{{ "%.1f"|format(r.current_pct_fri) }}</td>
+      <td align="right" style="padding:3px 8px; color:{{ '#2a8840' if r.moved_toward_target else '#a44' }}; font-weight:bold;">
+        {{ "%+.2f"|format(r.drift_pp) }}</td>
+      <td style="padding:3px 8px; color:{{ '#2a8840' if r.moved_toward_target else '#a44' }};">
+        {{ "→ closer" if r.moved_toward_target else "→ farther" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if review.drift_rows[0].targets_changed_midweek %}
+<p style="font-size:11px; color:#888; margin:0 0 8px 0;">Targets were edited mid-week; drift includes the target-shift component.</p>
+{% endif %}
+{% if review.drift_rows | selectattr("monday_is_fallback") | list %}
+<p style="font-size:11px; color:#888; margin:0 0 8px 0;">* Monday was a market holiday; the most recent prior snapshot was used as the baseline.</p>
+{% endif %}
+{% endif %}
+
+{% if review.trend_rows %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">4-week trend</h3>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:20px;">
+  <thead>
+    <tr style="background:#f0f0f0; border-bottom:1px solid #ccc;">
+      <th align="left"  style="padding:3px 8px;">Week of</th>
+      <th align="center" style="padding:3px 8px;">Suggested</th>
+      <th align="center" style="padding:3px 8px;">Filled</th>
+      <th align="right"  style="padding:3px 8px;">$ buys</th>
+      <th align="right"  style="padding:3px 8px;">$ sells</th>
+      <th align="right"  style="padding:3px 8px;">|Σ drift|</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for w in review.trend_rows %}
+    <tr style="border-bottom:1px solid #eee;">
+      <td style="padding:3px 8px;">{{ w.week_of.strftime("%b %d") }}</td>
+      <td align="center" style="padding:3px 8px;">{{ w.suggested }}</td>
+      <td align="center" style="padding:3px 8px;">{{ w.filled_live }}</td>
+      <td align="right"  style="padding:3px 8px;">${{ "%.0f"|format(w.buy_filled_usd) }}</td>
+      <td align="right"  style="padding:3px 8px;">${{ "%.0f"|format(w.sell_filled_usd) }}</td>
+      <td align="right"  style="padding:3px 8px;">{{ "%.2f"|format(w.abs_drift_pp_sum) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+
+<!-- Section 8: Weekly Market Context (Phase 4.5) -->
 {% if review.market_context %}
 <h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Weekly Market Context</h2>
 {% if review.market_context.macro_summary %}

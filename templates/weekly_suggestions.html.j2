@@ -72,7 +72,6 @@
       <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Limit</th>
       <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Current</th>
       <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">~$</th>
-      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Rationale</th>
       <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Actions</th>
     </tr>
   </thead>
@@ -86,35 +85,37 @@
     {% if s.side == 'buy' %}{% set total_buy_usd.v = total_buy_usd.v + cost %}{% set buy_count.n = buy_count.n + 1 %}{% endif %}
     {% if s.side == 'sell' %}{% set total_sell_usd.v = total_sell_usd.v + cost %}{% set sell_count.n = sell_count.n + 1 %}{% endif %}
     {% set row_bg = '#f0fff4' if s.side == 'buy' else '#fff8f8' %}
-    <tr style="border-bottom:1px solid #eee; background:{{ row_bg }};">
-      <td style="padding:7px 10px; font-weight:bold;">{{ s.ticker }}</td>
-      <td style="padding:7px 10px; text-align:center;">
+    <tr style="background:{{ row_bg }};">
+      <td style="padding:8px 10px 3px 10px; font-weight:bold;">{{ s.ticker }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:center;">
         {% if s.side == 'buy' %}
         <span style="background:#27ae60; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">BUY</span>
         {% else %}
         <span style="background:#c0392b; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">TRIM</span>
         {% endif %}
       </td>
-      <td style="padding:7px 10px; text-align:right;">
+      <td style="padding:8px 10px 3px 10px; text-align:right;">
         {{ "{:.0f}".format(s.qty) }}
         {% if s.size_factor is defined and s.size_factor != 1.0 and s.base_qty is defined and s.base_qty is not none %}
         <span style="color:#888; font-size:11px;">(base&nbsp;{{ "{:.0f}".format(s.base_qty) }}&nbsp;·&nbsp;×{{ "%.2f"|format(s.size_factor) }})</span>
         {% endif %}
       </td>
-      <td style="padding:7px 10px; text-align:right;">${{ "{:,.2f}".format(s.limit_price) }}</td>
-      <td style="padding:7px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
-      <td style="padding:7px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
-      <td style="padding:7px 10px; font-size:12px; color:#555;">
-        {{ item.rationale if item.rationale else s.reason }}
-        {% if s.context_note is defined and s.context_note %}
-        <br><span style="color:#888;">{{ s.context_note }}</span>
-        {% endif %}
-      </td>
-      <td style="white-space:nowrap;">
+      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(s.limit_price) }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
+      <td style="padding:8px 10px 3px 10px; white-space:nowrap;">
         <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}"
            style="background:#28a745;color:white;padding:4px 10px;text-decoration:none;border-radius:3px;font-size:11px;margin-right:4px;">Accept</a>
         <a href="{{ base_url }}/suggestions/{{ item.sid }}/reject?token={{ item.reject_token }}"
            style="background:#6c757d;color:white;padding:4px 10px;text-decoration:none;border-radius:3px;font-size:11px;">Reject</a>
+      </td>
+    </tr>
+    <tr style="background:{{ row_bg }}; border-bottom:2px solid #ddd;">
+      <td colspan="7" style="padding:2px 10px 8px 10px; font-size:12px; color:#555;">
+        {{ item.rationale if item.rationale else s.reason }}
+        {% if s.context_note is defined and s.context_note %}
+        <span style="color:#888;"> · {{ s.context_note }}</span>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

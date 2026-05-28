@@ -18,8 +18,10 @@ Endpoints:
   POST  /admin/run-auto-trade           — manual auto-trade trigger (admin token)
   POST  /admin/auto-trade/promote       — promote auto-trade mode (promotion token)
   POST  /admin/auto-trade/caps          — update spending caps (promotion token)
-  POST  /admin/cancel-all-orders         — cancel all open broker orders (admin token)
-  POST  /admin/auto-trade/emergency-stop — trigger kill switch immediately (admin token)
+  POST  /admin/cancel-all-orders          — cancel all open broker orders (admin token)
+  POST  /admin/reset-week-buy-suggestions — cancel orders + reset to pending (admin token)
+  POST  /admin/resend-weekly-email        — re-send weekly email from DB rows, no LLM (admin token)
+  POST  /admin/auto-trade/emergency-stop      — trigger kill switch immediately (admin token)
 """
 
 from __future__ import annotations
@@ -47,12 +49,25 @@ from .jobs.suggestion_expiry import sweep_expired_suggestions
 from .jobs.sync import run_sync_job
 from .jobs.weekly_review import run_weekly_review
 from .jobs.weekly_suggestions import run_weekly_suggestions
-from .models import AutoTradeCaps, AutoTradePromotionLog, Meta
+from .models import (
+    AutoTradeCaps,
+    AutoTradePromotionLog,
+    BrokerAccount,
+    Meta,
+    OrderExecution,
+    OrderSuggestion,
+)
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
 from .services.auto_trade import _trigger_kill_switch
+from .services.daily_report import AccountSnapshot
 from .services.email import SMTPEmailer
-from .services.gap import GapRow, compute_gap
+from .services.gap import GapRow, compute_gap, get_untracked_positions
+from .services.indicators import compute_indicators
+from .services.levels import build_nearby_levels, compute_levels
+from .services.magic_link import sign_action
+from .services.render import render_template
+from .services.suggest import _next_monday
 from .services.targets import load_targets_into_db, yaml_hash
 
 logging.basicConfig(level=logging.INFO)
@@ -505,6 +520,141 @@ def admin_run_weekly_suggestions(request: Request) -> dict[str, str]:
 
 
 @app.post(
+    "/admin/resend-weekly-email",
+    summary="Re-send weekly suggestions email from existing DB rows (no LLM)",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
+    """Re-render and re-send the weekly suggestions email without running any LLM.
+
+    Reads existing suggestions for the current week_of from the DB, recomputes
+    indicators and nearby levels (fast, no LLM), then renders and emails.
+    Useful for testing layout changes or resending after a template update.
+    """
+    from types import SimpleNamespace
+
+    settings = _get_settings()
+    emailer = request.app.state.emailer
+
+    targets = load_targets(settings.targets_path)
+    tickers = targets.watchlist
+    week_of = _next_monday()
+
+    indicators = compute_indicators(tickers, settings.bars_dir)
+    sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
+    nearby = build_nearby_levels(tickers, sr_rows, indicators)
+
+    with session_scope() as session:
+        orm_suggestions = session.scalars(
+            select(OrderSuggestion)
+            .where(
+                OrderSuggestion.week_of == week_of,
+                OrderSuggestion.status.in_(["pending", "accepted"]),
+            )
+            .order_by(OrderSuggestion.id)
+        ).all()
+
+        suggestion_rows = [
+            {
+                "id": s.id,
+                "ticker": s.ticker,
+                "side": s.side,
+                "qty": s.qty,
+                "limit_price": s.limit_price,
+                "reason": s.reason,
+                "status": s.status,
+                "size_factor": s.size_factor,
+                "base_qty": s.base_qty,
+                "context_note": s.context_note,
+                "llm_rationale": s.llm_rationale,
+            }
+            for s in orm_suggestions
+        ]
+
+        orm_account = (
+            session.query(BrokerAccount)
+            .filter(BrokerAccount.effective_to.is_(None))
+            .order_by(BrokerAccount.last_sync.desc())
+            .first()
+        )
+        account = (
+            AccountSnapshot(
+                broker=orm_account.broker,
+                mode=orm_account.mode,
+                cash_usd=orm_account.cash_usd,
+                equity_usd=orm_account.equity_usd,
+            )
+            if orm_account is not None
+            else AccountSnapshot(broker="unknown", mode="unknown", cash_usd=0.0, equity_usd=0.0)
+        )
+
+        untracked = get_untracked_positions(session)
+
+    if not suggestion_rows:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No suggestions found for week_of={week_of}"
+                " — run /admin/run-weekly-suggestions first"
+            ),
+        )
+
+    suggestion_items = []
+    for row in suggestion_rows:
+        sid = row["id"]
+        sug_obj = SimpleNamespace(**{k: v for k, v in row.items() if k != "id"})
+        suggestion_items.append({
+            "suggestion": sug_obj,
+            "sid": sid,
+            "rationale": row["llm_rationale"] or row["reason"],
+            "accept_token": sign_action(sid, "accept", settings.magic_link_secret),
+            "reject_token": sign_action(sid, "reject", settings.magic_link_secret),
+        })
+
+    subject = f"[Resend] Orders for the week of {week_of:%b %d}"
+    html = render_template(
+        "weekly_suggestions.html.j2",
+        week_of=week_of,
+        account=account,
+        suggestion_items=suggestion_items,
+        base_url=settings.app_base_url,
+        indicators=indicators,
+        nearby=nearby,
+        untracked=untracked,
+        skipped=[],
+        scoring_failures=[],
+    )
+    text_suggestions = [
+        SimpleNamespace(**{k: v for k, v in row.items() if k != "id"})
+        for row in suggestion_rows
+    ]
+    text = render_template(
+        "weekly_suggestions.txt.j2",
+        week_of=week_of,
+        account=account,
+        suggestions=text_suggestions,
+        indicators=indicators,
+        nearby=nearby,
+        untracked=untracked,
+        skipped=[],
+        scoring_failures=[],
+    )
+    emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
+    logger.info(
+        "resend-weekly-email: sent %d suggestions for %s to %s",
+        len(suggestion_rows),
+        week_of,
+        settings.email_to,
+    )
+    return {
+        "status": "ok",
+        "week_of": str(week_of),
+        "suggestions_sent": len(suggestion_rows),
+        "message": f"Resent {len(suggestion_rows)} suggestions for {week_of}",
+    }
+
+
+@app.post(
     "/admin/run-weekly-review",
     summary="Manual weekly review trigger",
     dependencies=[Depends(admin_auth)],
@@ -729,7 +879,7 @@ def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
     with session_scope() as session:
         open_execs = session.scalars(
             select(OrderExecution).where(
-                OrderExecution.status == "accepted_for_routing",
+                OrderExecution.status.in_(["accepted_for_routing", "broker_cancelled"]),
                 OrderExecution.dry_run.is_(False),
                 OrderExecution.broker_order_id.is_not(None),
             )
@@ -753,6 +903,102 @@ def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
         "failed": failed,
         "total_cancelled": len(cancelled),
         "total_failed": len(failed),
+    }
+
+
+@app.post(
+    "/admin/reset-week-buy-suggestions",
+    summary="Cancel open orders and reset suggestions to pending",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_reset_week_buy_suggestions(
+    request: Request,
+    side: Literal["buy", "sell", "all"] = "buy",
+) -> dict[str, Any]:
+    """Cancel all live broker orders for the current week and reset
+    those suggestions to pending so they can be re-evaluated.
+
+    For each accepted suggestion matching the requested side:
+    - Finds every execution row with a broker_order_id (accepted_for_routing OR
+      broker_cancelled — the latter may still be live at the broker due to GTC
+      cancel propagation lag) and attempts cancel_order() for each.
+    - Cancel failure is logged but does not block the suggestion reset.
+    - Resets OrderSuggestion.status → "pending", clears acted_at.
+    - Pass side="buy" (default) to reset only buys, "sell" for sells, "all" for both.
+    """
+    adapter = request.app.state.adapter
+    week_of = _next_monday()
+
+    cancelled: list[str] = []
+    cancel_failed: list[str] = []
+    reset_sids: list[int] = []
+
+    side_clauses = [OrderSuggestion.side == side] if side != "all" else []
+
+    with session_scope() as session:
+        accepted_suggestions = session.scalars(
+            select(OrderSuggestion).where(
+                OrderSuggestion.week_of == week_of,
+                OrderSuggestion.status == "accepted",
+                *side_clauses,
+            )
+        ).all()
+
+        for sug in accepted_suggestions:
+            # Skip suggestions whose order already filled — there is nothing to cancel
+            # and resetting a filled suggestion to pending would allow re-buying.
+            already_filled = session.scalar(
+                select(OrderExecution).where(
+                    OrderExecution.suggestion_id == sug.id,
+                    OrderExecution.dry_run.is_(False),
+                    OrderExecution.status == "filled",
+                )
+            )
+            if already_filled is not None:
+                logger.info(
+                    "reset-week-buy-suggestions: sug-%d already filled — skipping", sug.id
+                )
+                continue
+
+            # Cancel every execution row that has a broker_order_id, regardless
+            # of current status. broker_cancelled rows may still be open at the
+            # broker due to GTC cancel propagation lag.
+            execs_with_order = session.scalars(
+                select(OrderExecution).where(
+                    OrderExecution.suggestion_id == sug.id,
+                    OrderExecution.dry_run.is_(False),
+                    OrderExecution.broker_order_id.is_not(None),
+                    OrderExecution.status.in_(["accepted_for_routing", "broker_cancelled"]),
+                )
+            ).all()
+
+            for exe in execs_with_order:
+                oid = exe.broker_order_id
+                assert oid is not None
+                try:
+                    adapter.cancel_order(oid)
+                    exe.status = "broker_cancelled"
+                    cancelled.append(oid)
+                except Exception as exc:
+                    logger.warning(
+                        "reset-week-buy-suggestions: cancel_order(%s) failed: %s", oid, exc
+                    )
+                    cancel_failed.append(oid)
+
+            sug.status = "pending"
+            sug.acted_at = None
+            reset_sids.append(sug.id)
+
+    logger.info(
+        "reset-week-buy-suggestions: reset %d suggestions, cancelled %d orders",
+        len(reset_sids),
+        len(cancelled),
+    )
+    return {
+        "week_of": str(week_of),
+        "suggestions_reset": reset_sids,
+        "orders_cancelled": cancelled,
+        "cancel_failed": cancel_failed,
     }
 
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from ..config import load_targets
-from ..models import BrokerAccount
+from ..models import BrokerAccount, OrderSuggestion
 from ..services.daily_report import AccountSnapshot
 from ..services.gap import GapRow, UntrackedPosition, compute_gap, get_untracked_positions
 from ..services.indicators import IndicatorRow, compute_indicators
@@ -212,22 +212,27 @@ def reason_node(
     session_factory: Any,
 ) -> SuggestionReviewState:
     """Sonnet writes 2-4 sentence rationales for each draft order suggestion."""
-    system = load_prompt("suggestion_reason_v1.txt")
-
-    ctx = state["context"]
+    existing_rationales = dict(state.get("rationales", {}))
     drafts = state["drafts"]
+
+    missing = [i for i in range(len(drafts)) if i not in existing_rationales]
+    if not missing:
+        return {**state}
+
+    system = load_prompt("suggestion_reason_v1.txt")
+    ctx = state["context"]
 
     drafts_payload = [
         {
             "draft_index": i,
-            "ticker": d.ticker,
-            "side": d.side,
-            "qty": d.qty,
-            "limit_price": d.limit_price,
-            "confidence_at_creation": d.confidence_at_creation,
-            "anchor_method": d.anchor_method,
+            "ticker": drafts[i].ticker,
+            "side": drafts[i].side,
+            "qty": drafts[i].qty,
+            "limit_price": drafts[i].limit_price,
+            "confidence_at_creation": drafts[i].confidence_at_creation,
+            "anchor_method": drafts[i].anchor_method,
         }
-        for i, d in enumerate(drafts)
+        for i in missing
     ]
 
     gap_summary = [
@@ -315,11 +320,12 @@ def reason_node(
             session=s,
         )
 
-    rationales = {it.draft_index: it.rationale[:600] for it in parsed.items}
+    new_rationales = {it.draft_index: it.rationale[:600] for it in parsed.items}
+    merged = {**existing_rationales, **new_rationales}
 
     return {
         **state,
-        "rationales": rationales,
+        "rationales": merged,
         "telemetry": {**state.get("telemetry", {}), **tel},
     }
 
@@ -735,6 +741,13 @@ def finalize_node(
     """Persist finals to the DB inside a session scope; capture IDs for magic links."""
     with session_factory() as s:
         ids = persist_suggestions(s, state["finals"], state["targets_id"], state["week_of"])
+        rationales = state.get("rationales", {})
+        for final_idx, sid in enumerate(ids):
+            rationale_text = rationales.get(final_idx)
+            if rationale_text:
+                sug = s.get(OrderSuggestion, sid)
+                if sug is not None and sug.status == "pending":
+                    sug.llm_rationale = rationale_text
     return {**state, "suggestion_ids": ids}
 
 

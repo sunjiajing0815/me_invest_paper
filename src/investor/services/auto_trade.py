@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import func, select
@@ -42,8 +42,31 @@ class AutoTradeOutcome:
     rejected_reason: str | None
 
 
+# Alpaca order statuses considered "live" (not yet settled).
+_LIVE_ORDER_STATUSES: frozenset[str] = frozenset(
+    {"new", "partially_filled", "pending_new", "accepted", "held", "pending_cancel"}
+)
+
+
 class _GuardFailure(Exception):  # noqa: N818
     """Per-suggestion guard rejection. Does NOT trigger kill switch — just skips this suggestion."""
+
+
+def _next_client_order_id(session: Session, sug: OrderSuggestion) -> str:
+    """Return the client_order_id to use for the next broker submission.
+
+    First attempt uses "sug-{id}". After each cancel Alpaca permanently blocks that
+    client_order_id, so subsequent retries use "sug-{id}-r{n}" where n is the number
+    of prior broker_cancelled real execution rows for this suggestion.
+    """
+    cancelled_count: int = session.execute(
+        select(func.count(OrderExecution.id)).where(
+            OrderExecution.suggestion_id == sug.id,
+            OrderExecution.dry_run.is_(False),
+            OrderExecution.status == "broker_cancelled",
+        )
+    ).scalar_one()
+    return f"sug-{sug.id}" if cancelled_count == 0 else f"sug-{sug.id}-r{cancelled_count}"
 
 
 def _get_mode(session: Session) -> Mode:
@@ -64,29 +87,41 @@ def _get_active_caps(session: Session) -> AutoTradeCaps | None:
     )
 
 
-def _fetch_accepted_unexecuted(session: Session) -> list[OrderSuggestion]:
+def _fetch_accepted_unexecuted(
+    session: Session, as_of: date | None = None
+) -> list[OrderSuggestion]:
     """Return suggestions with status='accepted' that have no matching real execution row.
+
+    Only looks at the current calendar week (Mon–Sun). Suggestions from prior weeks
+    that are still accepted are stale — they should have been expired by the expiry
+    sweep and must not be re-traded in a new week.
 
     Two queries (not N+1): one for accepted suggestions, one for already-executed IDs.
     A DRY_RUN execution row does not exclude the suggestion — only dry_run=False rows count.
     """
+    ref_date = as_of if as_of is not None else datetime.now(UTC).date()
+    current_week_monday = ref_date - timedelta(days=ref_date.weekday())
+
     accepted = session.scalars(
-        select(OrderSuggestion).where(OrderSuggestion.status == "accepted")
+        select(OrderSuggestion).where(
+            OrderSuggestion.status == "accepted",
+            OrderSuggestion.week_of == current_week_monday,
+        )
     ).all()
     if not accepted:
         return []
 
-    client_ids = [f"sug-{sug.id}" for sug in accepted]
-    already_executed: set[str | None] = set(
+    sug_ids = [sug.id for sug in accepted]
+    already_executed: set[int] = set(
         session.scalars(
-            select(OrderExecution.client_order_id).where(
-                OrderExecution.client_order_id.in_(client_ids),
+            select(OrderExecution.suggestion_id).where(
+                OrderExecution.suggestion_id.in_(sug_ids),
                 OrderExecution.dry_run.is_(False),
                 OrderExecution.status != "broker_cancelled",
             )
         ).all()
     )
-    return [sug for sug in accepted if f"sug-{sug.id}" not in already_executed]
+    return [sug for sug in accepted if sug.id not in already_executed]
 
 
 def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> None:
@@ -94,7 +129,7 @@ def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> No
     dry_run_flag = mode == "DRY_RUN"
     existing = session.scalar(
         select(OrderExecution).where(
-            OrderExecution.client_order_id == f"sug-{sug.id}",
+            OrderExecution.suggestion_id == sug.id,
             OrderExecution.dry_run.is_(dry_run_flag),
             OrderExecution.status != "broker_cancelled",
         )
@@ -279,6 +314,8 @@ def run_auto_trade_pass(
     emailer: EmailSender,
     email_to: str,
     broker: str,
+    *,
+    as_of: date | None = None,
 ) -> list[AutoTradeOutcome]:
     """Single auto-trade pass: fetch accepted suggestions, run guards, place/simulate orders.
 
@@ -299,7 +336,7 @@ def run_auto_trade_pass(
         return []
 
     caps = _get_active_caps(session)
-    suggestions = _fetch_accepted_unexecuted(session)
+    suggestions = _fetch_accepted_unexecuted(session, as_of=as_of)
     if not suggestions:
         logger.info(
             "run_auto_trade_pass: mode=%s, no accepted unexecuted suggestions", mode
@@ -339,9 +376,8 @@ def run_auto_trade_pass(
             )
             continue
 
-        client_order_id = f"sug-{sug.id}"
-
         if mode == "DRY_RUN":
+            client_order_id = f"sug-{sug.id}"
             session.add(
                 OrderExecution(
                     suggestion_id=sug.id,
@@ -380,6 +416,45 @@ def run_auto_trade_pass(
             )
 
         else:  # LIVE
+            # If a prior execution was broker_cancelled, check whether the original
+            # GTC order is still live at Alpaca (cancel-propagation lag). If yes,
+            # re-adopt it rather than placing a duplicate.
+            stale = session.scalar(
+                select(OrderExecution)
+                .where(
+                    OrderExecution.suggestion_id == sug.id,
+                    OrderExecution.dry_run.is_(False),
+                    OrderExecution.status == "broker_cancelled",
+                    OrderExecution.broker_order_id.is_not(None),
+                )
+                .order_by(OrderExecution.created_at.desc())
+            )
+            if stale is not None:
+                try:
+                    prev = adapter.get_order(stale.broker_order_id)  # type: ignore[arg-type]
+                    if prev.status in _LIVE_ORDER_STATUSES:
+                        stale.status = "accepted_for_routing"
+                        stale.created_at = datetime.now(UTC)
+                        session.flush()
+                        outcomes.append(AutoTradeOutcome(
+                            suggestion_id=sug.id,
+                            placed=True,
+                            dry_run=False,
+                            broker_order_id=stale.broker_order_id,
+                            rejected_reason=None,
+                        ))
+                        logger.info(
+                            "auto_trade: sug-%d GTC re-adopted stale order %s (status=%s)",
+                            sug.id, stale.broker_order_id, prev.status,
+                        )
+                        continue
+                except Exception as check_exc:
+                    logger.warning(
+                        "auto_trade: sug-%d stale-order check(%s) failed: %s — placing fresh order",
+                        sug.id, stale.broker_order_id, check_exc,
+                    )
+
+            client_order_id = _next_client_order_id(session, sug)
             req = OrderRequest(
                 client_order_id=client_order_id,
                 ticker=sug.ticker,
@@ -473,7 +548,6 @@ def run_auto_trade_pass(
                 )
                 break
 
-            # Success — record the execution
             session.add(
                 OrderExecution(
                     suggestion_id=sug.id,

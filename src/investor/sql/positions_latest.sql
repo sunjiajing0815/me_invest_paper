@@ -6,4 +6,5 @@ WITH ranked AS (
 SELECT ticker, ts, qty, avg_cost, market_value, weight_pct
 FROM ranked
 WHERE rn = 1
+  AND qty > 0
 ORDER BY weight_pct DESC

@@ -71,6 +71,59 @@ Kill switches activated:
 No kill switches activated this week.
 {% endif %}
 
+=== ORDER ACTIVITY ===
+{% if review.order_funnel %}
+Week of {{ review.order_funnel.week_of.strftime("%b %d") }}
+
+FUNNEL
+  Suggested:           {{ review.order_funnel.suggested }}
+  Accepted:            {{ review.order_funnel.accepted }}
+    Routed (LIVE):     {{ review.order_funnel.routed_live }}
+    Filled:            {{ review.order_funnel.filled_live }}{% if review.order_funnel.partial_live %} (+{{ review.order_funnel.partial_live }} partial){% endif %}
+
+    Not auto-routed:   {{ review.order_funnel.accepted_not_routed }}{% if review.auto_trade_mode == 'LIVE' %} (presumed manual){% else %} (auto-trade not LIVE){% endif %}
+
+  Rejected:            {{ review.order_funnel.rejected }}
+  Expired:             {{ review.order_funnel.expired }}
+{% if review.order_funnel.dry_run_count and review.order_flow %}
+  DRY_RUN simulated:   {{ review.order_funnel.dry_run_count }} execs  ${{ "%.2f"|format(review.order_flow.dry_run_buy_usd) }} buys  ${{ "%.2f"|format(review.order_flow.dry_run_sell_usd) }} sells
+{% endif %}
+
+{% if review.order_flow %}
+DOLLAR FLOW (LIVE)
+  Buys  routed: ${{ "%.2f"|format(review.order_flow.buy_routed_usd) }}   filled: ${{ "%.2f"|format(review.order_flow.buy_filled_usd) }}
+  Sells routed: ${{ "%.2f"|format(review.order_flow.sell_routed_usd) }}   filled: ${{ "%.2f"|format(review.order_flow.sell_filled_usd) }}
+  Distinct tickers: {{ review.order_flow.distinct_tickers }}
+{% endif %}
+
+{% if review.drift_rows %}
+ALLOCATION DRIFT (Mon -> Fri)
+{{ "Ticker" | ljust(7) }}  {{ "Target%" | rjust(8) }}  {{ "Mon%" | rjust(7) }}  {{ "Fri%" | rjust(7) }}  {{ "Drift(pp)" | rjust(10) }}  Direction
+{{ "-" * 60 }}
+{% for r in review.drift_rows %}
+{{ r.ticker | ljust(7) }}  {{ "{:.1f}%".format(r.target_pct) | rjust(8) }}  {{ "{:.1f}%".format(r.current_pct_mon) | rjust(7) }}  {{ "{:.1f}%".format(r.current_pct_fri) | rjust(7) }}  {{ "{:+.2f}pp".format(r.drift_pp) | rjust(10) }}  {{ "-> closer" if r.moved_toward_target else "-> farther" }}{% if r.monday_is_fallback %} *{% endif %}
+
+{% endfor %}
+{% if review.drift_rows[0].targets_changed_midweek %}
+  NOTE: Targets were edited mid-week; drift includes the target-shift component.
+{% endif %}
+{% if review.drift_rows | selectattr("monday_is_fallback") | list %}
+  * Monday was a holiday; prior snapshot used as baseline.
+{% endif %}
+{% endif %}
+
+{% if review.trend_rows %}
+4-WEEK TREND
+{{ "Week of" | ljust(9) }}  {{ "Sugg" | rjust(5) }}  {{ "Filled" | rjust(6) }}  {{ "$ buys" | rjust(9) }}  {{ "$ sells" | rjust(9) }}  {{ "|Sdrift|" | rjust(9) }}
+{{ "-" * 58 }}
+{% for w in review.trend_rows %}
+{{ w.week_of.strftime("%b %d") | ljust(9) }}  {{ w.suggested | rjust(5) }}  {{ w.filled_live | rjust(6) }}  {{ "${:.0f}".format(w.buy_filled_usd) | rjust(9) }}  {{ "${:.0f}".format(w.sell_filled_usd) | rjust(9) }}  {{ "{:.2f}".format(w.abs_drift_pp_sum) | rjust(9) }}
+{% endfor %}
+{% endif %}
+{% else %}
+  Order activity data unavailable.
+{% endif %}
+
 === WEEKLY MARKET CONTEXT ===
 {% if review.market_context %}
 {% if review.market_context.macro_summary %}

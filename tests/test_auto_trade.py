@@ -23,7 +23,7 @@ from investor.models import (
 from investor.services.auto_trade import run_auto_trade_pass
 
 _NOW = datetime(2026, 5, 1, 9, 35, tzinfo=UTC)
-_WEEK = date(2026, 4, 28)
+_WEEK = date(2026, 4, 27)  # Monday
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -125,7 +125,9 @@ def test_default_off_does_nothing(db_session: Session) -> None:
     _add_suggestion(db_session)
     _add_caps(db_session)
     adapter = _mock_adapter()
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert outcomes == []
     adapter.submit_order.assert_not_called()
 
@@ -133,7 +135,9 @@ def test_default_off_does_nothing(db_session: Session) -> None:
 def test_no_meta_row_defaults_to_off(db_session: Session) -> None:
     _add_suggestion(db_session)
     _add_caps(db_session)
-    outcomes = run_auto_trade_pass(db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert outcomes == []
 
 
@@ -141,7 +145,9 @@ def test_off_mode_returns_empty_even_with_accepted_suggestions(db_session: Sessi
     _set_mode(db_session, "OFF")
     _add_suggestion(db_session)
     _add_caps(db_session)
-    outcomes = run_auto_trade_pass(db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert outcomes == []
 
 
@@ -153,7 +159,9 @@ def test_dry_run_inserts_row_no_broker_call(db_session: Session) -> None:
     _add_caps(db_session)
     adapter = _mock_adapter()
 
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
 
     assert len(outcomes) == 1
     assert outcomes[0].placed is True
@@ -175,10 +183,14 @@ def test_dry_run_idempotency_second_pass_skipped(db_session: Session) -> None:
     _add_caps(db_session)
     adapter = _mock_adapter()
 
-    outcomes1 = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes1 = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes1) == 1 and outcomes1[0].placed is True
 
-    outcomes2 = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes2 = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes2) == 1
     assert outcomes2[0].placed is False
     assert outcomes2[0].rejected_reason is not None
@@ -199,7 +211,9 @@ def test_live_end_to_end_readback_success(db_session: Session) -> None:
     )
     adapter = _mock_adapter(submit_order_return=conf, get_order_return=conf)
 
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
 
     assert len(outcomes) == 1
     assert outcomes[0].placed is True
@@ -233,7 +247,9 @@ def test_live_readback_mismatch_triggers_kill_switch(db_session: Session) -> Non
     )
     adapter = _mock_adapter(submit_order_return=submit_conf, get_order_return=readback_conf)
 
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
 
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
@@ -253,7 +269,9 @@ def test_live_broker_error_triggers_kill_switch(db_session: Session) -> None:
     _add_caps(db_session)
     adapter = _mock_adapter(submit_order_return=RuntimeError("connection refused"))
 
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
 
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
@@ -275,10 +293,12 @@ def test_live_idempotency_second_pass_no_second_broker_call(db_session: Session)
     )
     adapter = _mock_adapter(submit_order_return=conf, get_order_return=conf)
 
-    run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK)
     adapter.submit_order.reset_mock()
 
-    outcomes2 = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes2 = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     adapter.submit_order.assert_not_called()
     assert all(not o.placed for o in outcomes2)
 
@@ -310,7 +330,9 @@ def test_wash_sale_guard_blocks_real_buy(db_session: Session) -> None:
     db_session.flush()
 
     adapter = _mock_adapter()
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
     assert "wash-sale" in (outcomes[0].rejected_reason or "").lower()
@@ -348,7 +370,9 @@ def test_wash_sale_dry_run_loss_does_not_block_real_buy(db_session: Session) -> 
         submitted_at=_NOW,
     )
     adapter = _mock_adapter(submit_order_return=conf, get_order_return=conf)
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes) == 1
     assert outcomes[0].placed is True
 
@@ -360,7 +384,9 @@ def test_no_active_caps_skips_suggestion_not_kill_switch(db_session: Session) ->
     # No caps added
 
     adapter = _mock_adapter()
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
     assert outcomes[0].rejected_reason is not None
@@ -379,7 +405,9 @@ def test_per_order_cap_blocks_suggestion(db_session: Session) -> None:
     _add_caps(db_session, per_order=500.0)
 
     adapter = _mock_adapter()
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
     assert "per-order cap" in (outcomes[0].rejected_reason or "")
@@ -392,7 +420,9 @@ def test_only_accepted_suggestions_processed(db_session: Session) -> None:
     _add_suggestion(db_session, ticker="MSFT", status="rejected")
     _add_caps(db_session)
 
-    outcomes = run_auto_trade_pass(db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert outcomes == []
 
 
@@ -412,7 +442,9 @@ def test_live_readback_exception_triggers_kill_switch(db_session: Session) -> No
         submit_order_return=conf,
         get_order_return=RuntimeError("timeout reading response"),
     )
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
     assert "readback_failed" in (outcomes[0].rejected_reason or "")
@@ -429,7 +461,9 @@ def test_dry_run_multiple_suggestions_all_inserted(db_session: Session) -> None:
     _add_suggestion(db_session, ticker="MSFT")
     _add_caps(db_session)
 
-    outcomes = run_auto_trade_pass(db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
     assert len(outcomes) == 2
     assert all(o.placed for o in outcomes)
     rows = db_session.scalars(
@@ -469,7 +503,9 @@ def test_validation_error_skips_suggestion_stays_live(db_session: Session) -> No
     ]
     adapter.get_order.return_value = conf2
 
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
 
     assert len(outcomes) == 2
     # sug-1 skipped with validation reason
@@ -497,7 +533,9 @@ def test_real_broker_error_fires_kill_switch(db_session: Session) -> None:
 
     adapter = _mock_adapter(submit_order_return=RuntimeError("connection refused"))
 
-    outcomes = run_auto_trade_pass(db_session, adapter, _emailer(), "t@t.com", "alpaca")
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
 
     # Only one outcome — processing stopped after the first failure
     assert len(outcomes) == 1
