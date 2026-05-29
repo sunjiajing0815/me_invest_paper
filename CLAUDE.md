@@ -10,7 +10,7 @@ Owner: Jane (solo developer, primary user). Multi-tenant productization is Phase
 
 ## Current phase
 
-Phase 4 code is complete — pending first Friday review email to tag `v0.4.0-phase-4-code-complete`. See `plans/phase_4_guide.md` for the build plan.
+Phase 4 code is complete — tagged `v0.4.8-phase-4-code-complete`. See `plans/phase_4_guide.md` for the build plan.
 
 Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions), 3 (LLM-scored levels, news triage, suggestion review pipeline), 4 (reconciliation, Moomoo adapter, weekly review, opt-in auto-trade).
 
