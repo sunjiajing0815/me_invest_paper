@@ -46,6 +46,9 @@ class TargetAllocation(Base):
     __tablename__ = "target_allocation"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Partition key (= BrokerAccount.account_ref). Nullable during the 4.9a build;
+    # backfilled + tightened to NOT NULL by migration. No DB FK (app-enforced).
+    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     target_pct: Mapped[float] = mapped_column(Double, nullable=False)
     band_low_pct: Mapped[float] = mapped_column(Double, nullable=False)
@@ -53,6 +56,9 @@ class TargetAllocation(Base):
     effective_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     effective_to: Mapped[datetime | None] = mapped_column(
         UTCDateTime(), nullable=True, default=None
+    )
+    __table_args__ = (
+        Index("ix_target_alloc_account_ticker", "broker_account_id", "ticker"),
     )
 
 
@@ -62,6 +68,9 @@ class PositionsSnapshot(Base):
     __tablename__ = "positions_snapshot"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Partition key (= BrokerAccount.account_ref). Distinct from account_id, which
+    # is the broker's own account identifier string. No DB FK (app-enforced).
+    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
@@ -69,6 +78,9 @@ class PositionsSnapshot(Base):
     avg_cost: Mapped[float] = mapped_column(Double, nullable=False)
     market_value: Mapped[float] = mapped_column(Double, nullable=False)
     weight_pct: Mapped[float] = mapped_column(Double, nullable=False)
+    __table_args__ = (
+        Index("ix_positions_account_ticker_ts", "broker_account_id", "ticker", "ts"),
+    )
 
 
 class Meta(Base):
@@ -81,14 +93,34 @@ class Meta(Base):
 
 
 class BrokerAccount(Base):
-    """Time-versioned account state. Deduplicates unchanged values on write."""
+    """Dual-purpose: broker-account identity + time-versioned account state.
+
+    Phase 4.9a (multi-broker): this table holds both the stable identity of a
+    broker account (``account_ref``, ``nickname``, ``is_active``,
+    ``connection_config``) and its close-and-insert cash/equity state history.
+    ``account_ref`` is the stable partition key — constant across an account's
+    state rows — that every per-account table references via ``broker_account_id``.
+    The auto-increment ``id`` changes on each state insert and must NOT be used as
+    a foreign key. The latest open row (``effective_to IS NULL``) is the single
+    source of truth for both identity and current state; ``snapshot.py`` carries
+    the identity columns forward when it close-and-inserts a new state row.
+    """
 
     __tablename__ = "broker_account"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Stable partition key (constant across this account's state rows). Backfilled
+    # by the phase4_9a migration; tightened to NOT NULL once all writers set it.
+    account_ref: Mapped[int | None] = mapped_column(Integer, nullable=True)
     account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
-    mode: Mapped[str] = mapped_column(String, nullable=False)
+    mode: Mapped[str] = mapped_column(String, nullable=False)  # broker mode: "paper" | "live"
+    # Identity columns (carried forward on each close-and-insert state row).
+    nickname: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    connection_config: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON blob
     cash_usd: Mapped[float] = mapped_column(Double, nullable=False)
     equity_usd: Mapped[float] = mapped_column(Double, nullable=False)
     last_sync: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -98,6 +130,7 @@ class BrokerAccount(Base):
     effective_to: Mapped[datetime | None] = mapped_column(
         UTCDateTime(), nullable=True, default=None
     )
+    __table_args__ = (Index("ix_broker_account_ref", "account_ref"),)
 
 
 class SRLevel(Base):
@@ -132,6 +165,8 @@ class OrderSuggestion(Base):
     __tablename__ = "order_suggestion"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Partition key (= BrokerAccount.account_ref). No DB FK (app-enforced).
+    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     week_of: Mapped[date] = mapped_column(Date, nullable=False)         # Monday of the week
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     side: Mapped[str] = mapped_column(String, nullable=False)           # "buy" | "sell"
@@ -157,7 +192,10 @@ class OrderSuggestion(Base):
     context_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     __table_args__ = (
-        UniqueConstraint("week_of", "ticker", "side", name="uq_one_per_ticker_per_week"),
+        UniqueConstraint(
+            "broker_account_id", "week_of", "ticker", "side",
+            name="uq_suggestion_account_week",
+        ),
     )
 
 
@@ -226,6 +264,8 @@ class OrderExecution(Base):
     __tablename__ = "order_execution"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Partition key (= BrokerAccount.account_ref). No DB FK (app-enforced).
+    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # nullable — manual trades have no suggestion
     suggestion_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # No FK constraint — codebase-wide convention; app layer enforces referential integrity
@@ -299,6 +339,35 @@ class AutoTradeCaps(Base):
     per_day_max_orders: Mapped[int] = mapped_column(Integer, nullable=False)
     effective_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     effective_to: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class AutoTradeState(Base):
+    """Per-broker-account auto-trade mode + optional cap overrides.
+
+    Phase 4.9a replaces the single ``meta.auto_trade_mode`` key with one row per
+    broker account (keyed by ``BrokerAccount.account_ref``). Each broker promotes
+    through its own OFF → DRY_RUN → LIVE soak ladder independently — promoting
+    Alpaca does not promote Moomoo. Cap overrides are nullable; when NULL the
+    engine falls back to the global time-versioned ``auto_trade_caps`` row.
+    """
+
+    __tablename__ = "auto_trade_state"
+
+    broker_account_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="OFF", server_default="OFF"
+    )  # "OFF" | "DRY_RUN" | "LIVE"
+    promoted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    promotion_soak_complete_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
+    )
+    last_kill_switch_event: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
+    )
+    per_order_cap_usd: Mapped[float | None] = mapped_column(Double, nullable=True)
+    per_day_cap_usd: Mapped[float | None] = mapped_column(Double, nullable=True)
+    per_week_per_ticker_cap_usd: Mapped[float | None] = mapped_column(Double, nullable=True)
+    per_day_order_count_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class WeeklyMarketContextRow(Base):
