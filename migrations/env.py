@@ -19,6 +19,12 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
+    # Honor a programmatically-set URL (db.py sets it via set_main_option; tests
+    # point it at a temp DB). alembic.ini ships a non-sqlite placeholder, so only
+    # a real sqlite:/// URL counts; otherwise fall back to SQLITE_PATH.
+    cfg_url = config.get_main_option("sqlalchemy.url")
+    if cfg_url and cfg_url.startswith("sqlite:///"):
+        return cfg_url
     return "sqlite:///" + os.environ.get("SQLITE_PATH", "./data/investor.db")
 
 

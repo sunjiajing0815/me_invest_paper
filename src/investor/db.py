@@ -24,17 +24,26 @@ _SessionLocal: sessionmaker[Session] | None = None  # type: ignore[type-arg]
 
 
 def init_db(sqlite_path: str) -> Engine:
-    """Create engine, run create_all (idempotent), apply Alembic migrations, return engine."""
+    """Create engine, apply Alembic migrations, then create_all as a backstop; return engine.
+
+    Alembic is the single source of truth for the schema — it runs FIRST and builds
+    the complete schema from the migration chain. ``create_all(checkfirst=True)`` runs
+    AFTER only as a safety net for any model table not yet covered by a migration.
+    (Order matters: the reverse — create_all then alembic — collides on a fresh DB,
+    because create_all builds every current-model table and the create_table migrations
+    then hit "already exists.") New tables MUST get a migration; create_all is not a
+    substitute. Tests build the schema via ``override_engine_for_testing`` (create_all).
+    """
     global _engine, _SessionLocal
     url = f"sqlite:///{sqlite_path}"
     logger.info("Connecting to SQLite at %s", sqlite_path)
     _engine = create_engine(url, connect_args={"check_same_thread": False}, future=True)
-    Base.metadata.create_all(_engine, checkfirst=True)
     alembic_cfg = AlembicConfig("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", url)
     alembic_cfg.attributes["configure_logger"] = False  # don't let alembic.ini reset our log level
     alembic_command.upgrade(alembic_cfg, "head")
     logger.info("Alembic migrations applied")
+    Base.metadata.create_all(_engine, checkfirst=True)  # backstop only — alembic owns the schema
     _SessionLocal = sessionmaker(bind=_engine, autoflush=True, autocommit=False)
     logger.info("Database initialised — tables: %s", list(Base.metadata.tables.keys()))
     return _engine
