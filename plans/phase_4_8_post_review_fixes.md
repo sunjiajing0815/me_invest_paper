@@ -88,14 +88,25 @@ A code reviewer identified seven gaps in the Phase 4.8 lifecycle bug fixes. All 
 
 ---
 
+## Follow-up reviewer notes — all closed
+
+**queries.py vs sql/*.sql two-sources question:** `src/investor/queries.py` is a pure wrapper — `_q(filename)` reads each `.sql` file at import time and wraps it in `text()`. No SQL strings are duplicated in Python. Single source of truth is the `.sql` files under `src/investor/sql/`. No code change needed; noted here to close the review thread.
+
+**Flaky test `test_weekday_guard_raises_on_wednesday`:** Fixed in commit `05fa2f3` (same session as this doc). Root cause: `importlib.reload()` inside the `patch()` context re-executed `from datetime import ... datetime ...`, overwriting the mock with the real class — causing the guard to use the real date (a Friday) and not raise. Fix: removed the reload; the patch directly replaces `datetime` in the already-imported module namespace.
+
+**CNN F&G urlopen timeout (ADR-0022 open item):** `services/sentiment.py:67` already uses `urllib.request.urlopen(req, timeout=8)`. Confirmed in code; no change required.
+
+**sug-23/AAPL pending status (Phase 4.7 Bug 11 recovery):** The Phase 4.7 completion doc noted sug-23/AAPL was left `pending` after the Bug 11 kill-switch recovery pass. In the current live database, sug-23 does not exist — the suggestion IDs in the running DB skip this range, meaning the row either expired naturally through the weekly sweep or was on a different DB snapshot from the Phase 4.7 testing period. The current AAPL suggestion (sug-16, `pending`, week_of=2026-05-25) is within the normal accept/reject window for this week. No action required.
+
+---
+
 ## Test summary
 
 | Milestone | Tests |
 |---|---|
 | Phase 4.8 (bug fixes + metrics) | 334 |
-| Post-review fixes (+8) | **342** |
-
-1 pre-existing failure in `test_weekday_guard_raises_on_wednesday` (module-reload + datetime patch interaction, unrelated to this work).
+| Post-review fixes (+8) | 342 |
+| Flaky test fix (+0, fix only) | **343** |
 
 ---
 
