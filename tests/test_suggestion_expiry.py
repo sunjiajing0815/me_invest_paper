@@ -199,13 +199,14 @@ class TestSweepExpiredSuggestions:
     def test_sweep_updates_exec_status_to_broker_cancelled_after_cancel(
         self, db_session: Session
     ) -> None:
-        """Successful cancel_order → execution row status becomes 'broker_cancelled'."""
+        """cancel_order + get_order non-filled → exec status becomes 'broker_cancelled'."""
         past = datetime.now(UTC) - timedelta(minutes=5)
         sug = _seed_suggestion(db_session, status="accepted", expires_at=past)
         exec_row = _seed_execution(db_session, suggestion_id=sug.id, broker_order_id="ord-abc")
         db_session.commit()
 
         adapter = MagicMock()
+        adapter.get_order.return_value = MagicMock(status="canceled")
         sweep_expired_suggestions(
             adapter=adapter, session_factory=_make_session_factory(db_session)
         )
@@ -230,3 +231,24 @@ class TestSweepExpiredSuggestions:
 
         db_session.refresh(exec_row)
         assert exec_row.status == "accepted_for_routing"
+
+    def test_sweep_does_not_set_broker_cancelled_when_order_already_filled(
+        self, db_session: Session
+    ) -> None:
+        """cancel_order succeeds but get_order returns filled → exec unchanged; sug expired."""
+        past = datetime.now(UTC) - timedelta(minutes=5)
+        sug = _seed_suggestion(db_session, status="accepted", expires_at=past)
+        exec_row = _seed_execution(db_session, suggestion_id=sug.id, broker_order_id="ord-filled")
+        db_session.commit()
+
+        adapter = MagicMock()
+        adapter.get_order.return_value = MagicMock(status="filled")
+        sweep_expired_suggestions(
+            adapter=adapter, session_factory=_make_session_factory(db_session)
+        )
+
+        db_session.refresh(exec_row)
+        assert exec_row.status == "accepted_for_routing"  # NOT broker_cancelled
+
+        db_session.refresh(sug)
+        assert sug.status == "expired"  # suggestion is still expired

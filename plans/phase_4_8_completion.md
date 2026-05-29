@@ -67,7 +67,7 @@ All planned deliverables met.
 | `src/investor/config.py` | `weekly_review_trend_weeks: int = 4`; `weekly_review_breakdown_top_n: int = 20` |
 | `templates/weekly_review.html.j2` | New **Order Activity** section: funnel table, dollar-flow table, allocation-drift table (green/red drift_pp, "→ closer/farther"), per-ticker breakdown, 4-week trend strip; DRY_RUN line hidden when zero; holiday and mid-week footnotes conditional |
 | `templates/weekly_review.txt.j2` | Plain-text mirror with fixed-width column alignment |
-| `src/investor/queries.py` | 4 new SQL constants: `FUNNEL_COUNTS_SQL`, `ORDER_FLOW_SQL`, `ALLOC_DRIFT_SQL`, `PER_TICKER_BREAKDOWN_SQL` |
+| `src/investor/queries.py` | 4 new `TextClause` constants: `funnel_counts`, `order_flow`, `alloc_drift`, `per_ticker_breakdown` — each is `text(sql_file.read_text())`, a typed handle loaded at import time. The SQL text lives exclusively in the `.sql` files; `queries.py` is the registry, not a second source of truth. |
 
 ### Post-4.8 bug fixes — Changed files
 

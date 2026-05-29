@@ -181,3 +181,18 @@ class AlpacaAdapter:
     def cancel_order(self, broker_order_id: str) -> None:
         """Cancel an open order by its Alpaca order ID."""
         self._client.cancel_order_by_id(broker_order_id)
+
+    def list_orders(self, status: str) -> list[OrderConfirmation]:
+        """Return all orders with the given status ('open' or 'closed')."""
+        req = GetOrdersRequest(status=QueryOrderStatus(status), limit=500)
+        raw_orders = self._client.get_orders(filter=req)
+        return [
+            OrderConfirmation(
+                broker_order_id=str(o.id),
+                client_order_id=o.client_order_id or "",
+                status=str(o.status.value),
+                submitted_at=o.submitted_at or datetime.now(UTC),
+            )
+            for _o in raw_orders
+            for o in (cast(AlpacaOrder, _o),)
+        ]

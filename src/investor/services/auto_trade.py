@@ -140,6 +140,27 @@ def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> No
         )
 
 
+def _check_stale_live_order(session: Session, sug: OrderSuggestion) -> None:
+    """Raise _GuardFailure if a different accepted_for_routing execution exists for this ticker.
+
+    Prevents placing a second live order while a prior-week GTC is still open at the broker.
+    The expiry sweep should clear these at 09:00 ET, but APScheduler delays can happen.
+    """
+    stale = session.scalars(
+        select(OrderExecution).where(
+            OrderExecution.ticker == sug.ticker,
+            OrderExecution.status == "accepted_for_routing",
+            OrderExecution.dry_run.is_(False),
+            OrderExecution.suggestion_id != sug.id,
+        )
+    ).first()
+    if stale is not None:
+        raise _GuardFailure(
+            f"stale live order exists for {sug.ticker} (exec_id={stale.id}, "
+            f"sug_id={stale.suggestion_id}) — expiry sweep may have missed; skipping"
+        )
+
+
 def _check_wash_sale(session: Session, sug: OrderSuggestion) -> None:
     """Raise _GuardFailure if a real loss-sell for this ticker occurred within 30 calendar days.
 
@@ -354,6 +375,7 @@ def run_auto_trade_pass(
     for sug in suggestions:
         try:
             _check_idempotency(session, sug, mode)
+            _check_stale_live_order(session, sug)
             _check_wash_sale(session, sug)
             if caps is None:
                 logger.warning(

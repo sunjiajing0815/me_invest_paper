@@ -114,7 +114,7 @@ ALLOCATION DRIFT (Mon -> Fri)
 
 {% if review.trend_rows %}
 4-WEEK TREND
-{{ "Week of" | ljust(9) }}  {{ "Sugg" | rjust(5) }}  {{ "Filled" | rjust(6) }}  {{ "$ buys" | rjust(9) }}  {{ "$ sells" | rjust(9) }}  {{ "|Sdrift|" | rjust(9) }}
+{{ "Week of" | ljust(9) }}  {{ "Sugg" | rjust(5) }}  {{ "Filled+∂" | rjust(6) }}  {{ "$ buys" | rjust(9) }}  {{ "$ sells" | rjust(9) }}  {{ "|Sdrift|" | rjust(9) }}
 {{ "-" * 58 }}
 {% for w in review.trend_rows %}
 {{ w.week_of.strftime("%b %d") | ljust(9) }}  {{ w.suggested | rjust(5) }}  {{ w.filled_live | rjust(6) }}  {{ "${:.0f}".format(w.buy_filled_usd) | rjust(9) }}  {{ "${:.0f}".format(w.sell_filled_usd) | rjust(9) }}  {{ "{:.2f}".format(w.abs_drift_pp_sum) | rjust(9) }}

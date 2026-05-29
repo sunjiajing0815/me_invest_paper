@@ -7,6 +7,7 @@ the suggestions that prompted them, and to capture untracked manual trades.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -18,6 +19,15 @@ from ..brokers.base import Activity, BrokerAdapter
 from ..models import OrderExecution, OrderSuggestion
 
 logger = logging.getLogger(__name__)
+
+_SUG_ID_RE = re.compile(r"^sug-(?P<id>\d+)(?:-r\d+)?$")
+
+
+def _parse_suggestion_id(client_order_id: str) -> int | None:
+    """Extract suggestion id from 'sug-N' or 'sug-N-rK'. Returns None if malformed."""
+    m = _SUG_ID_RE.match(client_order_id)
+    return int(m.group("id")) if m else None
+
 
 _TERMINAL_STATUSES: frozenset[str] = frozenset(
     {"canceled", "expired", "rejected", "done_for_day", "replaced"}
@@ -59,8 +69,8 @@ def reconcile_activities(
 
         # Rule 1: client_order_id carries "sug-N" → placed by auto-trade engine
         if act.client_order_id and act.client_order_id.startswith("sug-"):
-            try:
-                sid = int(act.client_order_id.removeprefix("sug-").split("-r")[0])
+            sid = _parse_suggestion_id(act.client_order_id)
+            if sid is not None:
                 results.append(
                     MatchResult(
                         suggestion_id=sid,
@@ -70,8 +80,7 @@ def reconcile_activities(
                     )
                 )
                 continue
-            except ValueError:
-                pass  # malformed sug-N, fall through to heuristic
+            # malformed sug-* id — fall through to heuristic
 
         # Rules 2/3: heuristic match on ticker + side + time window + price proximity
         candidates = [
@@ -219,9 +228,19 @@ def compute_realized_pnl(session: Session, sell: Activity) -> float | None:
 
 
 def sync_open_order_statuses(session: Session, adapter: BrokerAdapter) -> int:
-    """Poll broker for each accepted_for_routing execution and update status if cancelled.
+    """Batch-poll broker for open executions and update status to broker_cancelled if terminal.
 
-    Returns the number of executions updated. Exceptions per-order are logged and skipped.
+    Fetches all closed orders in one call instead of N per-row get_order() calls.
+    Returns the number of executions updated.
+
+    NOTE: "replaced" status means Alpaca created a new order with a different ID.
+    The new order ID is not tracked — treat as broker_cancelled for the old row;
+    the new order will reconcile independently via get_activities().
+
+    NOTE: A fill missed by reconcile_activities() will leave a row stuck as
+    accepted_for_routing here (this function only marks cancellations). If both
+    the fill AND this sync are called, the fill wins: reconciliation sets status='filled'
+    after this function sets 'broker_cancelled'. That sequencing is correct.
     """
     open_execs = session.scalars(
         select(OrderExecution).where(
@@ -231,24 +250,28 @@ def sync_open_order_statuses(session: Session, adapter: BrokerAdapter) -> int:
         )
     ).all()
 
+    if not open_execs:
+        return 0
+
+    try:
+        closed_orders = adapter.list_orders(status="closed")
+    except Exception as exc:
+        logger.warning("sync_open_order_statuses: list_orders failed: %s — skipping", exc)
+        return 0
+
+    closed_by_id = {c.broker_order_id: c for c in closed_orders}
+
     updated = 0
     for exe in open_execs:
-        try:
-            conf = adapter.get_order(exe.broker_order_id)  # type: ignore[arg-type]
-            if conf.status in _TERMINAL_STATUSES:
-                exe.status = "broker_cancelled"
-                updated += 1
-                logger.info(
-                    "sync_open_order_statuses: sug-%s execution %d marked broker_cancelled "
-                    "(broker status=%s)",
-                    exe.suggestion_id,
-                    exe.id,
-                    conf.status,
-                )
-        except Exception as exc:
-            logger.warning(
-                "sync_open_order_statuses: get_order(%s) failed: %s — skipping",
-                exe.broker_order_id,
-                exc,
+        conf = closed_by_id.get(exe.broker_order_id)  # type: ignore[arg-type]
+        if conf is not None and conf.status in _TERMINAL_STATUSES:
+            exe.status = "broker_cancelled"
+            updated += 1
+            logger.info(
+                "sync_open_order_statuses: sug-%s execution %d marked broker_cancelled "
+                "(broker status=%s)",
+                exe.suggestion_id,
+                exe.id,
+                conf.status,
             )
     return updated

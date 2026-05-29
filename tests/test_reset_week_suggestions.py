@@ -157,8 +157,9 @@ def _add_suggestion(
     return sug
 
 
-def _post_reset(client: TestClient, *, side: str | None = None) -> dict:
-    url = "/admin/reset-week-buy-suggestions"
+def _post_reset(client: TestClient, *, side: str | None = None, url: str | None = None) -> dict:
+    if url is None:
+        url = "/admin/reset-week-buy-suggestions"
     if side is not None:
         url = f"{url}?side={side}"
     resp = client.post(url, headers={"X-Admin-Token": _ADMIN_TOKEN})
@@ -261,3 +262,45 @@ class TestResetInvalidSide:
             headers={"X-Admin-Token": _ADMIN_TOKEN},
         )
         assert resp.status_code == 422
+
+
+# ── canonical endpoint ────────────────────────────────────────────────────────
+
+
+class TestCanonicalEndpoint:
+    def test_canonical_endpoint_resets_buy_by_default(self, client, db_session):
+        """Test that the new canonical /admin/reset-week-suggestions endpoint works."""
+        sug = _add_suggestion(db_session, ticker="AAPL", side="buy")
+        db_session.commit()
+
+        data = _post_reset(client, url="/admin/reset-week-suggestions")
+
+        db_session.refresh(sug)
+        assert sug.status == "pending"
+        assert sug.id in data["suggestions_reset"]
+
+    def test_canonical_endpoint_with_side_sell(self, client, db_session):
+        """Test canonical endpoint with side=sell parameter."""
+        sell_sug = _add_suggestion(db_session, ticker="MSFT", side="sell")
+        db_session.commit()
+
+        data = _post_reset(client, side="sell", url="/admin/reset-week-suggestions")
+
+        db_session.refresh(sell_sug)
+        assert sell_sug.status == "pending"
+        assert sell_sug.id in data["suggestions_reset"]
+
+    def test_canonical_endpoint_with_side_all(self, client, db_session):
+        """Test canonical endpoint with side=all parameter."""
+        buy_sug = _add_suggestion(db_session, ticker="AAPL", side="buy")
+        sell_sug = _add_suggestion(db_session, ticker="MSFT", side="sell")
+        db_session.commit()
+
+        data = _post_reset(client, side="all", url="/admin/reset-week-suggestions")
+
+        db_session.refresh(buy_sug)
+        db_session.refresh(sell_sug)
+        assert buy_sug.status == "pending"
+        assert sell_sug.status == "pending"
+        assert buy_sug.id in data["suggestions_reset"]
+        assert sell_sug.id in data["suggestions_reset"]

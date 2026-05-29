@@ -58,14 +58,35 @@ def sweep_expired_suggestions(
                 if exec_row is not None:
                     try:
                         adapter.cancel_order(exec_row.broker_order_id)  # type: ignore[arg-type]
-                        exec_row.status = "broker_cancelled"
-                        cancelled += 1
-                        log.info(
-                            "sweep_expired_suggestions: cancelled broker order %s for sug-%d (%s)",
-                            exec_row.broker_order_id,
-                            sug.id,
-                            sug.ticker,
-                        )
+                        # Verify the broker confirmed cancellation — it may have just filled
+                        try:
+                            conf = adapter.get_order(exec_row.broker_order_id)  # type: ignore[arg-type]
+                            if conf.status == "filled":
+                                log.warning(
+                                    "sweep: sug-%d order %s filled before cancel"
+                                    " — leaving for reconciliation",
+                                    sug.id,
+                                    exec_row.broker_order_id,
+                                )
+                            else:
+                                exec_row.status = "broker_cancelled"
+                                cancelled += 1
+                                log.info(
+                                    "sweep_expired_suggestions: cancelled broker"
+                                    " order %s for sug-%d (%s)",
+                                    exec_row.broker_order_id,
+                                    sug.id,
+                                    sug.ticker,
+                                )
+                        except Exception as verify_exc:
+                            # Can't verify: assume cancel succeeded (conservative)
+                            exec_row.status = "broker_cancelled"
+                            cancelled += 1
+                            log.warning(
+                                "sweep: get_order verification failed after cancel for sug-%d: %s",
+                                sug.id,
+                                verify_exc,
+                            )
                     except Exception as exc:
                         log.warning(
                             "sweep_expired_suggestions: cancel_order failed for sug-%d "

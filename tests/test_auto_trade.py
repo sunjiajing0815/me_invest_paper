@@ -547,3 +547,63 @@ def test_real_broker_error_fires_kill_switch(db_session: Session) -> None:
     assert meta is not None and meta.value == "OFF"
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert any(k.trigger == "broker_error" for k in kill_rows)
+
+
+def test_stale_live_order_blocks_placement(db_session: Session) -> None:
+    """_check_stale_live_order blocks placement when another sug has accepted_for_routing exec."""
+    _set_mode(db_session, "LIVE")
+    _add_caps(
+        db_session,
+        per_order=10_000.0,
+        per_day=50_000.0,
+        per_week_ticker=50_000.0,
+        per_day_orders=20,
+    )
+
+    # This week's suggestion for AAPL — the one auto_trade would try to place
+    current_sug = _add_suggestion(db_session, ticker="AAPL", side="buy", qty=2.0, limit_price=100.0)
+
+    # A different (older) suggestion for AAPL — simulates a GTC from last week
+    old_sug = OrderSuggestion(
+        week_of=_WEEK - timedelta(days=7),
+        ticker="AAPL",
+        side="buy",
+        qty=2.0,
+        limit_price=98.0,
+        reason="last week suggestion",
+        status="accepted",
+        created_at=_NOW - timedelta(days=7),
+    )
+    db_session.add(old_sug)
+    db_session.flush()
+
+    # Linked accepted_for_routing execution for the old suggestion (dry_run=False)
+    stale_exec = OrderExecution(
+        suggestion_id=old_sug.id,
+        ticker="AAPL",
+        side="buy",
+        submitted_qty=2.0,
+        filled_qty=0,
+        limit_price=98.0,
+        broker="alpaca",
+        broker_order_id="stale-ord-001",
+        client_order_id=f"sug-{old_sug.id}",
+        dry_run=False,
+        status="accepted_for_routing",
+        match_method="auto_trade_placed",
+        match_confidence=1.0,
+        created_at=_NOW - timedelta(days=7),
+    )
+    db_session.add(stale_exec)
+    db_session.flush()
+
+    adapter = _mock_adapter()
+    outcomes = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0].suggestion_id == current_sug.id
+    assert outcomes[0].placed is False
+    assert "stale live order" in (outcomes[0].rejected_reason or "")
+    adapter.submit_order.assert_not_called()

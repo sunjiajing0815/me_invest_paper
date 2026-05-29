@@ -5,6 +5,7 @@ from __future__ import annotations
 import textwrap
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -13,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from investor.config import load_targets
 from investor.db import override_engine_for_testing
-from investor.models import Base, OrderSuggestion, TargetAllocation
+from investor.models import Base, OrderExecution, OrderSuggestion, TargetAllocation
 from investor.services.targets import load_targets_into_db, yaml_hash
 
 YAML_V1 = textwrap.dedent("""\
@@ -243,3 +244,138 @@ class TestLoadTargetsIntoDb:
 
         db_session.refresh(sug)
         assert sug.status == "accepted"
+
+    def test_target_change_cancels_live_order_for_removed_ticker(
+        self, db_session: Session, tmp_path: Path
+    ) -> None:
+        # Load v1 with AAPL + TSLA
+        yaml_v1 = textwrap.dedent("""\
+            watchlist: [AAPL, TSLA]
+            targets:
+              AAPL: { pct: 50, band: [40, 60] }
+              TSLA: { pct: 50, band: [40, 60] }
+            cash_buffer_pct: 0
+        """)
+        f1 = tmp_path / "v1.yaml"
+        f1.write_text(yaml_v1)
+        targets_v1 = load_targets(str(f1))
+        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        db_session.commit()
+
+        # Create an accepted suggestion for AAPL for the current week
+        today = datetime.now(UTC).date()
+        current_week_monday = today - timedelta(days=today.weekday())
+        sug = OrderSuggestion(
+            week_of=current_week_monday,
+            ticker="AAPL",
+            side="buy",
+            qty=1.0,
+            limit_price=150.0,
+            reason="test",
+            status="accepted",
+        )
+        db_session.add(sug)
+        db_session.flush()
+
+        # Create a linked live execution row
+        exe = OrderExecution(
+            suggestion_id=sug.id,
+            ticker="AAPL",
+            side="buy",
+            submitted_qty=1.0,
+            filled_qty=0.0,
+            limit_price=150.0,
+            status="accepted_for_routing",
+            dry_run=False,
+            broker_order_id="ord-001",
+            broker="alpaca",
+            match_method="auto_trade_placed",
+        )
+        db_session.add(exe)
+        db_session.commit()
+
+        # Load v2 with only TSLA (AAPL removed), passing a mock adapter
+        yaml_v2 = textwrap.dedent("""\
+            watchlist: [TSLA]
+            targets:
+              TSLA: { pct: 100, band: [90, 100] }
+            cash_buffer_pct: 0
+        """)
+        f2 = tmp_path / "v2.yaml"
+        f2.write_text(yaml_v2)
+        targets_v2 = load_targets(str(f2))
+        mock_adapter = MagicMock()
+        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)), adapter=mock_adapter)
+        db_session.commit()
+
+        mock_adapter.cancel_order.assert_called_once_with("ord-001")
+        db_session.refresh(exe)
+        assert exe.status == "broker_cancelled"
+
+    def test_target_change_no_adapter_does_not_crash(
+        self, db_session: Session, tmp_path: Path
+    ) -> None:
+        # Load v1 with AAPL + TSLA
+        yaml_v1 = textwrap.dedent("""\
+            watchlist: [AAPL, TSLA]
+            targets:
+              AAPL: { pct: 50, band: [40, 60] }
+              TSLA: { pct: 50, band: [40, 60] }
+            cash_buffer_pct: 0
+        """)
+        f1 = tmp_path / "v1.yaml"
+        f1.write_text(yaml_v1)
+        targets_v1 = load_targets(str(f1))
+        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        db_session.commit()
+
+        # Create an accepted suggestion for AAPL for the current week
+        today = datetime.now(UTC).date()
+        current_week_monday = today - timedelta(days=today.weekday())
+        sug = OrderSuggestion(
+            week_of=current_week_monday,
+            ticker="AAPL",
+            side="buy",
+            qty=1.0,
+            limit_price=150.0,
+            reason="test",
+            status="accepted",
+        )
+        db_session.add(sug)
+        db_session.flush()
+
+        # Create a linked live execution row
+        exe = OrderExecution(
+            suggestion_id=sug.id,
+            ticker="AAPL",
+            side="buy",
+            submitted_qty=1.0,
+            filled_qty=0.0,
+            limit_price=150.0,
+            status="accepted_for_routing",
+            dry_run=False,
+            broker_order_id="ord-002",
+            broker="alpaca",
+            match_method="auto_trade_placed",
+        )
+        db_session.add(exe)
+        db_session.commit()
+
+        # Load v2 with only TSLA — no adapter passed
+        yaml_v2 = textwrap.dedent("""\
+            watchlist: [TSLA]
+            targets:
+              TSLA: { pct: 100, band: [90, 100] }
+            cash_buffer_pct: 0
+        """)
+        f2 = tmp_path / "v2.yaml"
+        f2.write_text(yaml_v2)
+        targets_v2 = load_targets(str(f2))
+        # Must not raise even though there's a live execution with no adapter
+        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        db_session.commit()
+
+        db_session.refresh(sug)
+        db_session.refresh(exe)
+        assert sug.status == "expired"
+        assert exe.status == "accepted_for_routing"  # unchanged — no cancellation attempted

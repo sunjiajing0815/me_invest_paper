@@ -220,3 +220,47 @@ class MoomooAdapter:
         )
         if ret != ft.RET_OK:
             raise RuntimeError(f"Moomoo cancel_order failed: {data}")
+
+    def list_orders(self, status: str) -> list[OrderConfirmation]:
+        """Return all orders with the given status ('open' or 'closed').
+
+        Maps 'closed' → FILLED_ALL, CANCELLED_ALL, FAILED, EXPIRED via order_list_query.
+        Maps 'open'   → WAITING_SUBMIT, SUBMITTING, SUBMITTED.
+        """
+        ft = self._ft
+        import futu as ft_module  # noqa: PLC0415
+
+        if status == "open":
+            status_filter = [
+                ft_module.OrderStatus.WAITING_SUBMIT,
+                ft_module.OrderStatus.SUBMITTING,
+                ft_module.OrderStatus.SUBMITTED,
+            ]
+        else:  # "closed"
+            status_filter = [
+                ft_module.OrderStatus.FILLED_ALL,
+                ft_module.OrderStatus.CANCELLED_ALL,
+                ft_module.OrderStatus.FAILED,
+                ft_module.OrderStatus.EXPIRED,
+            ]
+
+        ret, data = self._trade_ctx.order_list_query(
+            status_filter_list=status_filter,
+            trd_env=self._trd_env,
+        )
+        if ret != ft.RET_OK:
+            raise RuntimeError(f"Moomoo order_list_query failed: {data}")
+
+        results = []
+        for _, row in data.iterrows():
+            broker_order_id = str(row.get("order_id", ""))
+            remark = str(row.get("remark", "")) if "remark" in row else ""
+            results.append(
+                OrderConfirmation(
+                    broker_order_id=broker_order_id,
+                    client_order_id=remark if remark else None,
+                    status=str(row.get("order_status", "unknown")),
+                    submitted_at=datetime.now(UTC),
+                )
+            )
+        return results

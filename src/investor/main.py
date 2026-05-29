@@ -19,7 +19,7 @@ Endpoints:
   POST  /admin/auto-trade/promote       — promote auto-trade mode (promotion token)
   POST  /admin/auto-trade/caps          — update spending caps (promotion token)
   POST  /admin/cancel-all-orders          — cancel all open broker orders (admin token)
-  POST  /admin/reset-week-buy-suggestions — cancel orders + reset to pending (admin token)
+  POST  /admin/reset-week-suggestions     — cancel orders + reset to pending (admin token)
   POST  /admin/resend-weekly-email        — re-send weekly email from DB rows, no LLM (admin token)
   POST  /admin/auto-trade/emergency-stop      — trigger kill switch immediately (admin token)
 """
@@ -461,7 +461,7 @@ def admin_run_daily_report() -> dict[str, str]:
     summary="Reload targets from targets.yaml",
     dependencies=[Depends(admin_auth)],
 )
-def admin_reload_targets() -> dict[str, str]:
+def admin_reload_targets(request: Request) -> dict[str, str]:
     """Reload target allocations from targets.yaml and backfill bars for any new tickers.
 
     Bar backfill runs in a background thread (new tickers get 2 years of history;
@@ -476,7 +476,7 @@ def admin_reload_targets() -> dict[str, str]:
         h = yaml_hash(settings.targets_path)
         targets_cfg = load_targets(settings.targets_path)
         with session_scope() as sess:
-            result = load_targets_into_db(sess, targets_cfg, h)
+            result = load_targets_into_db(sess, targets_cfg, h, adapter=request.app.state.adapter)
     except Exception as exc:
         logger.error("reload-targets failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Reload failed: {exc}") from exc
@@ -906,6 +906,11 @@ def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
     }
 
 
+@app.post(
+    "/admin/reset-week-suggestions",
+    summary="Cancel open orders and reset suggestions to pending",
+    dependencies=[Depends(admin_auth)],
+)
 @app.post(
     "/admin/reset-week-buy-suggestions",
     summary="Cancel open orders and reset suggestions to pending",

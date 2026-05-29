@@ -223,6 +223,25 @@ def test_rule1_retry_order_id_sug_n_rn_matched(db_session: Session) -> None:
     assert r.confidence == pytest.approx(1.0)
 
 
+def test_rule1_malformed_sug_id_falls_through_to_heuristic(db_session: Session) -> None:
+    """A malformed 'sug-foo-r1' client_order_id must NOT match via Rule 1."""
+    act = _act(
+        client_order_id="sug-foo-r1",
+        broker_order_id="b-malformed",
+        ticker="AAPL",
+    )
+    results = reconcile_activities(
+        session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
+    )
+    assert len(results) == 1
+    r = results[0]
+    assert r.method != "auto_matched", (
+        "malformed sug-foo-r1 must not match via Rule 1 (auto_matched)"
+    )
+    # With no matching suggestion in DB, falls through to 'untracked'
+    assert r.method in {"untracked", "manual_review"}
+
+
 # ── Rule 2: single heuristic candidate ────────────────────────────────────────
 
 def test_rule2_heuristic_single_candidate(db_session: Session) -> None:
@@ -455,12 +474,14 @@ def test_sync_open_order_statuses_marks_cancelled(db_session: Session) -> None:
     db_session.flush()
 
     mock_adapter = MagicMock()
-    mock_adapter.get_order.return_value = OrderConfirmation(
-        broker_order_id="ord-1",
-        client_order_id=None,
-        status="canceled",
-        submitted_at=datetime.now(UTC),
-    )
+    mock_adapter.list_orders.return_value = [
+        OrderConfirmation(
+            broker_order_id="ord-1",
+            client_order_id=None,
+            status="canceled",
+            submitted_at=datetime.now(UTC),
+        )
+    ]
 
     result = sync_open_order_statuses(db_session, mock_adapter)
 
@@ -475,12 +496,8 @@ def test_sync_open_order_statuses_ignores_live_order(db_session: Session) -> Non
     db_session.flush()
 
     mock_adapter = MagicMock()
-    mock_adapter.get_order.return_value = OrderConfirmation(
-        broker_order_id="ord-2",
-        client_order_id=None,
-        status="new",
-        submitted_at=datetime.now(UTC),
-    )
+    # "ord-2" is not in the closed orders list — still open
+    mock_adapter.list_orders.return_value = []
 
     result = sync_open_order_statuses(db_session, mock_adapter)
 
@@ -489,15 +506,49 @@ def test_sync_open_order_statuses_ignores_live_order(db_session: Session) -> Non
     assert result == 0
 
 
-def test_sync_open_order_statuses_tolerates_get_order_failure(db_session: Session) -> None:
+def test_sync_open_order_statuses_tolerates_list_orders_failure(db_session: Session) -> None:
     exe = _exe(db_session, broker_order_id="ord-3", status="accepted_for_routing", dry_run=False)
     db_session.flush()
 
     mock_adapter = MagicMock()
-    mock_adapter.get_order.side_effect = Exception("broker down")
+    mock_adapter.list_orders.side_effect = Exception("broker down")
 
     result = sync_open_order_statuses(db_session, mock_adapter)
 
     db_session.refresh(exe)
     assert exe.status == "accepted_for_routing"
     assert result == 0
+
+
+def test_sync_uses_batch_list_orders(db_session: Session) -> None:
+    """sync_open_order_statuses calls list_orders once, never get_order, marks both cancelled."""
+    exe1 = _exe(db_session, broker_order_id="batch-1", status="accepted_for_routing", dry_run=False)
+    exe2 = _exe(db_session, broker_order_id="batch-2", status="accepted_for_routing", dry_run=False)
+    db_session.flush()
+
+    mock_adapter = MagicMock()
+    mock_adapter.list_orders.return_value = [
+        OrderConfirmation(
+            broker_order_id="batch-1",
+            client_order_id=None,
+            status="canceled",
+            submitted_at=datetime.now(UTC),
+        ),
+        OrderConfirmation(
+            broker_order_id="batch-2",
+            client_order_id=None,
+            status="canceled",
+            submitted_at=datetime.now(UTC),
+        ),
+    ]
+
+    result = sync_open_order_statuses(db_session, mock_adapter)
+
+    # list_orders called exactly once with status="closed"
+    mock_adapter.list_orders.assert_called_once_with(status="closed")
+    # get_order must never be called
+    mock_adapter.get_order.assert_not_called()
+    # Both executions marked broker_cancelled
+    assert exe1.status == "broker_cancelled"
+    assert exe2.status == "broker_cancelled"
+    assert result == 2
