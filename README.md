@@ -4,8 +4,12 @@ A self-hosted portfolio assistant for long-term US-equity investors. Pulls posit
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
-**Current phase:** 4.8 — Weekly order activity summary (funnel, flow, drift, breakdown, 4-week trend)  
-**Status:** Code complete 2026-05-28. Tag `v0.4.8.0` pending two consecutive Friday review emails with the Order Activity section populated and every headline cross-checked against hand-written SQL.
+**Current phase:** 4.9a — Multi-broker plumbing + per-broker reports (**in progress**)  
+**Status:** Phase 4.8 tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a **Stage A (multi-broker schema foundation) is complete and committed**; Stages B (multi-broker fan-out: per-broker jobs, reports, targets) and C (broker onboarding, docs, ADR-0024) are pending. The phase's Definition of Done (two brokers, two daily + two weekly emails) is **not yet met** — the app still runs single-broker until Stage B lands.
+
+> **⚠️ Deployment gate (4.9a schema commit):** the 4.9a schema migration (`d8589fe198cf`) moves the auto-trade mode out of `meta.auto_trade_mode` into the new per-broker `auto_trade_state` table, but `_get_mode()` does not read `auto_trade_state` until Stage B. `init_db()` runs `alembic upgrade head` on startup, so **restarting/redeploying with `d8589` present before Stage B lands will apply the migration and silently fall auto-trade back to `OFF`** (LIVE → OFF — the safe, suggest-only direction, but unintended). Do not deploy `d8589` in production until Stage B wires `_get_mode()` to `auto_trade_state`.
+>
+> The **foundation-hardening commit** (env.py + f2680 fixes, the `adopt_legacy_create_all_tables` migration, and the `init_db` reorder making Alembic the single source of truth) carries **no** auto-trade gate — it is a no-op on the existing DB and is safe to deploy independently.
 
 ---
 
@@ -537,7 +541,15 @@ All transactional tables are in `data/investor.db` (SQLite).
 
 ### `target_allocation` / `broker_account` / `positions_snapshot` / `meta`
 
-See Phase 1 for full column docs. These tables are unchanged in Phase 2.
+See Phase 1 for full column docs. Phase 2: unchanged.
+
+**Phase 4.9a Stage A (multi-broker foundation):**
+
+- A `broker_account_id` partition column is added to `target_allocation`, `positions_snapshot`, `order_suggestion`, and `order_execution`. It is a plain integer column (no DB FK — referential integrity is app-enforced, per the codebase convention) that points at `broker_account.account_ref`. Existing rows are backfilled to the single Alpaca account by migration `d8589fe198cf`.
+- `broker_account` becomes **dual-purpose**: identity + time-versioned state in one table. A stable `account_ref` (constant across an account's close-and-insert state rows) is the partition key; `id` still changes on each state insert and must never be an FK target. New identity columns: `nickname`, `is_active` (soft-delete flag), `connection_config` (JSON naming the broker's env-var credentials). The latest open row (`effective_to IS NULL`) is the source of truth for both identity and current cash/equity.
+- `order_suggestion`'s unique constraint becomes `(broker_account_id, week_of, ticker, side)` so two brokers can each suggest the same ticker in the same week.
+
+> Until Stage B wires the readers/jobs, these columns are populated but the app still operates against the single account. `broker_account_id` is nullable during the 4.9a build; a follow-up migration tightens it to NOT NULL once every writer sets it.
 
 ### `sr_level` (Phase 2+)
 
@@ -701,6 +713,19 @@ Time-versioned spending caps. Only one row has `effective_to = NULL` (the active
 | `effective_from` | timestamptz | When this cap row became active |
 | `effective_to` | timestamptz | When it was superseded (NULL = currently active) |
 
+### `auto_trade_state` (Phase 4.9a)
+
+Per-broker auto-trade mode + optional cap overrides. One row per broker account (keyed by `broker_account.account_ref`). Replaces the single `meta.auto_trade_mode` key, so each broker runs its own OFF → DRY_RUN → LIVE soak ladder independently — promoting Alpaca does not promote Moomoo. Cap-override columns are nullable; when NULL the engine falls back to the global `auto_trade_caps` row. **Note:** the mode read path (`_get_mode`) is wired to this table in Stage B; see the deployment gate at the top of this README.
+
+| Column | Type | Description |
+|---|---|---|
+| `broker_account_id` | int | PK = `broker_account.account_ref` |
+| `mode` | varchar | `OFF` / `DRY_RUN` / `LIVE` (seeded from the old `meta.auto_trade_mode`) |
+| `promoted_at` | timestamptz | Last promotion timestamp |
+| `promotion_soak_complete_at` | timestamptz | When the current mode's soak window completes |
+| `last_kill_switch_event` | timestamptz | Last kill-switch activation for this broker |
+| `per_order_cap_usd` / `per_day_cap_usd` / `per_week_per_ticker_cap_usd` / `per_day_order_count_cap` | double / int | Per-broker overrides; NULL = use global `auto_trade_caps` |
+
 ---
 
 ## Inspecting the database
@@ -759,8 +784,13 @@ FROM order_execution oe
 WHERE oe.dry_run = false
 ORDER BY oe.filled_at DESC LIMIT 20;
 
--- check current auto-trade mode (Phase 4)
-SELECT value FROM meta WHERE key = 'auto_trade_mode';
+-- check current auto-trade mode
+-- Phase 4 (pre-4.9a): SELECT value FROM meta WHERE key = 'auto_trade_mode';
+-- Phase 4.9a Stage A onward (per-broker):
+SELECT ats.broker_account_id, ba.nickname, ats.mode
+FROM auto_trade_state ats
+JOIN broker_account ba ON ba.account_ref = ats.broker_account_id
+WHERE ba.effective_to IS NULL;
 
 -- realised PnL summary by ticker (Phase 4)
 SELECT ticker, sum(realized_pnl_usd) AS total_pnl, count(*) AS sell_fills
@@ -831,7 +861,7 @@ src/investor/
   main.py             FastAPI app + lifespan
   config.py           pydantic-settings + targets.yaml loader
   db.py               SQLite engine + session factory
-  models.py           SQLAlchemy ORM models (Phase 3b: NewsEvent, MoverState; Phase 3c: anchor_method; Phase 4: OrderExecution, AutoTradePromotionLog, KillSwitchLog, AutoTradeCaps; Phase 4.7: WeeklyMarketContextRow, OrderSuggestion.base_qty/size_factor/context_note)
+  models.py           SQLAlchemy ORM models (Phase 3b: NewsEvent, MoverState; Phase 3c: anchor_method; Phase 4: OrderExecution, AutoTradePromotionLog, KillSwitchLog, AutoTradeCaps; Phase 4.7: WeeklyMarketContextRow, OrderSuggestion.base_qty/size_factor/context_note; Phase 4.9a: AutoTradeState, broker_account_id partition key on 4 tables, broker_account.account_ref/nickname/is_active/connection_config)
   scheduler.py        APScheduler bootstrap
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses (Activity, OrderRequest, OrderConfirmation)
@@ -941,6 +971,8 @@ tests/
   test_load_targets.py                  Hash-based target dedup, mid-week suggestion expiry on target change (7 tests) (Phase 4.8)
   test_weekly_review_metrics.py         Order funnel, drift sign/over-correction/fallback, weekday guard, flow zeros, partial-fill trend (11 tests) (Phase 4.8)
   test_reset_week_suggestions.py        reset-week endpoint: buy/sell/all side param, 422 on invalid side (7 tests) (Phase 4.8)
+  test_migration_phase4_9a.py           Multi-broker migration: backfill collapses to one account, auto_trade_state seeded, downgrade round-trip (2 tests) (Phase 4.9a)
+  test_fresh_schema.py                  Regression: fresh `alembic upgrade head` builds every model table (Alembic is sole schema source) (1 test) (Phase 4.9a)
   test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
   0001-broker-adapter-abstraction.md
@@ -973,7 +1005,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 334 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 346 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/
