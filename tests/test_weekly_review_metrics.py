@@ -307,6 +307,8 @@ def test_weekday_guard_raises_on_wednesday() -> None:
     from datetime import date as _date
     from unittest.mock import MagicMock, patch
 
+    import investor.jobs.weekly_review as wr_mod
+
     wednesday = _date(2026, 5, 27)  # weekday=2 (Wednesday)
 
     mock_now_result = MagicMock()
@@ -314,12 +316,6 @@ def test_weekday_guard_raises_on_wednesday() -> None:
 
     with patch("investor.jobs.weekly_review.datetime") as mock_dt:
         mock_dt.now.return_value = mock_now_result
-
-        # Re-import after patch to pick up the mock; use importlib to be safe
-        import importlib
-
-        import investor.jobs.weekly_review as wr_mod
-        importlib.reload(wr_mod)
 
         with pytest.raises(RuntimeError, match="week isn't over yet"):
             wr_mod.run_weekly_review(
