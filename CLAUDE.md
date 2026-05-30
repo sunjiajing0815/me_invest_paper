@@ -4,13 +4,13 @@ This file orients Claude Code (and any future LLM agents) to this repository. Re
 
 ## Mission
 
-A self-hosted, suggest-only assistant for a long-term US-equities investor. The system pulls positions from a broker (Alpaca first, Moomoo later), compares against a YAML-defined target allocation, identifies support/resistance levels, suggests weekly orders, and emails daily/weekly reports. **The system never places orders.** Order execution is always manual, in the broker's own UI.
+A self-hosted, suggest-only assistant for a long-term US-equities investor. The system pulls positions from one or more broker accounts per user (Alpaca + Moomoo as of Phase 4.9a; IBKR + Tiger are deferred follow-ons), compares against a YAML-defined target allocation, identifies support/resistance levels, suggests weekly orders, and emails daily/weekly reports **per broker account**. **The system never places orders.** Order execution is always manual, in the broker's own UI.
 
 Owner: Jane (solo developer, primary user). Multi-tenant productization is Phase 5 — until then, treat this as a single-user app.
 
 ## Current phase
 
-Phase 4 code is complete — tagged `v0.4.8-phase-4-code-complete`. See `plans/phase_4_guide.md` for the build plan.
+Phase 4 code is complete — tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a (multi-broker plumbing + per-broker reports) Stage A–C is code-complete on `main`; remaining before the `v0.4.9a.0` tag: the 2-broker smoke test. See `plans/phase_4_9a_guide.md` and `plans/phase_4_9a_completion.md`.
 
 Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions), 3 (LLM-scored levels, news triage, suggestion review pipeline), 4 (reconciliation, Moomoo adapter, weekly review, opt-in auto-trade).
 
@@ -47,12 +47,14 @@ src/investor/
   models.py           SQLAlchemy ORM models
   scheduler.py        APScheduler bootstrap
   brokers/
+    __init__.py       make_adapter(settings) [primary] + make_account_adapter(broker, connection_config) + build_account_adapters(session) → {account_ref: adapter} (Phase 4.9a)
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
     moomoo.py         MoomooAdapter — talks to OpenD on host (Phase 4)
   services/
-    snapshot.py       position + account ingestion
-    gap.py            target-vs-actual gap computation
+    accounts.py       AccountInfo + list_active_accounts / resolve_primary_account_ref / resolve_active_account_refs (Phase 4.9a multi-broker)
+    snapshot.py       position + account ingestion (per broker_account_id)
+    gap.py            target-vs-actual gap computation (per broker_account_id)
     analytics.py      DuckDB context manager (price_bar view over Parquet)
     indicators.py     IndicatorRow + compute_indicators() — SMA/EMA/RSI/MACD
     levels.py         SRLevelRow + compute_levels() / persist_levels() / build_nearby_levels()
@@ -119,7 +121,7 @@ uv run mypy src/
 
 2. **Market data is separable from execution data.** `get_bars` may live on a different adapter than `get_positions`. Even when trading via Moomoo, we may keep using Alpaca for free bars.
 
-3. **Domain IDs ≠ broker IDs.** Tables key on `(ticker)` or `(user_id, ticker)`, never on the broker's `asset_id`. Vendor IDs go in sidecar columns for reconciliation only.
+3. **Domain IDs ≠ broker IDs.** Per-account tables key on `(broker_account_id, ticker)` (Phase 4.9a) — eventually `(user_id, broker_account_id, ticker)` in Phase 5a — never on the broker's `asset_id`. `broker_account_id` is the stable `broker_account.account_ref` partition key (a plain column, no DB FK — app-enforced; see ADR-0024). News, S/R levels, and market context stay **user-level**, not per-account. Vendor IDs go in sidecar columns for reconciliation only.
 
 4. **Targets are time-versioned.** Editing `targets.yaml` (or hitting `/targets`) closes the previous `target_allocation` rows (`effective_to = now`) and inserts new ones. Never UPDATE in place — that destroys history needed for honest review.
 
@@ -199,7 +201,7 @@ uv run mypy src/
 20. **`dry_run=False` filter is mandatory in every reconciliation and auto-trade query.** Simulated losses from `DRY_RUN` mode must never interfere with real PnL accounting, wash-sale guards, or cap calculations. If you add a new query that touches `order_execution`, include `OrderExecution.dry_run.is_(False)` unless you explicitly want DRY_RUN rows too.
 15. **Phase 3c adds three new prompt files** under `src/investor/prompts/`: `suggestion_reason_v1.txt` (Sonnet per-draft rationale system prompt), `suggestion_critic_v1.txt` (Sonnet cross-suggestion critic system prompt with five severity-ordered criteria), and `score_levels_v2.txt` (news-augmented copy of `score_levels_v1.txt`). The `level_prompt_version` setting (default `"v2"`) selects the scoring prompt. The reason/critic prompts are always `v1` (no version setting). All prompts live in the `prompts/` directory and are loaded via `load_prompt()` in `services/prompts.py`.
 16. **Reconciliation is matching, not creation.** `services/reconciliation.py` writes `order_execution` rows by matching broker activities to existing `order_suggestion` rows. It never invents executions. Four matching rules and priority order are fixed in ADR-0017. Every reconciliation and wash-sale query must include `WHERE dry_run = false` to prevent simulated DRY_RUN rows from interfering with real trade logic.
-17. **Auto-trade mode defaults to OFF forever.** `meta.auto_trade_mode` is seeded `'OFF'` by the Alembic migration. `_get_mode()` falls back to `'OFF'` if the row is absent or unrecognised. Promotion to `DRY_RUN` or `LIVE` requires the separate `AUTO_TRADE_PROMOTION_TOKEN` and soak-window enforcement. See ADR-0014.
+17. **Auto-trade mode defaults to OFF forever — now per broker account.** As of Phase 4.9a the mode lives in `auto_trade_state` keyed by `broker_account_id` (= `account_ref`), not the old `meta.auto_trade_mode` key (which migration `d8589` deletes). `_get_mode(session, broker_account_id)` falls back to `'OFF'` if the row is absent or unrecognised, and each broker promotes through its own OFF → DRY_RUN → LIVE soak ladder independently — promoting one broker never promotes another. Guards, caps, and the kill switch are all scoped per `broker_account_id`. New brokers (via `POST /admin/broker-accounts`) seed OFF. Promotion still requires `AUTO_TRADE_PROMOTION_TOKEN` + soak-window enforcement. See ADR-0014 and ADR-0024.
 18. **`submit_order()` is a single-call-site privilege.** Only `services/auto_trade.py` and `brokers/` may call `adapter.submit_order()`. The grep CI test `tests/test_no_unauthorized_submit_order.py` enforces this on every run.
 21. **Tavily acquired by Nebius (Feb 2026) — pin `tavily-python>=0.6,<0.7`.** The SDK is pre-1.0; Nebius ownership means the API surface may change. Tight pinning prevents silent breakage. Swap path if needed: create a new concrete client implementing `TavilyClient` Protocol and update `make_tavily_client()` factory — no call-site changes needed. See ADR-0020.
 22. **Tavily monthly cap is per-instance, not persisted.** `TavilyConcreteClient._used_this_month` resets to 0 when the process restarts. If the app restarts mid-month, the counter resets. For conservative usage this is fine (weekly review adds ~12–16 searches/week × 4 = ~60/month well under the 200 default). Don't raise `TAVILY_MONTHLY_CAP` above the free-tier limit without checking Tavily's current pricing.
@@ -223,6 +225,8 @@ Phase 3a adds: `ANTHROPIC_API_KEY` (Sonnet scoring), `MAGIC_LINK_SECRET` (HMAC f
 Phase 3b adds: `FINNHUB_API_KEY` (Finnhub free tier; optional but needed as Alpaca fallback). `LLM_DAILY_COST_CAP_USD=3.0` (updated from 1.0 in Phase 3a). `LLM_BACKEND=anthropic_api` (or `agent_sdk` to route through `claude-agent-sdk`; see ADR-0016).
 
 Phase 4 adds: `OPEND_HOST=host.docker.internal`, `OPEND_PORT=11111`, `OPEND_SECURITY_FIRM=FUTUSECURITIES` (Moomoo/Futu OpenD daemon settings — only needed when `BROKER=moomoo`). `AUTO_TRADE_PROMOTION_TOKEN` — separate from `ADMIN_TOKEN`; required for auto-trade mode promotions.
+
+Phase 4.9a (multi-broker) adds no required env vars. Per-broker credentials/connection params live in each `broker_account.connection_config` JSON blob (which names env-var keys for the adapter factory to resolve). Targets are now per broker account: `data/targets/<broker_account_id>.yaml`, with the primary account falling back to `TARGETS_PATH` (`config/targets.yaml`) for one release. Connect a broker with `POST /admin/broker-accounts`; account-scoped endpoints take an optional `?broker_account_id` (default: primary for reads, all-active for job triggers/bulk mutations).
 
 Phase 4.5 adds: `TAVILY_API_KEY` (optional; empty = graceful skip of weekly market context section), `TAVILY_MONTHLY_CAP=200` (default 200; cap reached → silent empty + WARNING log).
 

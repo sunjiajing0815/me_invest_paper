@@ -1,10 +1,15 @@
 # Phase 4.9a — Multi-Broker Plumbing + Per-Broker Reports — Progress Report
 
-> **Status: IN PROGRESS — Stage A complete, Stages B & C pending.**
-> This is *not* a phase-done report. Stage A (the multi-broker schema foundation)
-> is committed and validated; the phase's Definition of Done (a second broker
-> connected, two daily + two weekly emails) is **not yet met**. The app still
-> operates single-broker until Stage B wires the per-broker fan-out.
+> **Status: CODE-COMPLETE — Stages A, B, and C committed on `main`.**
+> The app is fully multi-broker across the data model, read path, write path, jobs,
+> scheduler, and API. The only thing between here and the `v0.4.9a.0` tag is the
+> 2-broker smoke test (connect Moomoo paper alongside Alpaca; confirm two daily +
+> two weekly emails, per-broker audit columns, per-broker mode isolation).
+>
+> **Commits (on top of `v0.4.8`):** foundation hardening → B1 (auto_trade_state) →
+> B2 (adapter factory) → B3–B5 (partition-key threading) → B6 (per-broker targets) →
+> B7+B-API+B8 (emails + endpoint params + scheduler fan-out) → B9 (NOT NULL) →
+> C (onboarding endpoints) → docs (ADR-0024, CLAUDE.md, README, product_plan).
 
 ## Context
 
@@ -53,33 +58,27 @@ Resolved by making **Alembic the single source of truth**:
 
 This foundation hardening landed as its own commit, separate from (and before) the gated 4.9a schema migration — see "Files changed" below.
 
-### ⚠️ Deployment gate (must read before any restart)
+### Restart safety (gate cleared)
 
-The Stage A migration **deletes `meta.auto_trade_mode`** and moves the mode to `auto_trade_state`, but `services/auto_trade.py::_get_mode()` still reads `meta` — wiring it to `auto_trade_state` is **Stage B** work. Because `init_db()` runs `alembic upgrade head` on startup:
-
-> **Restarting / redeploying the app before Stage B lands will apply the migration and silently fall auto-trade back to `OFF`** (currently `LIVE` → `OFF`).
-
-This is the safe, suggest-only direction (no wrong orders — it just stops placing), but it is unintended. Jane's real DB is currently still at the parent revision `62b0733b198f` (migration not yet applied). **Do not restart in production until Stage B reads `auto_trade_state`.**
+The migration deletes `meta.auto_trade_mode` and seeds `auto_trade_state`. **B1 rewired `_get_mode`/`set_mode`/promote/kill-switch to `auto_trade_state` before any restart**, so applying the migration on a restart reads the prior mode back per broker — auto-trade does **not** silently fall to OFF. Restarting now applies the full chain (`7d25 → d8589 → 6a4a`) and the app runs fully multi-broker; it's a clean restart point.
 
 ---
 
-## Remaining work
+## Stages B & C — completed
 
-### Stage B — Multi-broker fan-out (pending)
-- `make_adapter(broker, connection_config)` factory + `app.state.adapters: dict[account_ref, BrokerAdapter]` in the lifespan.
-- Update the 6 `BrokerAccount` "latest open row" readers (snapshot, daily_report, weekly_suggestions, weekly_review, suggestion_review, main) to filter by `account_ref`; `snapshot.py` writes `broker_account_id` and carries identity columns forward on close-and-insert.
-- Per-broker job loops (daily/weekly/reconciliation/expiry) with `[nickname]` subject prefixes and `try/except … continue` isolation.
-- Thread `broker_account_id` through `suggest` / `gap` / reconciliation / the auto-trade guards (`_get_mode` per account; caps/idempotency/wash-sale/stale-live-order scoped per broker) and the review graph (`weekly_market_context` stays user-level — one synthesis serves all brokers).
-- Per-broker targets (`data/targets/<broker_account_id>.yaml`); `config/targets.yaml` aliases the primary for one release.
-- Templates: nickname/broker line. `auto_trade_state` wiring: `_get_mode`, the promote endpoint's `broker_account_id`, scheduler entrypoints.
+### Stage B — Multi-broker fan-out ✅
+- **B1**: `auto_trade_state` mode read/write (cleared the restart gate); guards/caps/kill-switch scoped per `broker_account_id`.
+- **B2**: `make_account_adapter` / `build_account_adapters`; `app.state.adapters` in the lifespan.
+- **B3–B5**: 5 SQL files parameterized; `gap`/`snapshot`/`compose_daily_report` + the 6 readers scoped; per-broker job loops; reconciliation tags + scopes executions; `persist_suggestions` + the review graph threaded; `services/accounts.py` added.
+- **B6**: per-broker `data/targets/<account_ref>.yaml` (primary falls back to `config/targets.yaml`); `load_targets_into_db` scoped (per-account hash key + expiry); reload loop.
+- **B7**: per-broker email nickname/broker line + `[nickname]` subjects.
+- **B8**: scheduler crons fan out over `app.state.adapters` (`*_all_brokers` loops; added expiry + auto-trade loops).
+- **B-API**: every account-scoped endpoint takes `?broker_account_id` (reads → primary default; job triggers/bulk mutations → all-active default; 404 on invalid). `/health` lists all active accounts.
+- **B9**: `broker_account_id` (4 tables) + `account_ref` flipped `NOT NULL` (migration `6a4a9fada1dc`); model updated.
 
-### Stage C — Onboarding + docs + ADR (pending)
-- `POST /admin/broker-accounts` to create an identity row + seed `auto_trade_state` at `OFF` (how Moomoo gets connected as broker #2 for the smoke test).
-- **ADR-0024** — multi-broker single-user data model (dual-purpose `broker_account` + `account_ref`; per-account `broker_account_id` no-FK; per-broker `auto_trade_state` + per-broker soak ladder; cross-broker wash-sale deliberately per-broker in 4.9a; news/levels/market-context stay user-level).
-- Docs drift: CLAUDE.md (mission, convention #3 → `(broker_account_id, ticker)`, convention #11 → `auto_trade_state` per broker), README (further updates), `product_plan.md` 4.9a entry.
-
-### Final tightening (pending)
-- Flip `broker_account_id` model + DB to `NOT NULL` (follow-up migration) once every writer sets it.
+### Stage C — Onboarding + docs + ADR ✅
+- `POST/GET/DELETE /admin/broker-accounts` — onboard (fresh `account_ref`, seed `auto_trade_state` OFF, register adapter live), list, soft-delete.
+- **ADR-0024** written; CLAUDE.md (mission, conventions #3 + #17, repo layout, env note), README, `product_plan.md` updated.
 
 ---
 
@@ -88,10 +87,11 @@ This is the safe, suggest-only direction (no wrong orders — it just stops plac
 | Milestone | Tests |
 |---|---|
 | Phase 4.8 close (after flaky-test fix) | 343 |
-| Phase 4.9a Stage A (+2 migration tests) | 345 |
-| Foundation hardening (+1 fresh-schema test) | **346** |
+| Phase 4.9a Stage A + foundation hardening | 346 |
+| Stage B (B1 mode isolation, B2 factory, B3 gap isolation, B-API scope/404) | 360 |
+| Stage C (broker-account onboarding) | **364** |
 
-`uv run pytest` → 346 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. Migration validated on a copy of the real DB (above); fresh `alembic upgrade head` builds all 15 model tables.
+`uv run pytest` → 364 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 15 model tables.
 
 ## Files changed (Stage A)
 
@@ -117,4 +117,12 @@ The work is split into three commits so the safe foundation lands first, indepen
 
 ## Tag
 
-`v0.4.9a.0` is **not** appropriate yet — it should be applied only when the full phase (Stage A + B + C) is code-complete and the 2-broker smoke checklist is green.
+Stages A–C are code-complete. Apply `v0.4.9a.0` once the 2-broker smoke checklist is green:
+1. Migration: existing single-broker rows carry through to one `broker_account_id` group (validated on a real-DB copy).
+2. `POST /admin/broker-accounts` connects Moomoo paper; `make_account_adapter` returns the right adapter; it appears in `/health`.
+3. Daily report fires per active broker → two emails with `[nickname]` subjects.
+4. Weekly suggestions Sunday → each broker its own email; a ticker held in both yields independent per-broker suggestions.
+5. Promote Alpaca → LIVE leaves Moomoo OFF in `auto_trade_state`.
+6. Stale-live-order guard: two live AAPL orders across *different* brokers allowed; two on the *same* broker still blocked.
+7. `data/targets/<id>.yaml` edited independently; `config/targets.yaml` still aliases the primary.
+8. Soft-delete (`is_active=False`) excludes a broker from cron loops; its history stays queryable.

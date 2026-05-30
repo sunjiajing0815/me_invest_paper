@@ -420,6 +420,24 @@ See `phase_4_6_guide.md` for the step-by-step build.
 
 **ADRs:** ADR-0021 (context-aware sizing design decisions).
 
+### Phase 4.9a — Multi-broker plumbing + per-broker reports (2026-05-30)
+
+**Motivation:** Let one user hold positions across multiple broker accounts at once (Alpaca + Moomoo first) and receive **separate** daily/weekly emails per broker. Suggest-only holds across all brokers; auto-trade LIVE stays Alpaca-only (each new broker repeats its own Phase 4.6 soak ladder).
+
+**Key design decisions (see ADR-0024):**
+- `broker_account_id` (= `broker_account.account_ref`, a stable partition key) on every per-account table; `broker_account` is dual-purpose (identity + state). No new identity table, no UUIDs in 4.9a; plain column, no DB FK.
+- Per-broker `auto_trade_state` replaces `meta.auto_trade_mode`; each broker has its own OFF→DRY_RUN→LIVE soak ladder and its own guards/caps/kill switch.
+- News, S/R levels, and weekly market context stay **user-level** (one synthesis serves all brokers).
+- Cross-broker wash-sale is deliberately per-broker in 4.9a (tax-lot/cross-account is Phase 6).
+
+**New components:** `services/accounts.py`; `brokers.make_account_adapter` / `build_account_adapters`; `*_all_brokers` job loops; per-account targets files `data/targets/<id>.yaml`; `POST/GET/DELETE /admin/broker-accounts`; account-scoped endpoints (`?broker_account_id`); migrations `7d25844a8a9a` (adopt create_all tables into Alembic), `d8589fe198cf` (partition key + auto_trade_state), `6a4a9fada1dc` (NOT NULL).
+
+**Deliverable:** connect a second broker (Moomoo paper) on top of Alpaca and receive two separate daily + two weekly emails, with audit columns populated per-broker and existing single-broker history carried through migration. Tag `v0.4.9a.0`.
+
+**Out of scope (Phase 4.9b):** household target allocation, consolidated summary email, funds-added detection, quarterly/annual review crons, magic-link target-edit guard. **Out of scope (own sub-phases):** IBKR + Tiger adapters (ADR-0025/0026). **Phase 6:** tax-lot / cross-broker wash-sale.
+
+**ADRs:** ADR-0024 (multi-broker single-user data model).
+
 ### Phase 6 — Paper → live hardening (1 week work, 4–6 weeks soak)
 - Add kill switches: daily max suggested spend, max position size, max drift before halting new buys.
 - Backtest the suggestion engine against the last 2 years — does "buy at support" actually fill often enough?

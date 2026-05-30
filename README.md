@@ -4,10 +4,8 @@ A self-hosted portfolio assistant for long-term US-equity investors. Pulls posit
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
-**Current phase:** 4.9a — Multi-broker plumbing + per-broker reports (**in progress**)  
-**Status:** Phase 4.8 tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a **Stage A (multi-broker schema foundation) is complete and committed**; Stages B (multi-broker fan-out: per-broker jobs, reports, targets) and C (broker onboarding, docs, ADR-0024) are pending. The phase's Definition of Done (two brokers, two daily + two weekly emails) is **not yet met** — the app still runs single-broker until Stage B lands.
-
-> **⚠️ Deployment gate (4.9a schema commit):** the 4.9a schema migration (`d8589fe198cf`) moves the auto-trade mode out of `meta.auto_trade_mode` into the new per-broker `auto_trade_state` table, but `_get_mode()` does not read `auto_trade_state` until Stage B. `init_db()` runs `alembic upgrade head` on startup, so **restarting/redeploying with `d8589` present before Stage B lands will apply the migration and silently fall auto-trade back to `OFF`** (LIVE → OFF — the safe, suggest-only direction, but unintended). Do not deploy `d8589` in production until Stage B wires `_get_mode()` to `auto_trade_state`.
+**Current phase:** 4.9a — Multi-broker plumbing + per-broker reports (**code-complete**)  
+**Status:** Phase 4.8 tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a Stages A–C are code-complete on `main` — the app is fully multi-broker across the data model, jobs, scheduler, and API. Remaining before the `v0.4.9a.0` tag: the 2-broker smoke test (connect Moomoo paper alongside Alpaca and confirm two daily + two weekly emails). The mode read path is wired to `auto_trade_state` (B1), so a restart is safe — auto-trade reads its prior mode back per broker.
 >
 > The **foundation-hardening commit** (env.py + f2680 fixes, the `adopt_legacy_create_all_tables` migration, and the `init_db` reorder making Alembic the single source of truth) carries **no** auto-trade gate — it is a no-op on the existing DB and is safe to deploy independently.
 
@@ -153,11 +151,19 @@ The SQLite file and bar Parquet files are stored in `./data/` (bind-mounted, per
 
 ### `GET /health`
 
-Returns service status, broker, last sync timestamp, and number of active targets.
+Returns service status and a per-broker-account summary: for each active account, its `broker_account_id`, nickname, broker, `auto_trade_mode`, last sync timestamp, and active target count.
+
+### Broker accounts (Phase 4.9a)
+
+- `POST /admin/broker-accounts` *(X-Admin-Token)* — onboard a broker. Body `{"broker": "moomoo", "nickname": "Long-term", "connection_config": {...}}`. Builds the adapter (400 on bad config), creates the identity row with a fresh `account_ref`, seeds `auto_trade_state` at `OFF`, and registers the adapter live (no restart). Returns the new `broker_account_id`.
+- `GET /admin/broker-accounts` *(X-Admin-Token)* — list all accounts (active + soft-deleted).
+- `DELETE /admin/broker-accounts/{broker_account_id}` *(X-Admin-Token)* — soft-delete (`is_active=False`); history stays queryable, cron loops skip it.
+
+**Account scoping:** read endpoints (`/positions`, `/gap`, `/drift`, `/suggestions`, `/indicators`) take an optional `?broker_account_id` (default: primary). Job triggers (`run-daily-report`, `run-weekly-suggestions`, `run-auto-trade`) and bulk mutations (`cancel-all-orders`, `reset-week-suggestions`, `emergency-stop`) default to **all active brokers**, or one via `?broker_account_id`. Invalid/inactive id → 404.
 
 ### `GET /positions`
 
-Latest snapshot per ticker, ordered by portfolio weight descending.
+Latest snapshot per ticker for one broker account (`?broker_account_id`, default primary), ordered by portfolio weight descending.
 
 ### `GET /gap`
 
@@ -549,7 +555,7 @@ See Phase 1 for full column docs. Phase 2: unchanged.
 - `broker_account` becomes **dual-purpose**: identity + time-versioned state in one table. A stable `account_ref` (constant across an account's close-and-insert state rows) is the partition key; `id` still changes on each state insert and must never be an FK target. New identity columns: `nickname`, `is_active` (soft-delete flag), `connection_config` (JSON naming the broker's env-var credentials). The latest open row (`effective_to IS NULL`) is the source of truth for both identity and current cash/equity.
 - `order_suggestion`'s unique constraint becomes `(broker_account_id, week_of, ticker, side)` so two brokers can each suggest the same ticker in the same week.
 
-> Until Stage B wires the readers/jobs, these columns are populated but the app still operates against the single account. `broker_account_id` is nullable during the 4.9a build; a follow-up migration tightens it to NOT NULL once every writer sets it.
+> Every reader, job, and writer is scoped by `broker_account_id` (Stages B/B-API/B8). The column is `NOT NULL` (migration `6a4a9fada1dc`) now that all writers set it.
 
 ### `sr_level` (Phase 2+)
 
@@ -715,7 +721,7 @@ Time-versioned spending caps. Only one row has `effective_to = NULL` (the active
 
 ### `auto_trade_state` (Phase 4.9a)
 
-Per-broker auto-trade mode + optional cap overrides. One row per broker account (keyed by `broker_account.account_ref`). Replaces the single `meta.auto_trade_mode` key, so each broker runs its own OFF → DRY_RUN → LIVE soak ladder independently — promoting Alpaca does not promote Moomoo. Cap-override columns are nullable; when NULL the engine falls back to the global `auto_trade_caps` row. **Note:** the mode read path (`_get_mode`) is wired to this table in Stage B; see the deployment gate at the top of this README.
+Per-broker auto-trade mode + optional cap overrides. One row per broker account (keyed by `broker_account.account_ref`). Replaces the single `meta.auto_trade_mode` key, so each broker runs its own OFF → DRY_RUN → LIVE soak ladder independently — promoting Alpaca does not promote Moomoo. Cap-override columns are nullable; when NULL the engine falls back to the global `auto_trade_caps` row. The mode read/write path (`_get_mode` / `set_mode` / promote / kill switch) is wired to this table.
 
 | Column | Type | Description |
 |---|---|---|
@@ -997,6 +1003,7 @@ docs/adr/
   0021-context-aware-order-sizing.md  Bounded Tavily exception for qty scaling; carved LLM output exception; Finnhub vs free-text earnings
   0022-sentiment-client-and-etf-classification.md  SentimentClient Protocol; CNN F&G fragility contract; ETF classification in targets.yaml
   0023-weekly-order-activity-metrics.md  Allocation drift over fill-rate fiction; live queries over materialised cache; honest manual-placement bucket
+  0024-multi-broker-single-user-data-model.md  Dual-purpose broker_account + account_ref partition key; per-broker auto_trade_state + soak ladder; per-broker guard scoping; user-level news/levels/context
 ```
 
 ---
@@ -1005,7 +1012,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 346 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 364 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/
