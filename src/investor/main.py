@@ -37,7 +37,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from .brokers import make_adapter
+from .brokers import build_account_adapters, make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.auto_trade import run_auto_trade_job
@@ -140,7 +140,17 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     except Exception as exc:
         logger.warning("Startup bar sync failed; continuing with existing bars: %s", exc)
 
-    adapter = make_adapter(_settings)
+    # Per-broker adapters keyed by account_ref (B2). The primary adapter reuses the
+    # dict's instance when an active account exists, else falls back to settings
+    # (fresh DB, before the first snapshot creates a broker_account row).
+    with session_scope() as _s:
+        adapters = build_account_adapters(_s, _settings)
+        primary_ref = resolve_primary_account_ref(_s)
+    adapter = (
+        adapters.get(primary_ref) if primary_ref is not None else None
+    ) or make_adapter(_settings)
+    app.state.adapters = adapters
+
     emailer = SMTPEmailer(
         host=_settings.smtp_host,
         port=_settings.smtp_port,
