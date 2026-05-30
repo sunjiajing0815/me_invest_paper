@@ -49,6 +49,7 @@ def _seed_suggestion(
     ticker: str = "AAPL",
 ) -> OrderSuggestion:
     row = OrderSuggestion(
+        broker_account_id=1,
         week_of=date(2026, 5, 19),
         ticker=ticker,
         side="buy",
@@ -72,13 +73,14 @@ def _seed_execution(
     dry_run: bool = False,
 ) -> OrderExecution:
     row = OrderExecution(
+        broker_account_id=1,
         suggestion_id=suggestion_id,
         ticker="AAPL",
         side="buy",
         submitted_qty=2.0,
         filled_qty=0.0,
         limit_price=150.0,
-        broker=  "alpaca",
+        broker="alpaca",
         broker_order_id=broker_order_id,
         client_order_id=f"sug-{suggestion_id}",
         dry_run=dry_run,

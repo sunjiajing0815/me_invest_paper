@@ -48,7 +48,7 @@ class TargetAllocation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # Partition key (= BrokerAccount.account_ref). Nullable during the 4.9a build;
     # backfilled + tightened to NOT NULL by migration. No DB FK (app-enforced).
-    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broker_account_id: Mapped[int] = mapped_column(Integer, nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     target_pct: Mapped[float] = mapped_column(Double, nullable=False)
     band_low_pct: Mapped[float] = mapped_column(Double, nullable=False)
@@ -70,7 +70,7 @@ class PositionsSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # Partition key (= BrokerAccount.account_ref). Distinct from account_id, which
     # is the broker's own account identifier string. No DB FK (app-enforced).
-    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broker_account_id: Mapped[int] = mapped_column(Integer, nullable=False)
     account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
@@ -111,7 +111,7 @@ class BrokerAccount(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # Stable partition key (constant across this account's state rows). Backfilled
     # by the phase4_9a migration; tightened to NOT NULL once all writers set it.
-    account_ref: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    account_ref: Mapped[int] = mapped_column(Integer, nullable=False)
     account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)  # broker mode: "paper" | "live"
@@ -166,7 +166,7 @@ class OrderSuggestion(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # Partition key (= BrokerAccount.account_ref). No DB FK (app-enforced).
-    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broker_account_id: Mapped[int] = mapped_column(Integer, nullable=False)
     week_of: Mapped[date] = mapped_column(Date, nullable=False)         # Monday of the week
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     side: Mapped[str] = mapped_column(String, nullable=False)           # "buy" | "sell"
@@ -265,7 +265,7 @@ class OrderExecution(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # Partition key (= BrokerAccount.account_ref). No DB FK (app-enforced).
-    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broker_account_id: Mapped[int] = mapped_column(Integer, nullable=False)
     # nullable — manual trades have no suggestion
     suggestion_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # No FK constraint — codebase-wide convention; app layer enforces referential integrity

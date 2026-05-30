@@ -52,6 +52,7 @@ def _sug(
 ) -> int:
     """Insert an OrderSuggestion and return its id."""
     row = OrderSuggestion(
+        broker_account_id=1,
         week_of=week_of,
         ticker=ticker,
         side=side,
@@ -81,6 +82,7 @@ def _exec(
 ) -> OrderExecution:
     """Insert an OrderExecution."""
     row = OrderExecution(
+        broker_account_id=1,
         suggestion_id=suggestion_id,
         ticker=ticker,
         side=side,
@@ -110,6 +112,7 @@ def _snap(
 ) -> PositionsSnapshot:
     """Insert a PositionsSnapshot row."""
     row = PositionsSnapshot(
+        broker_account_id=1,
         ts=ts,
         ticker=ticker,
         market_value=market_value,
@@ -137,6 +140,7 @@ def _target(
     if effective_from is None:
         effective_from = datetime(2026, 1, 1, tzinfo=UTC)
     row = TargetAllocation(
+        broker_account_id=1,
         ticker=ticker,
         target_pct=target_pct,
         band_low_pct=band_low_pct if band_low_pct is not None else (target_pct - 5),
@@ -350,6 +354,7 @@ def test_trend_filled_live_includes_partial_fills(session: Session) -> None:
     current_fri = _FRI
     sug_id = _sug(session, status="accepted", week_of=_MON)
     row = OrderExecution(
+        broker_account_id=1,
         suggestion_id=sug_id,
         ticker="VOO",
         side="buy",
