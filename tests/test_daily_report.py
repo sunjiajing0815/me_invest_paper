@@ -13,6 +13,8 @@ from investor.db import override_engine_for_testing
 from investor.models import Base, BrokerAccount, PositionsSnapshot, TargetAllocation
 from investor.services.daily_report import DailyReport, compose_daily_report
 
+_ACCT = 1  # account_ref for the seeded test account
+
 
 @pytest.fixture()
 def db_session() -> Session:
@@ -27,7 +29,7 @@ def db_session() -> Session:
 def _seed_account(session: Session, equity: float = 10_000.0) -> datetime:
     ts = datetime(2026, 4, 27, 10, 0, 0, tzinfo=UTC)
     session.add(
-        BrokerAccount(
+        BrokerAccount(account_ref=_ACCT, 
             broker="alpaca", mode="paper",
             cash_usd=equity * 0.05, equity_usd=equity, last_sync=ts,
         )
@@ -37,11 +39,11 @@ def _seed_account(session: Session, equity: float = 10_000.0) -> datetime:
 
 def _seed_targets(session: Session, ts: datetime) -> None:
     session.add_all([
-        TargetAllocation(
+        TargetAllocation(broker_account_id=_ACCT, 
             ticker="VOO", target_pct=40.0, band_low_pct=35.0,
             band_high_pct=45.0, effective_from=ts,
         ),
-        TargetAllocation(
+        TargetAllocation(broker_account_id=_ACCT, 
             ticker="QQQ", target_pct=25.0, band_low_pct=21.0,
             band_high_pct=29.0, effective_from=ts,
         ),
@@ -61,12 +63,12 @@ def test_account_snapshot_survives_session_close(tmp_path: object) -> None:
 
     ts = datetime(2026, 4, 27, 10, 0, 0, tzinfo=UTC)
     with Session(engine) as session:
-        session.add(BrokerAccount(
+        session.add(BrokerAccount(account_ref=_ACCT, 
             broker="alpaca", mode="paper",
             cash_usd=500.0, equity_usd=10_000.0, last_sync=ts,
         ))
         session.commit()
-        report = compose_daily_report(session)
+        report = compose_daily_report(session, broker_account_id=_ACCT)
     # Session is now closed — ORM lazy-loads would raise DetachedInstanceError here.
     assert report.account is not None
     assert report.account.equity_usd == pytest.approx(10_000.0)
@@ -76,7 +78,7 @@ def test_account_snapshot_survives_session_close(tmp_path: object) -> None:
 
 class TestComposeDailyReport:
     def test_compose_report_empty_db(self, db_session: Session) -> None:
-        report = compose_daily_report(db_session)
+        report = compose_daily_report(db_session, broker_account_id=_ACCT)
         assert isinstance(report, DailyReport)
         assert report.account is None
         assert report.positions == []
@@ -87,13 +89,13 @@ class TestComposeDailyReport:
         ts = _seed_account(db_session, equity=10_000.0)
         _seed_targets(db_session, ts)
         # VOO at 20% — below band_low of 35%, so should be in drift_alerts
-        db_session.add(PositionsSnapshot(
+        db_session.add(PositionsSnapshot(broker_account_id=_ACCT, 
             ts=ts, ticker="VOO", qty=5.0,
             avg_cost=400.0, market_value=2_000.0, weight_pct=20.0,
         ))
         db_session.commit()
 
-        report = compose_daily_report(db_session)
+        report = compose_daily_report(db_session, broker_account_id=_ACCT)
         assert report.account is not None
         assert report.account.equity_usd == pytest.approx(10_000.0)
         # VOO at 20% is below band_low=35 (under); QQQ at 0% is below band_low=21 (under)

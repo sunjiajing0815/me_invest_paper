@@ -3,9 +3,11 @@ WITH latest AS (
   SELECT ticker, qty, market_value, weight_pct,
          ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ts DESC) AS rn
   FROM positions_snapshot
+  WHERE broker_account_id = :broker_account_id
 ),
 active_targets AS (
-  SELECT ticker FROM target_allocation WHERE effective_to IS NULL
+  SELECT ticker FROM target_allocation
+  WHERE effective_to IS NULL AND broker_account_id = :broker_account_id
 )
 SELECT l.ticker, l.qty, l.market_value, l.weight_pct
 FROM latest l

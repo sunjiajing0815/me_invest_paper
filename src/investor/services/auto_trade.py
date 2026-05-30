@@ -4,7 +4,7 @@ This is the ONLY module permitted to call adapter.submit_order() outside of
 brokers/. See ADR-0014 and the grep CI test in tests/test_no_unauthorized_submit_order.py.
 
 Mode lifecycle: OFF (default) → DRY_RUN (simulate) → LIVE (real orders).
-Mode is stored in meta table key 'auto_trade_mode'.
+Mode is stored per-broker in the auto_trade_state table (keyed by account_ref).
 Promotion requires soak-window enforcement (see POST /admin/auto-trade/promote).
 """
 from __future__ import annotations
@@ -21,14 +21,25 @@ from ..brokers.base import BrokerAdapter, BrokerValidationError, OrderRequest
 from ..models import (
     AutoTradeCaps,
     AutoTradeState,
-    BrokerAccount,
     KillSwitchLog,
     OrderExecution,
     OrderSuggestion,
 )
+from ..services.accounts import (
+    resolve_active_account_refs,
+    resolve_primary_account_ref,
+)
 from ..services.email import EmailSender
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "AutoTradeOutcome",
+    "resolve_active_account_refs",
+    "resolve_primary_account_ref",
+    "run_auto_trade_pass",
+    "set_mode",
+]
 
 Mode = Literal["OFF", "DRY_RUN", "LIVE"]
 
@@ -67,28 +78,6 @@ def _next_client_order_id(session: Session, sug: OrderSuggestion) -> str:
         )
     ).scalar_one()
     return f"sug-{sug.id}" if cancelled_count == 0 else f"sug-{sug.id}-r{cancelled_count}"
-
-
-def resolve_active_account_refs(session: Session) -> list[int]:
-    """Return the account_ref of every active broker account (latest open row each)."""
-    rows = session.scalars(
-        select(BrokerAccount)
-        .where(BrokerAccount.effective_to.is_(None), BrokerAccount.is_active.is_(True))
-        .order_by(BrokerAccount.last_sync.desc())
-    ).all()
-    seen: set[int] = set()
-    refs: list[int] = []
-    for r in rows:
-        if r.account_ref is not None and r.account_ref not in seen:
-            seen.add(r.account_ref)
-            refs.append(r.account_ref)
-    return refs
-
-
-def resolve_primary_account_ref(session: Session) -> int | None:
-    """Return the primary (most-recently-synced active) broker account's account_ref."""
-    refs = resolve_active_account_refs(session)
-    return refs[0] if refs else None
 
 
 def _get_mode(session: Session, broker_account_id: int) -> Mode:

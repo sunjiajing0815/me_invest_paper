@@ -18,6 +18,7 @@ from ..models import (
     OrderExecution,
     OrderSuggestion,
 )
+from ..services.accounts import resolve_primary_account_ref
 from ..services.daily_report import AccountSnapshot
 from ..services.email import EmailSender
 from ..services.gap import GapRow, compute_gap
@@ -102,15 +103,19 @@ def _build_review(
     adapter: BrokerAdapter,
     settings: Settings,
     week_of: date,
+    broker_account_id: int,
 ) -> WeeklyReview:
-    """Build WeeklyReview from DB. Caller must be inside session_scope()."""
+    """Build WeeklyReview from DB for ONE broker account. Caller inside session_scope()."""
     week_start = _week_start(week_of)
 
     # Account
-    take_snapshot(adapter, session, settings)
+    take_snapshot(adapter, session, settings, broker_account_id)
     orm_account = (
         session.query(BrokerAccount)
-        .filter(BrokerAccount.effective_to.is_(None))
+        .filter(
+            BrokerAccount.account_ref == broker_account_id,
+            BrokerAccount.effective_to.is_(None),
+        )
         .order_by(BrokerAccount.last_sync.desc())
         .first()
     )
@@ -126,6 +131,7 @@ def _build_review(
 
     # Realized PnL this week
     pnl_rows = session.query(OrderExecution).filter(
+        OrderExecution.broker_account_id == broker_account_id,
         OrderExecution.dry_run.is_(False),
         OrderExecution.side == "sell",
         OrderExecution.realized_pnl_usd.isnot(None),
@@ -135,7 +141,8 @@ def _build_review(
 
     # Suggestion audit
     suggestions_this_week = session.query(OrderSuggestion).filter(
-        OrderSuggestion.week_of == week_of
+        OrderSuggestion.broker_account_id == broker_account_id,
+        OrderSuggestion.week_of == week_of,
     ).all()
     suggestion_audits = []
     now = datetime.now(UTC)
@@ -160,7 +167,7 @@ def _build_review(
         ))
 
     # Drift state
-    gap_rows = compute_gap(session)
+    gap_rows = compute_gap(session, broker_account_id)
 
     # Material news this week (7 days back)
     material_news_raw = load_recent_material_news(session, days=7)
@@ -277,11 +284,16 @@ def run_weekly_review(
     week_of = _next_monday() - timedelta(days=7)  # last Monday (the week just ended)
 
     with session_scope() as session:
+        broker_account_id = resolve_primary_account_ref(session)
+        if broker_account_id is None:
+            logger.warning("run_weekly_review: no active broker account — skipping")
+            return
         review = _build_review(
             session=session,
             adapter=adapter,
             settings=settings,
             week_of=week_of,
+            broker_account_id=broker_account_id,
         )
 
     # Next-Sunday preview — pure function, no DB writes
@@ -290,10 +302,13 @@ def run_weekly_review(
         indicators = compute_indicators(tickers, settings.bars_dir)
         sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
         with session_scope() as session:
-            gap_rows_fresh = compute_gap(session)
+            gap_rows_fresh = compute_gap(session, broker_account_id)
             orm_acct = (
                 session.query(BrokerAccount)
-                .filter(BrokerAccount.effective_to.is_(None))
+                .filter(
+                    BrokerAccount.account_ref == broker_account_id,
+                    BrokerAccount.effective_to.is_(None),
+                )
                 .order_by(BrokerAccount.last_sync.desc())
                 .first()
             )

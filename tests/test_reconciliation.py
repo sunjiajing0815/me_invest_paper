@@ -20,6 +20,8 @@ from investor.services.reconciliation import (
     sync_open_order_statuses,
 )
 
+_ACCT = 1  # account_ref for reconciliation tests
+
 _NOW = datetime(2026, 5, 1, 16, 0, tzinfo=UTC)
 _WEEK = date(2026, 4, 28)
 
@@ -57,7 +59,7 @@ def _sug(
     status: str = "accepted",
     created_at: datetime | None = None,
 ) -> OrderSuggestion:
-    s = OrderSuggestion(
+    s = OrderSuggestion(broker_account_id=_ACCT, 
         week_of=_WEEK,
         ticker=ticker,
         side=side,
@@ -86,7 +88,7 @@ def _exe(
     realized_pnl_usd: float | None = None,
     match_method: str = "untracked",
 ) -> OrderExecution:
-    row = OrderExecution(
+    row = OrderExecution(broker_account_id=_ACCT, 
         ticker=ticker,
         side=side,
         filled_qty=filled_qty,
@@ -126,7 +128,7 @@ def db_session() -> Session:
 def test_rule1_client_order_id_matched(db_session: Session) -> None:
     sug = _sug(db_session)
     act = _act(client_order_id=f"sug-{sug.id}")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
@@ -142,10 +144,10 @@ def test_rule1_auto_trade_row_updated_not_duplicated(db_session: Session) -> Non
     _exe(db_session, broker_order_id="b-001", dry_run=False, filled_price=99.0)
 
     act = _act(broker_order_id="b-001", client_order_id=f"sug-{sug.id}", filled_price=100.5)
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
 
     rows = db_session.scalars(
@@ -163,7 +165,7 @@ def test_rule1_dry_run_rows_ignored_by_reconciliation(db_session: Session) -> No
     only and finds none, so it inserts a new real row.
     """
     # Simulate a DRY_RUN row: broker="dry_run", broker_order_id=None
-    dry_row = OrderExecution(
+    dry_row = OrderExecution(broker_account_id=_ACCT, 
         ticker="AAPL",
         side="buy",
         filled_qty=5.0,
@@ -183,10 +185,10 @@ def test_rule1_dry_run_rows_ignored_by_reconciliation(db_session: Session) -> No
 
     # A real fill arrives for the same suggestion
     act = _act(broker_order_id="b-real", client_order_id="sug-99")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
 
     # New real row inserted; dry_run row untouched
@@ -213,7 +215,7 @@ def test_rule1_retry_order_id_sug_n_rn_matched(db_session: Session) -> None:
         filled_at=datetime.now(UTC),
         status="filled",
     )
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
@@ -230,7 +232,7 @@ def test_rule1_malformed_sug_id_falls_through_to_heuristic(db_session: Session) 
         broker_order_id="b-malformed",
         ticker="AAPL",
     )
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
@@ -247,7 +249,7 @@ def test_rule1_malformed_sug_id_falls_through_to_heuristic(db_session: Session) 
 def test_rule2_heuristic_single_candidate(db_session: Session) -> None:
     sug = _sug(db_session, ticker="MSFT", limit_price=400.0)
     act = _act(ticker="MSFT", filled_price=400.5, broker_order_id="b-002")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
@@ -262,11 +264,11 @@ def test_rule2_heuristic_single_candidate(db_session: Session) -> None:
 def test_rule3_ambiguous_flags_manual_review(db_session: Session) -> None:
     # Two accepted suggestions from different weeks — unique constraint is (week_of, ticker, side)
     prior_week = date(2026, 4, 21)  # one week earlier
-    s1 = OrderSuggestion(
+    s1 = OrderSuggestion(broker_account_id=_ACCT, 
         week_of=_WEEK, ticker="NVDA", side="buy", qty=2.0, limit_price=800.0,
         reason="test", status="accepted", created_at=_NOW - timedelta(hours=2),
     )
-    s2 = OrderSuggestion(
+    s2 = OrderSuggestion(broker_account_id=_ACCT, 
         week_of=prior_week, ticker="NVDA", side="buy", qty=4.0, limit_price=800.0,
         reason="test", status="accepted", created_at=_NOW - timedelta(hours=3),
     )
@@ -274,7 +276,7 @@ def test_rule3_ambiguous_flags_manual_review(db_session: Session) -> None:
     db_session.flush()
 
     act = _act(ticker="NVDA", filled_price=800.0, broker_order_id="b-003")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=4)
     )
     assert len(results) == 1
@@ -286,7 +288,7 @@ def test_rule3_ambiguous_flags_manual_review(db_session: Session) -> None:
 
 def test_rule4_untracked(db_session: Session) -> None:
     act = _act(ticker="TSLA", broker_order_id="b-004")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
@@ -300,16 +302,16 @@ def test_rule4_untracked(db_session: Session) -> None:
 
 def test_idempotency_rerun_no_duplicates(db_session: Session) -> None:
     act = _act(broker_order_id="b-idem")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
 
-    results2 = reconcile_activities(
+    results2 = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
-    persist_reconciliation(db_session, results2, broker="alpaca")
+    persist_reconciliation(db_session, results2, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
 
     rows = db_session.scalars(
@@ -331,7 +333,7 @@ def test_activity_no_filled_at_is_skipped(db_session: Session) -> None:
         filled_at=None,
         status="canceled",
     )
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert results == []
@@ -392,10 +394,10 @@ def test_accepted_suggestion_flipped_to_filled(db_session: Session) -> None:
     sug = _sug(db_session)
     assert sug.status == "accepted"
     act = _act(client_order_id=f"sug-{sug.id}")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
     db_session.refresh(sug)
     assert sug.status == "filled"
@@ -415,12 +417,12 @@ def test_partially_filled_does_not_flip_suggestion_to_filled(db_session: Session
         client_order_id=None,
         status="partially_filled",
     )
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
     assert results[0].method == "auto_matched"  # heuristic matched
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
     db_session.refresh(sug)
     assert sug.status == "accepted"  # must remain accepted — GTC order still open
@@ -439,12 +441,12 @@ def test_filled_activity_does_flip_suggestion(db_session: Session) -> None:
         client_order_id=None,
         status="filled",
     )
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
     assert len(results) == 1
     assert results[0].method == "auto_matched"  # heuristic matched
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
     db_session.refresh(sug)
     assert sug.status == "filled"
@@ -453,10 +455,10 @@ def test_filled_activity_does_flip_suggestion(db_session: Session) -> None:
 def test_untracked_activity_does_not_flip_suggestion(db_session: Session) -> None:
     sug = _sug(db_session)
     act = _act(ticker="AAPL", broker_order_id="b-untracked")
-    results = reconcile_activities(
+    results = reconcile_activities(broker_account_id=_ACCT, 
         session=db_session, adapter=_adapter([act]), since=_NOW - timedelta(hours=2)
     )
-    persist_reconciliation(db_session, results, broker="alpaca")
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
     db_session.flush()
     db_session.refresh(sug)
     # Heuristic may have matched (single candidate), but untracked should not flip
@@ -483,7 +485,7 @@ def test_sync_open_order_statuses_marks_cancelled(db_session: Session) -> None:
         )
     ]
 
-    result = sync_open_order_statuses(db_session, mock_adapter)
+    result = sync_open_order_statuses(db_session, mock_adapter, _ACCT)
 
     # Check in-memory — the service mutated exe.status via the identity map.
     # Do not call refresh() before flush(); it would re-read the unflushed DB row.
@@ -499,7 +501,7 @@ def test_sync_open_order_statuses_ignores_live_order(db_session: Session) -> Non
     # "ord-2" is not in the closed orders list — still open
     mock_adapter.list_orders.return_value = []
 
-    result = sync_open_order_statuses(db_session, mock_adapter)
+    result = sync_open_order_statuses(db_session, mock_adapter, _ACCT)
 
     db_session.refresh(exe)
     assert exe.status == "accepted_for_routing"
@@ -513,7 +515,7 @@ def test_sync_open_order_statuses_tolerates_list_orders_failure(db_session: Sess
     mock_adapter = MagicMock()
     mock_adapter.list_orders.side_effect = Exception("broker down")
 
-    result = sync_open_order_statuses(db_session, mock_adapter)
+    result = sync_open_order_statuses(db_session, mock_adapter, _ACCT)
 
     db_session.refresh(exe)
     assert exe.status == "accepted_for_routing"
@@ -542,7 +544,7 @@ def test_sync_uses_batch_list_orders(db_session: Session) -> None:
         ),
     ]
 
-    result = sync_open_order_statuses(db_session, mock_adapter)
+    result = sync_open_order_statuses(db_session, mock_adapter, _ACCT)
 
     # list_orders called exactly once with status="closed"
     mock_adapter.list_orders.assert_called_once_with(status="closed")

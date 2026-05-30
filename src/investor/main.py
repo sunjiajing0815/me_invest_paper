@@ -225,12 +225,15 @@ def health() -> dict[str, Any]:
 
     try:
         with session_scope() as session:
-            row = session.execute(account_last_sync).fetchone()
-            if row:
-                last_sync = row[0]
-            count_row = session.execute(targets_active_count).fetchone()
-            if count_row:
-                target_count = int(count_row[0])
+            ref = resolve_primary_account_ref(session)
+            if ref is not None:
+                params = {"broker_account_id": ref}
+                row = session.execute(account_last_sync, params).fetchone()
+                if row:
+                    last_sync = row[0]
+                count_row = session.execute(targets_active_count, params).fetchone()
+                if count_row:
+                    target_count = int(count_row[0])
     except Exception as exc:
         logger.warning("Health check DB query failed: %s", exc)
 
@@ -247,7 +250,12 @@ def positions() -> list[dict[str, Any]]:
     """Return the most recent positions snapshot per ticker."""
     try:
         with session_scope() as session:
-            rows = session.execute(positions_latest).fetchall()
+            ref = resolve_primary_account_ref(session)
+            rows = (
+                session.execute(positions_latest, {"broker_account_id": ref}).fetchall()
+                if ref is not None
+                else []
+            )
     except Exception as exc:
         logger.error("/positions query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Database query failed") from exc
@@ -281,7 +289,8 @@ def gap() -> list[dict[str, Any]]:
     """Return gap between current allocation and targets, sorted by abs(gap_pct) desc."""
     try:
         with session_scope() as session:
-            rows: list[GapRow] = compute_gap(session)
+            ref = resolve_primary_account_ref(session)
+            rows: list[GapRow] = compute_gap(session, ref) if ref is not None else []
     except Exception as exc:
         logger.error("/gap query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Gap computation failed") from exc
@@ -294,7 +303,8 @@ def drift() -> list[dict[str, Any]]:
     """Return only tickers whose current allocation is outside their rebalance band."""
     try:
         with session_scope() as session:
-            rows: list[GapRow] = compute_gap(session)
+            ref = resolve_primary_account_ref(session)
+            rows: list[GapRow] = compute_gap(session, ref) if ref is not None else []
     except Exception as exc:
         logger.error("/drift query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Gap computation failed") from exc
@@ -560,9 +570,13 @@ def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
     nearby = build_nearby_levels(tickers, sr_rows, indicators)
 
     with session_scope() as session:
+        ref = resolve_primary_account_ref(session)
+        if ref is None:
+            raise HTTPException(status_code=404, detail="No active broker account found")
         orm_suggestions = session.scalars(
             select(OrderSuggestion)
             .where(
+                OrderSuggestion.broker_account_id == ref,
                 OrderSuggestion.week_of == week_of,
                 OrderSuggestion.status.in_(["pending", "accepted"]),
             )
@@ -588,7 +602,10 @@ def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
 
         orm_account = (
             session.query(BrokerAccount)
-            .filter(BrokerAccount.effective_to.is_(None))
+            .filter(
+                BrokerAccount.account_ref == ref,
+                BrokerAccount.effective_to.is_(None),
+            )
             .order_by(BrokerAccount.last_sync.desc())
             .first()
         )
@@ -603,7 +620,7 @@ def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
             else AccountSnapshot(broker="unknown", mode="unknown", cash_usd=0.0, equity_usd=0.0)
         )
 
-        untracked = get_untracked_positions(session)
+        untracked = get_untracked_positions(session, ref)
 
     if not suggestion_rows:
         raise HTTPException(

@@ -47,18 +47,22 @@ def reconcile_activities(
     session: Session,
     adapter: BrokerAdapter,
     since: datetime,
+    broker_account_id: int,
     until: datetime | None = None,
     ticker_tolerance_window_hours: int = 48,
     price_tolerance_pct: float = 0.5,
 ) -> list[MatchResult]:
-    """Match broker fill activities to pending suggestions.
+    """Match broker fill activities to pending suggestions for ONE broker account.
 
     Returns one MatchResult per activity that has a filled_at timestamp.
     Activities with no filled_at are silently skipped (unusual broker edge case).
     """
     activities = adapter.get_activities(since, until)
     pending = session.scalars(
-        select(OrderSuggestion).where(OrderSuggestion.status == "accepted")
+        select(OrderSuggestion).where(
+            OrderSuggestion.status == "accepted",
+            OrderSuggestion.broker_account_id == broker_account_id,
+        )
     ).all()
 
     results: list[MatchResult] = []
@@ -134,13 +138,18 @@ def persist_reconciliation(
     session: Session,
     results: list[MatchResult],
     broker: str,
+    broker_account_id: int,
 ) -> None:
-    """Upsert MatchResults into order_execution and flip matched suggestions to 'filled'."""
+    """Upsert MatchResults into order_execution and flip matched suggestions to 'filled'.
+
+    All inserted/updated rows are scoped to broker_account_id.
+    """
     for r in results:
         existing = session.scalar(
             select(OrderExecution).where(
                 OrderExecution.broker_order_id == r.activity.broker_order_id,
                 OrderExecution.broker == broker,
+                OrderExecution.broker_account_id == broker_account_id,
                 OrderExecution.dry_run.is_(False),  # NEVER match against DRY_RUN rows
             )
         )
@@ -156,6 +165,7 @@ def persist_reconciliation(
         else:
             session.add(
                 OrderExecution(
+                    broker_account_id=broker_account_id,
                     suggestion_id=r.suggestion_id,
                     ticker=r.activity.ticker,
                     side=r.activity.side,
@@ -227,8 +237,10 @@ def compute_realized_pnl(session: Session, sell: Activity) -> float | None:
     return proceeds - total_cost
 
 
-def sync_open_order_statuses(session: Session, adapter: BrokerAdapter) -> int:
-    """Batch-poll broker for open executions and update status to broker_cancelled if terminal.
+def sync_open_order_statuses(
+    session: Session, adapter: BrokerAdapter, broker_account_id: int
+) -> int:
+    """Batch-poll broker for one account's open executions; mark broker_cancelled if terminal.
 
     Fetches all closed orders in one call instead of N per-row get_order() calls.
     Returns the number of executions updated.
@@ -244,6 +256,7 @@ def sync_open_order_statuses(session: Session, adapter: BrokerAdapter) -> int:
     """
     open_execs = session.scalars(
         select(OrderExecution).where(
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.status == "accepted_for_routing",
             OrderExecution.dry_run.is_(False),
             OrderExecution.broker_order_id.is_not(None),

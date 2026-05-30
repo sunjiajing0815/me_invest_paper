@@ -387,16 +387,19 @@ def persist_suggestions(
     rows: list[OrderSuggestionRow],
     targets_id: int | None,
     week_of: date,
+    broker_account_id: int,
 ) -> list[int]:
-    """Upsert suggestions for week_of. Never overwrites accepted/rejected rows.
+    """Upsert suggestions for (broker_account_id, week_of). Never overwrites
+    accepted/rejected rows.
 
-    Returns a list of suggestion IDs (inserted or pre-existing) for this week,
+    Returns a list of suggestion IDs (inserted or pre-existing) for this account/week,
     which callers can use to generate HMAC tokens or build action links.
     """
     ids: list[int] = []
     for r in rows:
         existing = session.scalars(
             select(OrderSuggestion).where(
+                OrderSuggestion.broker_account_id == broker_account_id,
                 OrderSuggestion.week_of == week_of,
                 OrderSuggestion.ticker == r.ticker,
                 OrderSuggestion.side == r.side,
@@ -418,6 +421,7 @@ def persist_suggestions(
             continue
 
         new_row = OrderSuggestion(
+            broker_account_id=broker_account_id,
             week_of=week_of,
             ticker=r.ticker,
             side=r.side,

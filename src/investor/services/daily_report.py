@@ -40,15 +40,20 @@ class DailyReport:
 def compose_daily_report(
     session: Session,
     *,
+    broker_account_id: int,
     watchlist: list[str] | None = None,
     bars_dir: str = "data/bars",
 ) -> DailyReport:
-    """Pure function — reads DB (and Parquet if watchlist provided), returns DailyReport. No I/O."""
+    """Pure function for ONE broker account — reads DB (and Parquet if watchlist given),
+    returns DailyReport. No I/O. All reads are scoped by broker_account_id."""
     today = datetime.now(UTC).date()
 
     orm_account = (
         session.query(BrokerAccount)
-        .filter(BrokerAccount.effective_to.is_(None))
+        .filter(
+            BrokerAccount.account_ref == broker_account_id,
+            BrokerAccount.effective_to.is_(None),
+        )
         .order_by(BrokerAccount.last_sync.desc())
         .first()
     )
@@ -65,10 +70,12 @@ def compose_daily_report(
         else None
     )
 
-    positions = session.execute(positions_latest).fetchall()
-    gap_rows = compute_gap(session)
+    positions = session.execute(
+        positions_latest, {"broker_account_id": broker_account_id}
+    ).fetchall()
+    gap_rows = compute_gap(session, broker_account_id)
     drift_alerts = [r for r in gap_rows if r.band_status != "in_band"]
-    untracked = get_untracked_positions(session)
+    untracked = get_untracked_positions(session, broker_account_id)
 
     indicators: list[IndicatorRow] = []
     nearby_levels: dict[str, NearbyLevels] = {}

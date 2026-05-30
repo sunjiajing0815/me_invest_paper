@@ -148,6 +148,7 @@ def test_pending_past_expires_at_shows_expiry_note(_db_session: Session) -> None
     """Pending suggestions whose expires_at has passed should show 'pending (expires Mon)'."""
     week_of = date(2026, 5, 25)  # Monday of current week
     _db_session.add(OrderSuggestion(
+        broker_account_id=1,
         week_of=week_of,
         ticker="AAPL",
         side="buy",
@@ -164,6 +165,7 @@ def test_pending_past_expires_at_shows_expiry_note(_db_session: Session) -> None
         adapter=_mock_adapter(),
         settings=_mock_settings(),
         week_of=week_of,
+        broker_account_id=1,
     )
 
     assert len(review.suggestion_audits) == 1

@@ -16,6 +16,11 @@ from ..config import Settings, load_targets
 from ..db import session_scope
 from ..graphs.suggestion_review import build_suggestion_review_graph
 from ..models import BrokerAccount, OrderSuggestion
+from ..services.accounts import (
+    AccountInfo,
+    list_active_accounts,
+    resolve_primary_account_ref,
+)
 from ..services.bars import update_bars
 from ..services.daily_report import AccountSnapshot
 from ..services.email import EmailSender
@@ -117,14 +122,16 @@ def score_all_tickers_parallel(
     return out, failures
 
 
-def run_weekly_suggestions(
+def run_weekly_suggestions_for_account(
     settings: Settings,
     adapter: BrokerAdapter,
     emailer: EmailSender,
     llm: LLMClient,
     earnings_client: Any,
+    acct: AccountInfo,
 ) -> None:
-    """Compute indicators + levels, generate suggestions, review via graph, and email.
+    """Compute indicators + levels, generate suggestions, review via graph, and email —
+    for ONE broker account (all DB reads/writes scoped by acct.account_ref).
 
     Order of operations:
       1. update_bars (tolerates failure — stale bars are better than no email)
@@ -136,7 +143,10 @@ def run_weekly_suggestions(
       6. render + email outside session scope
     Re-raises on email failure (matches ADR-0005).
     """
-    logger.info("run_weekly_suggestions started")
+    bid = acct.account_ref
+    logger.info(
+        "run_weekly_suggestions started for %s (account_ref=%s)", acct.nickname, bid
+    )
 
     targets = load_targets(settings.targets_path)
     tickers = targets.watchlist
@@ -173,12 +183,15 @@ def run_weekly_suggestions(
     account: AccountSnapshot
     targets_id: int | None
     with session_scope() as session:
-        take_snapshot(adapter, session, settings)
-        gap_rows = compute_gap(session)
+        take_snapshot(adapter, session, settings, bid)
+        gap_rows = compute_gap(session, bid)
 
         orm_account = (
             session.query(BrokerAccount)
-            .filter(BrokerAccount.effective_to.is_(None))
+            .filter(
+                BrokerAccount.account_ref == bid,
+                BrokerAccount.effective_to.is_(None),
+            )
             .order_by(BrokerAccount.last_sync.desc())
             .first()
         )
@@ -212,6 +225,7 @@ def run_weekly_suggestions(
         cached_rows = session.scalars(
             select(OrderSuggestion).where(
                 OrderSuggestion.week_of == week_of,
+                OrderSuggestion.broker_account_id == bid,
                 OrderSuggestion.llm_rationale.is_not(None),
             )
         ).all()
@@ -239,6 +253,7 @@ def run_weekly_suggestions(
     result = graph.invoke(
         {
             "week_of": week_of,
+            "broker_account_id": bid,
             "drafts": drafts,
             "context": None,
             "rationales": pre_rationales,
@@ -248,7 +263,7 @@ def run_weekly_suggestions(
             "telemetry": {},
             "targets_id": targets_id,
         },
-        config={"configurable": {"thread_id": f"weekly-{week_of}"}},
+        config={"configurable": {"thread_id": f"weekly-{bid}-{week_of}"}},
     )
 
     rationales: dict[int, str] = result["rationales"]
@@ -298,10 +313,10 @@ def run_weekly_suggestions(
 
     # Untracked positions for email (re-query so we don't hold session across graph)
     with session_scope() as session:
-        untracked = get_untracked_positions(session)
+        untracked = get_untracked_positions(session, bid)
 
     # Email outside session scope — session safety rule
-    subject = f"Orders for the week of {week_of:%b %d}"
+    subject = f"[{acct.nickname}] Orders for the week of {week_of:%b %d}"
     html = render_template(
         "weekly_suggestions.html.j2",
         week_of=week_of,
@@ -331,3 +346,52 @@ def run_weekly_suggestions(
         len(suggestion_items),
         settings.email_to,
     )
+
+
+def run_weekly_suggestions_all_brokers(
+    settings: Settings,
+    adapter_unused: BrokerAdapter | None,
+    emailer: EmailSender,
+    llm: LLMClient,
+    earnings_client: Any,
+    adapters: dict[int, BrokerAdapter],
+) -> None:
+    """Run weekly suggestions for every active broker account, isolating failures."""
+    with session_scope() as session:
+        accounts = list_active_accounts(session)
+    for acct in accounts:
+        adapter = adapters.get(acct.account_ref)
+        if adapter is None:
+            logger.warning(
+                "run_weekly_suggestions_all_brokers: no adapter for account_ref=%s (%s); skipping",
+                acct.account_ref, acct.nickname,
+            )
+            continue
+        try:
+            run_weekly_suggestions_for_account(
+                settings, adapter, emailer, llm, earnings_client, acct
+            )
+        except Exception:
+            logger.exception(
+                "weekly suggestions failed for account_ref=%s (%s); continuing",
+                acct.account_ref, acct.nickname,
+            )
+            continue
+
+
+def run_weekly_suggestions(
+    settings: Settings,
+    adapter: BrokerAdapter,
+    emailer: EmailSender,
+    llm: LLMClient,
+    earnings_client: Any,
+) -> None:
+    """Single-broker (primary account) weekly suggestions. Back-compat entrypoint."""
+    with session_scope() as session:
+        accounts = list_active_accounts(session)
+        primary_ref = resolve_primary_account_ref(session)
+    acct = next((a for a in accounts if a.account_ref == primary_ref), None)
+    if acct is None:
+        logger.warning("run_weekly_suggestions: no active broker account — skipping")
+        return
+    run_weekly_suggestions_for_account(settings, adapter, emailer, llm, earnings_client, acct)

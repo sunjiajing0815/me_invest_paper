@@ -25,6 +25,8 @@ from investor.services.suggest import (
     select_anchor,
 )
 
+_ACCT = 1  # account_ref for persist tests
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -180,21 +182,21 @@ class TestPersistSuggestions:
 
     def test_inserts_new_rows(self, db_session: Session) -> None:
         week = _next_monday()
-        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week)
+        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week, _ACCT)
         db_session.commit()
         count = db_session.query(OrderSuggestion).count()
         assert count == 1
 
     def test_updates_pending_row_on_rerun(self, db_session: Session) -> None:
         week = _next_monday()
-        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week)
+        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week, _ACCT)
         db_session.commit()
 
         updated = OrderSuggestionRow(
             ticker="VOO", side="buy", qty=5.0, limit_price=190.0,
             reason="updated", expires_at=_next_friday_eod(),
         )
-        persist_suggestions(db_session, [updated], None, week)
+        persist_suggestions(db_session, [updated], None, week, _ACCT)
         db_session.commit()
 
         row = db_session.query(OrderSuggestion).first()
@@ -205,7 +207,7 @@ class TestPersistSuggestions:
 
     def test_does_not_overwrite_accepted_row(self, db_session: Session) -> None:
         week = _next_monday()
-        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week)
+        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week, _ACCT)
         db_session.commit()
 
         # Mark as accepted
@@ -218,7 +220,7 @@ class TestPersistSuggestions:
             ticker="VOO", side="buy", qty=99.0, limit_price=1.0,
             reason="should not overwrite", expires_at=_next_friday_eod(),
         )
-        persist_suggestions(db_session, [updated], None, week)
+        persist_suggestions(db_session, [updated], None, week, _ACCT)
         db_session.commit()
 
         row = db_session.query(OrderSuggestion).first()
@@ -228,8 +230,8 @@ class TestPersistSuggestions:
 
     def test_no_duplicates_on_rerun(self, db_session: Session) -> None:
         week = _next_monday()
-        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week)
-        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week)
+        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week, _ACCT)
+        persist_suggestions(db_session, [self._make_row("VOO", "buy")], None, week, _ACCT)
         db_session.commit()
         assert db_session.query(OrderSuggestion).count() == 1
 

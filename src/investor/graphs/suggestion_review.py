@@ -69,6 +69,7 @@ class CriticDecision:
 
 class SuggestionReviewState(TypedDict):
     week_of: date
+    broker_account_id: int
     context: ReviewContext
     drafts: list[OrderSuggestionRow]
     rationales: dict[int, str]                         # draft_index -> rationale text
@@ -142,6 +143,7 @@ def gather_context_node(
     targets_id: int | None
 
     week_of: date = state["week_of"]
+    bid: int = state["broker_account_id"]
 
     try:
         targets_cfg = load_targets(settings.targets_path)
@@ -161,10 +163,12 @@ def gather_context_node(
     )
 
     with session_factory() as s:
-        gap_rows = compute_gap(s)
+        gap_rows = compute_gap(s, bid)
+        # scored_levels, news, and market_context are user-level (one synthesis serves
+        # all brokers) — intentionally NOT scoped by broker_account_id.
         scored_levels = load_latest_scored_levels(s)
         recent_news = load_recent_material_news(s, days=7)
-        untracked = get_untracked_positions(s)
+        untracked = get_untracked_positions(s, bid)
         targets_id = get_active_targets_id(s)
         market_context = load_latest_weekly_context(
             s, week_of=week_of, max_age_days=settings.context_max_age_days
@@ -172,7 +176,10 @@ def gather_context_node(
 
         orm_account = (
             s.query(BrokerAccount)
-            .filter(BrokerAccount.effective_to.is_(None))
+            .filter(
+                BrokerAccount.account_ref == bid,
+                BrokerAccount.effective_to.is_(None),
+            )
             .order_by(BrokerAccount.last_sync.desc())
             .first()
         )
@@ -740,7 +747,10 @@ def finalize_node(
 ) -> SuggestionReviewState:
     """Persist finals to the DB inside a session scope; capture IDs for magic links."""
     with session_factory() as s:
-        ids = persist_suggestions(s, state["finals"], state["targets_id"], state["week_of"])
+        ids = persist_suggestions(
+            s, state["finals"], state["targets_id"], state["week_of"],
+            state["broker_account_id"],
+        )
         rationales = state.get("rationales", {})
         for final_idx, sid in enumerate(ids):
             rationale_text = rationales.get(final_idx)
@@ -778,6 +788,7 @@ def build_suggestion_review_graph(
         result = graph.invoke(
             {
                 "week_of": date.today(),
+                "broker_account_id": account_ref,
                 "drafts": suggestions,
                 "rationales": {},
                 "critic_decisions": {},

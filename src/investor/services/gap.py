@@ -31,9 +31,13 @@ class UntrackedPosition:
     weight_pct: float
 
 
-def get_untracked_positions(session: Session) -> list[UntrackedPosition]:
-    """Return positions that exist in the portfolio but have no active target allocation."""
-    result = session.execute(untracked_positions).fetchall()
+def get_untracked_positions(
+    session: Session, broker_account_id: int
+) -> list[UntrackedPosition]:
+    """Return positions held in one broker account that have no active target allocation."""
+    result = session.execute(
+        untracked_positions, {"broker_account_id": broker_account_id}
+    ).fetchall()
     return [
         UntrackedPosition(
             ticker=row.ticker,
@@ -45,12 +49,14 @@ def get_untracked_positions(session: Session) -> list[UntrackedPosition]:
     ]
 
 
-def compute_gap(session: Session) -> list[GapRow]:
-    """Run the gap SQL and return one GapRow per target ticker.
+def compute_gap(session: Session, broker_account_id: int) -> list[GapRow]:
+    """Run the gap SQL for one broker account and return one GapRow per target ticker.
 
-    Returns an empty list if no broker_account or target_allocation rows exist.
+    Returns an empty list if the account has no broker_account or target_allocation rows.
     """
-    result = session.execute(gap_allocation).fetchall()
+    result = session.execute(
+        gap_allocation, {"broker_account_id": broker_account_id}
+    ).fetchall()
     rows = [
         GapRow(
             ticker=row.ticker,

@@ -490,6 +490,7 @@ class TestGatherContextNodeSessionLeak:
 
         state = SuggestionReviewState(
             week_of=date(2026, 5, 19),
+            broker_account_id=1,
             context=None,  # type: ignore[typeddict-item]
             drafts=[],
             rationales={},
