@@ -351,3 +351,64 @@ class TestBApiScope:
             headers={"X-Admin-Token": _ADMIN_TOKEN},
         )
         assert resp.status_code == 404
+
+
+# ── Stage C: broker-account onboarding ───────────────────────────────────────
+
+
+class TestBrokerAccounts:
+    _hdr = {"X-Admin-Token": _ADMIN_TOKEN}
+
+    def test_create_then_list_and_health(self, client):
+        resp = client.post(
+            "/admin/broker-accounts",
+            headers=self._hdr,
+            json={"broker": "alpaca", "nickname": "Second", "connection_config": {"paper": True}},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        new_ref = body["broker_account_id"]
+        assert body["auto_trade_mode"] == "OFF"
+        assert isinstance(new_ref, int) and new_ref != _ACCT
+
+        # New account is registered live in app.state.adapters.
+        from investor.main import app
+        assert new_ref in app.state.adapters
+
+        # Both accounts show up in the listing and in /health.
+        listing = client.get("/admin/broker-accounts", headers=self._hdr).json()
+        assert {_ACCT, new_ref} <= {a["broker_account_id"] for a in listing}
+        health = client.get("/health").json()["accounts"]
+        assert {_ACCT, new_ref} <= {a["broker_account_id"] for a in health}
+
+    def test_create_unsupported_broker_400(self, client):
+        resp = client.post(
+            "/admin/broker-accounts",
+            headers=self._hdr,
+            json={"broker": "schwab", "nickname": "Nope", "connection_config": {}},
+        )
+        assert resp.status_code == 400
+
+    def test_soft_delete_excludes_from_health_but_keeps_history(self, client):
+        new_ref = client.post(
+            "/admin/broker-accounts",
+            headers=self._hdr,
+            json={"broker": "alpaca", "nickname": "Temp", "connection_config": {"paper": True}},
+        ).json()["broker_account_id"]
+
+        resp = client.request("DELETE", f"/admin/broker-accounts/{new_ref}", headers=self._hdr)
+        assert resp.status_code == 200
+        assert resp.json()["is_active"] is False
+
+        # Excluded from /health (active loops) but still listed (history) as inactive.
+        health = client.get("/health").json()["accounts"]
+        assert new_ref not in {a["broker_account_id"] for a in health}
+        listing = client.get("/admin/broker-accounts", headers=self._hdr).json()
+        listed = {a["broker_account_id"]: a for a in listing}
+        assert listed[new_ref]["is_active"] is False
+        from investor.main import app
+        assert new_ref not in app.state.adapters
+
+    def test_delete_nonexistent_404(self, client):
+        resp = client.request("DELETE", "/admin/broker-accounts/999", headers=self._hdr)
+        assert resp.status_code == 404

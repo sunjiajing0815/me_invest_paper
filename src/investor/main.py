@@ -26,6 +26,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -37,7 +38,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from .brokers import build_account_adapters, make_adapter
+from .brokers import build_account_adapters, make_account_adapter, make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.auto_trade import run_auto_trade_job, run_auto_trade_job_all_brokers
@@ -302,6 +303,127 @@ def health() -> dict[str, Any]:
         logger.warning("Health check DB query failed: %s", exc)
 
     return {"status": "ok", "accounts": accounts_out}
+
+
+class BrokerAccountCreateRequest(BaseModel):
+    """Request body for POST /admin/broker-accounts."""
+
+    broker: str  # "alpaca" | "moomoo" | …
+    nickname: str
+    connection_config: dict[str, Any] = {}  # creds/host refs; see make_account_adapter
+
+
+@app.get(
+    "/admin/broker-accounts",
+    summary="List broker accounts",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_list_broker_accounts() -> list[dict[str, Any]]:
+    """List every broker account (active + soft-deleted), latest open row per account."""
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    with session_scope() as session:
+        rows = (
+            session.query(BrokerAccount)
+            .filter(BrokerAccount.effective_to.is_(None))
+            .order_by(BrokerAccount.last_sync.desc())
+            .all()
+        )
+        for r in rows:
+            if r.account_ref is None or r.account_ref in seen:
+                continue
+            seen.add(r.account_ref)
+            out.append({
+                "broker_account_id": r.account_ref,
+                "nickname": r.nickname,
+                "broker": r.broker,
+                "is_active": r.is_active,
+                "auto_trade_mode": _get_mode(session, r.account_ref),
+            })
+    return out
+
+
+@app.post(
+    "/admin/broker-accounts",
+    summary="Onboard a new broker account",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_create_broker_account(
+    request: Request, body: BrokerAccountCreateRequest
+) -> dict[str, Any]:
+    """Create a broker-account identity row, seed its auto_trade_state at OFF, and
+    register its adapter live (no restart needed).
+
+    The adapter is built first to fail fast on a bad config. A fresh ``account_ref``
+    is self-assigned (= the new row's id). New brokers always start at mode OFF — LIVE
+    requires that broker's own soak ladder (ADR-0014/0024).
+    """
+    settings = _get_settings()
+    try:
+        adapter = make_account_adapter(
+            broker=body.broker, connection_config=body.connection_config, settings=settings
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not build adapter: {exc}") from exc
+
+    now = datetime.now(UTC)
+    paper = bool(body.connection_config.get("paper", True))
+    with session_scope() as session:
+        row = BrokerAccount(
+            broker=body.broker,
+            mode="paper" if paper else "live",
+            nickname=body.nickname,
+            is_active=True,
+            connection_config=json.dumps(body.connection_config),
+            account_ref=0,  # placeholder; set to self id after flush
+            cash_usd=0.0,
+            equity_usd=0.0,
+            last_sync=now,
+            effective_from=now,
+        )
+        session.add(row)
+        session.flush()
+        row.account_ref = row.id  # stable self-reference for this new account
+        account_ref = row.account_ref
+        session.add(AutoTradeState(broker_account_id=account_ref, mode="OFF"))
+
+    # Register the adapter so the new broker is usable immediately (cron loops +
+    # endpoints read app.state.adapters).
+    request.app.state.adapters[account_ref] = adapter
+    logger.info(
+        "broker-accounts: onboarded %s (%s) as account_ref=%s",
+        body.nickname, body.broker, account_ref,
+    )
+    return {
+        "status": "ok",
+        "broker_account_id": account_ref,
+        "nickname": body.nickname,
+        "broker": body.broker,
+        "auto_trade_mode": "OFF",
+    }
+
+
+@app.delete(
+    "/admin/broker-accounts/{broker_account_id}",
+    summary="Soft-delete (deactivate) a broker account",
+    dependencies=[Depends(admin_auth)],
+)
+def admin_delete_broker_account(
+    request: Request, broker_account_id: int
+) -> dict[str, Any]:
+    """Soft-delete a broker account: set is_active=False (never hard-delete — history
+    stays queryable) and drop its adapter from the live dict so cron loops skip it."""
+    with session_scope() as session:
+        updated = (
+            session.query(BrokerAccount)
+            .filter(BrokerAccount.account_ref == broker_account_id)
+            .update({"is_active": False})
+        )
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No broker account {broker_account_id}")
+    request.app.state.adapters.pop(broker_account_id, None)
+    logger.info("broker-accounts: soft-deleted account_ref=%s", broker_account_id)
+    return {"status": "ok", "broker_account_id": broker_account_id, "is_active": False}
 
 
 @app.get("/positions", summary="Latest positions snapshot")
