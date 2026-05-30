@@ -44,24 +44,25 @@ def test_alpaca_paper_full_chain(_settings: Settings, _tmp_session: Session) -> 
     if not os.getenv("ALPACA_API_KEY"):
         pytest.skip("ALPACA_API_KEY not set — skipping integration test")
 
-    # Wire targets into DB first so gap query has targets to compare against
-    from investor.services.targets import load_targets_into_db, yaml_hash
-    h = yaml_hash(_settings.targets_path)
-    targets_cfg = load_targets(_settings.targets_path)
-    load_targets_into_db(_tmp_session, targets_cfg, h)
-    _tmp_session.commit()
-
-    # Pull live positions from paper account
+    _acct = 1  # single-account integration run
+    # Pull live positions from paper account first so the broker_account row exists
     adapter = AlpacaAdapter(
         api_key=_settings.alpaca_api_key,
         secret_key=_settings.alpaca_secret_key,
         paper=True,
     )
-    take_snapshot(adapter, _tmp_session, _settings)
+    take_snapshot(adapter, _tmp_session, _settings, _acct)
+    _tmp_session.commit()
+
+    # Wire targets into DB so gap query has targets to compare against
+    from investor.services.targets import load_targets_into_db, yaml_hash
+    h = yaml_hash(_settings.targets_path)
+    targets_cfg = load_targets(_settings.targets_path)
+    load_targets_into_db(_tmp_session, targets_cfg, h, broker_account_id=_acct)
     _tmp_session.commit()
 
     # Compose report and render both templates (no bars_dir in CI — indicators will be empty)
-    report = compose_daily_report(_tmp_session)
+    report = compose_daily_report(_tmp_session, broker_account_id=_acct)
     html = render_template("daily_report.html.j2", report=report)
     text = render_template("daily_report.txt.j2", report=report)
 

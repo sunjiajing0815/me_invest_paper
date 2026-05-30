@@ -59,6 +59,7 @@ from .models import (
 )
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
+from .services.accounts import list_active_accounts
 from .services.auto_trade import (
     _get_mode,
     _trigger_kill_switch,
@@ -73,7 +74,11 @@ from .services.levels import build_nearby_levels, compute_levels
 from .services.magic_link import sign_action
 from .services.render import render_template
 from .services.suggest import _next_monday
-from .services.targets import load_targets_into_db, yaml_hash
+from .services.targets import (
+    load_targets_into_db,
+    targets_path_for_account,
+    yaml_hash,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -486,7 +491,7 @@ def admin_run_daily_report() -> dict[str, str]:
     summary="Reload targets from targets.yaml",
     dependencies=[Depends(admin_auth)],
 )
-def admin_reload_targets(request: Request) -> dict[str, str]:
+def admin_reload_targets(request: Request) -> dict[str, Any]:
     """Reload target allocations from targets.yaml and backfill bars for any new tickers.
 
     Bar backfill runs in a background thread (new tickers get 2 years of history;
@@ -497,31 +502,54 @@ def admin_reload_targets(request: Request) -> dict[str, str]:
     from .services.bars import update_bars
 
     settings = _get_settings()
+    adapters = request.app.state.adapters
+    results: dict[str, str] = {}
+    all_tickers: set[str] = set()
     try:
-        h = yaml_hash(settings.targets_path)
-        targets_cfg = load_targets(settings.targets_path)
         with session_scope() as sess:
-            result = load_targets_into_db(sess, targets_cfg, h, adapter=request.app.state.adapter)
+            accounts = list_active_accounts(sess)
+            primary_ref = resolve_primary_account_ref(sess)
+        for acct in accounts:
+            path = targets_path_for_account(
+                settings, acct.account_ref, is_primary=(acct.account_ref == primary_ref)
+            )
+            if path is None:
+                logger.info(
+                    "reload-targets: no targets file for account_ref=%s (%s); skipping",
+                    acct.account_ref, acct.nickname,
+                )
+                continue
+            targets_cfg = load_targets(path)
+            h = yaml_hash(path)
+            with session_scope() as sess:
+                results[str(acct.account_ref)] = load_targets_into_db(
+                    sess, targets_cfg, h,
+                    broker_account_id=acct.account_ref,
+                    adapter=adapters.get(acct.account_ref),
+                )
+            all_tickers |= set(targets_cfg.watchlist)
     except Exception as exc:
         logger.error("reload-targets failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Reload failed: {exc}") from exc
 
+    watchlist = sorted(all_tickers)
+
     def _backfill() -> None:
         try:
             update_bars(
-                targets_cfg.watchlist,
+                watchlist,
                 settings.alpaca_api_key,
                 settings.alpaca_secret_key,
                 bars_dir=settings.bars_dir,
             )
-            logger.info("reload-targets: bar backfill complete for %s", targets_cfg.watchlist)
+            logger.info("reload-targets: bar backfill complete for %s", watchlist)
         except Exception as exc:
             logger.warning("reload-targets: bar backfill failed: %s", exc)
 
     threading.Thread(target=_backfill, daemon=True, name="reload-targets-bars").start()
     logger.info("reload-targets: bar backfill started in background")
 
-    return {"status": "ok", "result": result, "bars_sync": "started in background"}
+    return {"status": "ok", "results": results, "bars_sync": "started in background"}
 
 
 @app.post(

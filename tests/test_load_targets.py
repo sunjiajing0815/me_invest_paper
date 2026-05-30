@@ -1,4 +1,4 @@
-"""Tests for load_targets_into_db() — idempotency and versioning."""
+"""Tests for _load() — idempotency and versioning."""
 
 from __future__ import annotations
 
@@ -15,7 +15,15 @@ from sqlalchemy.pool import StaticPool
 from investor.config import load_targets
 from investor.db import override_engine_for_testing
 from investor.models import Base, OrderExecution, OrderSuggestion, TargetAllocation
-from investor.services.targets import load_targets_into_db, yaml_hash
+from investor.services.targets import yaml_hash
+
+_ACCT = 1  # account_ref for these single-account tests
+
+
+def _load(session, targets, content_hash, adapter=None):
+    """Wrapper: load_targets_into_db scoped to the single test account."""
+    from investor.services.targets import load_targets_into_db as _f
+    return _f(session, targets, content_hash, broker_account_id=_ACCT, adapter=adapter)
 
 YAML_V1 = textwrap.dedent("""\
     watchlist: [VOO, QQQ, SCHD, AAPL, MSFT, AMZN]
@@ -57,7 +65,7 @@ class TestLoadTargetsIntoDb:
         f = tmp_path / "targets.yaml"
         f.write_text(YAML_V1)
         targets = load_targets(str(f))
-        result = load_targets_into_db(db_session, targets, yaml_hash(str(f)))
+        result = _load(db_session, targets, yaml_hash(str(f)))
         db_session.commit()
         assert result == "updated"
 
@@ -68,12 +76,12 @@ class TestLoadTargetsIntoDb:
         f.write_text(YAML_V1)
         targets = load_targets(str(f))
         h = yaml_hash(str(f))
-        load_targets_into_db(db_session, targets, h)
+        _load(db_session, targets, h)
         db_session.commit()
 
-        result2 = load_targets_into_db(db_session, targets, h)
+        result2 = _load(db_session, targets, h)
         db_session.commit()
-        result3 = load_targets_into_db(db_session, targets, h)
+        result3 = _load(db_session, targets, h)
         db_session.commit()
 
         assert result2 == "unchanged"
@@ -88,7 +96,7 @@ class TestLoadTargetsIntoDb:
         h = yaml_hash(str(f))
 
         for _ in range(3):
-            load_targets_into_db(db_session, targets, h)
+            _load(db_session, targets, h)
             db_session.commit()
 
         open_rows = (
@@ -107,11 +115,11 @@ class TestLoadTargetsIntoDb:
         f2.write_text(YAML_V2)
 
         targets_v1 = load_targets(str(f1))
-        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        _load(db_session, targets_v1, yaml_hash(str(f1)))
         db_session.commit()
 
         targets_v2 = load_targets(str(f2))
-        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        _load(db_session, targets_v2, yaml_hash(str(f2)))
         db_session.commit()
 
         closed = (
@@ -135,9 +143,9 @@ class TestLoadTargetsIntoDb:
         f2 = tmp_path / "v2.yaml"
         f2.write_text(YAML_V2)
 
-        load_targets_into_db(db_session, load_targets(str(f1)), yaml_hash(str(f1)))
+        _load(db_session, load_targets(str(f1)), yaml_hash(str(f1)))
         db_session.commit()
-        load_targets_into_db(db_session, load_targets(str(f2)), yaml_hash(str(f2)))
+        _load(db_session, load_targets(str(f2)), yaml_hash(str(f2)))
         db_session.commit()
 
         open_rows = {
@@ -163,13 +171,13 @@ class TestLoadTargetsIntoDb:
         f1 = tmp_path / "v1.yaml"
         f1.write_text(yaml_v1)
         targets_v1 = load_targets(str(f1))
-        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        _load(db_session, targets_v1, yaml_hash(str(f1)))
         db_session.commit()
 
         # Create an accepted suggestion for AAPL for the current week
         today = datetime.now(UTC).date()
         current_week_monday = today - timedelta(days=today.weekday())
-        sug = OrderSuggestion(
+        sug = OrderSuggestion(broker_account_id=_ACCT, 
             week_of=current_week_monday,
             ticker="AAPL",
             side="buy",
@@ -191,7 +199,7 @@ class TestLoadTargetsIntoDb:
         f2 = tmp_path / "v2.yaml"
         f2.write_text(yaml_v2)
         targets_v2 = load_targets(str(f2))
-        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        _load(db_session, targets_v2, yaml_hash(str(f2)))
         db_session.commit()
 
         db_session.refresh(sug)
@@ -211,13 +219,13 @@ class TestLoadTargetsIntoDb:
         f1 = tmp_path / "v1.yaml"
         f1.write_text(yaml_v1)
         targets_v1 = load_targets(str(f1))
-        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        _load(db_session, targets_v1, yaml_hash(str(f1)))
         db_session.commit()
 
         # Create an accepted suggestion for TSLA for the current week
         today = datetime.now(UTC).date()
         current_week_monday = today - timedelta(days=today.weekday())
-        sug = OrderSuggestion(
+        sug = OrderSuggestion(broker_account_id=_ACCT, 
             week_of=current_week_monday,
             ticker="TSLA",
             side="buy",
@@ -239,7 +247,7 @@ class TestLoadTargetsIntoDb:
         f2 = tmp_path / "v2.yaml"
         f2.write_text(yaml_v2)
         targets_v2 = load_targets(str(f2))
-        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        _load(db_session, targets_v2, yaml_hash(str(f2)))
         db_session.commit()
 
         db_session.refresh(sug)
@@ -259,13 +267,13 @@ class TestLoadTargetsIntoDb:
         f1 = tmp_path / "v1.yaml"
         f1.write_text(yaml_v1)
         targets_v1 = load_targets(str(f1))
-        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        _load(db_session, targets_v1, yaml_hash(str(f1)))
         db_session.commit()
 
         # Create an accepted suggestion for AAPL for the current week
         today = datetime.now(UTC).date()
         current_week_monday = today - timedelta(days=today.weekday())
-        sug = OrderSuggestion(
+        sug = OrderSuggestion(broker_account_id=_ACCT, 
             week_of=current_week_monday,
             ticker="AAPL",
             side="buy",
@@ -278,7 +286,7 @@ class TestLoadTargetsIntoDb:
         db_session.flush()
 
         # Create a linked live execution row
-        exe = OrderExecution(
+        exe = OrderExecution(broker_account_id=_ACCT, 
             suggestion_id=sug.id,
             ticker="AAPL",
             side="buy",
@@ -305,7 +313,7 @@ class TestLoadTargetsIntoDb:
         f2.write_text(yaml_v2)
         targets_v2 = load_targets(str(f2))
         mock_adapter = MagicMock()
-        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)), adapter=mock_adapter)
+        _load(db_session, targets_v2, yaml_hash(str(f2)), adapter=mock_adapter)
         db_session.commit()
 
         mock_adapter.cancel_order.assert_called_once_with("ord-001")
@@ -326,13 +334,13 @@ class TestLoadTargetsIntoDb:
         f1 = tmp_path / "v1.yaml"
         f1.write_text(yaml_v1)
         targets_v1 = load_targets(str(f1))
-        load_targets_into_db(db_session, targets_v1, yaml_hash(str(f1)))
+        _load(db_session, targets_v1, yaml_hash(str(f1)))
         db_session.commit()
 
         # Create an accepted suggestion for AAPL for the current week
         today = datetime.now(UTC).date()
         current_week_monday = today - timedelta(days=today.weekday())
-        sug = OrderSuggestion(
+        sug = OrderSuggestion(broker_account_id=_ACCT, 
             week_of=current_week_monday,
             ticker="AAPL",
             side="buy",
@@ -345,7 +353,7 @@ class TestLoadTargetsIntoDb:
         db_session.flush()
 
         # Create a linked live execution row
-        exe = OrderExecution(
+        exe = OrderExecution(broker_account_id=_ACCT, 
             suggestion_id=sug.id,
             ticker="AAPL",
             side="buy",
@@ -372,10 +380,62 @@ class TestLoadTargetsIntoDb:
         f2.write_text(yaml_v2)
         targets_v2 = load_targets(str(f2))
         # Must not raise even though there's a live execution with no adapter
-        load_targets_into_db(db_session, targets_v2, yaml_hash(str(f2)))
+        _load(db_session, targets_v2, yaml_hash(str(f2)))
         db_session.commit()
 
         db_session.refresh(sug)
         db_session.refresh(exe)
         assert sug.status == "expired"
         assert exe.status == "accepted_for_routing"  # unchanged — no cancellation attempted
+
+
+def test_targets_are_per_broker_account(db_session: Session, tmp_path: Path) -> None:
+    """Targets for account A and B are independent; reloading A leaves B untouched."""
+    from investor.services.targets import load_targets_into_db
+
+    yaml_a = textwrap.dedent("""\
+        watchlist: [VOO, QQQ]
+        targets:
+          VOO: { pct: 60, band: [50, 70] }
+          QQQ: { pct: 40, band: [30, 50] }
+        cash_buffer_pct: 0
+    """)
+    yaml_b = textwrap.dedent("""\
+        watchlist: [TSLA]
+        targets:
+          TSLA: { pct: 100, band: [90, 100] }
+        cash_buffer_pct: 0
+    """)
+    fa, fb = tmp_path / "a.yaml", tmp_path / "b.yaml"
+    fa.write_text(yaml_a)
+    fb.write_text(yaml_b)
+
+    load_targets_into_db(db_session, load_targets(str(fa)), yaml_hash(str(fa)), broker_account_id=1)
+    load_targets_into_db(db_session, load_targets(str(fb)), yaml_hash(str(fb)), broker_account_id=2)
+    db_session.commit()
+
+    def _active(bid: int) -> set[str]:
+        return {
+            r.ticker
+            for r in db_session.query(TargetAllocation).filter(
+                TargetAllocation.broker_account_id == bid,
+                TargetAllocation.effective_to.is_(None),
+            )
+        }
+
+    assert _active(1) == {"VOO", "QQQ"}
+    assert _active(2) == {"TSLA"}
+
+    # Reload account 1 with a changed allocation — account 2 must be untouched.
+    yaml_a2 = textwrap.dedent("""\
+        watchlist: [VOO]
+        targets:
+          VOO: { pct: 100, band: [90, 100] }
+        cash_buffer_pct: 0
+    """)
+    fa.write_text(yaml_a2)
+    load_targets_into_db(db_session, load_targets(str(fa)), yaml_hash(str(fa)), broker_account_id=1)
+    db_session.commit()
+
+    assert _active(1) == {"VOO"}
+    assert _active(2) == {"TSLA"}  # B's open rows were not closed by A's reload
