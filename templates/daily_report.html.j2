@@ -13,6 +13,7 @@
     <td style="padding:20px;">
       <h1 style="margin:0 0 6px 0; font-size:20px;">Portfolio Report</h1>
       <p style="margin:0; font-size:14px; opacity:0.8;">{{ report.date.strftime('%A, %B %-d, %Y') }}</p>
+      {% if account_nickname %}<p style="margin:4px 0 0 0; font-size:13px; opacity:0.75;">{{ account_nickname }} · {{ account_broker }}</p>{% endif %}
     </td>
     <td style="padding:20px; text-align:right;">
       {% if report.account %}

@@ -23,6 +23,7 @@ _SessionFactory = Callable[[], AbstractContextManager[Session]]
 def sweep_expired_suggestions(
     adapter: BrokerAdapter | None = None,
     session_factory: _SessionFactory | None = None,
+    broker_account_id: int | None = None,
 ) -> None:
     """Mark stale suggestions expired; cancel any open GTC broker orders.
 
@@ -31,17 +32,26 @@ def sweep_expired_suggestions(
     - ``accepted`` suggestions past ``expires_at``: cancel the broker GTC order
       (if one exists and ``adapter`` is provided), then mark expired.
 
-    Runs daily at 16:20 ET — between the daily report (16:15) and movers (16:30).
+    When ``broker_account_id`` is given, only that account's suggestions are swept
+    (the multi-broker path); ``None`` sweeps all accounts (back-compat / single broker).
+    Runs daily at 09:00 ET — before the auto-trade pass (09:35).
     """
     factory = session_factory or session_scope
     with factory() as s:
         now = datetime.now(UTC)
+
+        scope = (
+            [OrderSuggestion.broker_account_id == broker_account_id]
+            if broker_account_id is not None
+            else []
+        )
 
         # --- accepted with open broker orders: cancel first ---
         accepted_stale = s.scalars(
             select(OrderSuggestion).where(
                 OrderSuggestion.status == "accepted",
                 OrderSuggestion.expires_at < now,
+                *scope,
             )
         ).all()
 
@@ -103,6 +113,7 @@ def sweep_expired_suggestions(
             select(OrderSuggestion).where(
                 OrderSuggestion.status == "pending",
                 OrderSuggestion.expires_at < now,
+                *scope,
             )
         ).all()
         for sug in pending_stale:
@@ -117,3 +128,28 @@ def sweep_expired_suggestions(
             cancelled,
             len(pending_stale),
         )
+
+
+def sweep_expired_suggestions_all_brokers(
+    adapters: dict[int, BrokerAdapter],
+    session_factory: _SessionFactory | None = None,
+) -> None:
+    """Run the expiry sweep for every active broker account, each via its own adapter."""
+    from ..services.accounts import list_active_accounts
+
+    factory = session_factory or session_scope
+    with factory() as s:
+        accounts = list_active_accounts(s)
+    for acct in accounts:
+        try:
+            sweep_expired_suggestions(
+                adapter=adapters.get(acct.account_ref),
+                session_factory=session_factory,
+                broker_account_id=acct.account_ref,
+            )
+        except Exception:
+            log.exception(
+                "sweep failed for account_ref=%s (%s); continuing",
+                acct.account_ref, acct.nickname,
+            )
+            continue

@@ -22,11 +22,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from investor.db import override_engine_for_testing
-from investor.models import Base, OrderSuggestion
+from investor.models import Base, BrokerAccount, OrderSuggestion
 from investor.services.suggest import _next_monday
 
 _ADMIN_TOKEN = "test-admin-token"
 _WEEK = _next_monday()
+_ACCT = 1  # account_ref of the seeded active account
 
 # ── shared in-memory engine (module-level so patched init_db can store it) ──
 
@@ -57,6 +58,14 @@ def _reset_db():
     with _TEST_ENGINE.begin() as conn:
         for tbl in reversed(Base.metadata.sorted_tables):
             conn.execute(text(f"DELETE FROM {tbl.name}"))  # noqa: S608
+    # Seed the active primary broker account that the endpoints resolve against.
+    with Session(_TEST_ENGINE) as s:
+        s.add(BrokerAccount(
+            account_ref=_ACCT, broker="alpaca", mode="paper", is_active=True,
+            cash_usd=1000.0, equity_usd=1000.0,
+            last_sync=datetime.now(UTC), effective_from=datetime.now(UTC),
+        ))
+        s.commit()
 
 
 @pytest.fixture()
@@ -127,6 +136,7 @@ def client(mock_adapter):
         extra_patches[3],TestClient(app, raise_server_exceptions=True) as tc
     ):
         app.state.adapter = mock_adapter
+        app.state.adapters = {_ACCT: mock_adapter}
         yield tc
 
     app.dependency_overrides.clear()
@@ -143,6 +153,7 @@ def _add_suggestion(
     status: str = "accepted",
 ) -> OrderSuggestion:
     sug = OrderSuggestion(
+        broker_account_id=_ACCT,
         week_of=_WEEK,
         ticker=ticker,
         side=side,
@@ -304,3 +315,39 @@ class TestCanonicalEndpoint:
         assert sell_sug.status == "pending"
         assert buy_sug.id in data["suggestions_reset"]
         assert sell_sug.id in data["suggestions_reset"]
+
+
+# ── B-API: broker_account_id scoping + 404 validation ────────────────────────
+
+
+class TestBApiScope:
+    def test_health_lists_active_accounts(self, client):
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        refs = {a["broker_account_id"] for a in body["accounts"]}
+        assert _ACCT in refs
+
+    def test_gap_invalid_account_returns_404(self, client):
+        resp = client.get("/gap?broker_account_id=999")
+        assert resp.status_code == 404
+
+    def test_gap_primary_default_ok(self, client):
+        resp = client.get("/gap")  # no param → primary account
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_run_daily_report_invalid_account_returns_404(self, client):
+        resp = client.post(
+            "/admin/run-daily-report?broker_account_id=999",
+            headers={"X-Admin-Token": _ADMIN_TOKEN},
+        )
+        assert resp.status_code == 404
+
+    def test_emergency_stop_invalid_account_returns_404(self, client):
+        resp = client.post(
+            "/admin/auto-trade/emergency-stop?broker_account_id=999",
+            headers={"X-Admin-Token": _ADMIN_TOKEN},
+        )
+        assert resp.status_code == 404

@@ -321,6 +321,8 @@ def run_weekly_suggestions_for_account(
         "weekly_suggestions.html.j2",
         week_of=week_of,
         account=account,
+        account_nickname=acct.nickname,
+        account_broker=acct.broker,
         suggestion_items=suggestion_items,
         base_url=settings.app_base_url,
         indicators=indicators,
@@ -333,6 +335,8 @@ def run_weekly_suggestions_for_account(
         "weekly_suggestions.txt.j2",
         week_of=week_of,
         account=account,
+        account_nickname=acct.nickname,
+        account_broker=acct.broker,
         suggestions=list(db_values.values()),
         indicators=indicators,
         nearby=nearby,
@@ -350,7 +354,6 @@ def run_weekly_suggestions_for_account(
 
 def run_weekly_suggestions_all_brokers(
     settings: Settings,
-    adapter_unused: BrokerAdapter | None,
     emailer: EmailSender,
     llm: LLMClient,
     earnings_client: Any,

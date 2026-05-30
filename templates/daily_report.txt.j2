@@ -1,5 +1,6 @@
 Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
-{% if report.account %}Equity: ${{ "{:,.0f}".format(report.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(report.account.cash_usd) }}  ({{ report.account.broker }} · {{ report.account.mode }}){% else %}No account data{% endif %}
+{% if account_nickname %}Account: {{ account_nickname }} · {{ account_broker }}
+{% endif %}{% if report.account %}Equity: ${{ "{:,.0f}".format(report.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(report.account.cash_usd) }}  ({{ report.account.broker }} · {{ report.account.mode }}){% else %}No account data{% endif %}
 
 {% if report.drift_alerts %}
 === DRIFT ALERTS — {{ report.drift_alerts|length }} ticker(s) outside band ===

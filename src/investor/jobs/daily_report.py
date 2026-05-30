@@ -56,8 +56,14 @@ def run_daily_report_for_account(
             bars_dir=settings.bars_dir,
         )
 
-    html = render_template("daily_report.html.j2", report=report, account=account)
-    text = render_template("daily_report.txt.j2", report=report, account=account)
+    html = render_template(
+        "daily_report.html.j2", report=report,
+        account_nickname=account.nickname, account_broker=account.broker,
+    )
+    text = render_template(
+        "daily_report.txt.j2", report=report,
+        account_nickname=account.nickname, account_broker=account.broker,
+    )
 
     subject = f"[{account.nickname}] Portfolio — {report.date:%Y-%m-%d}"
     if report.account:

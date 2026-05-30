@@ -40,15 +40,25 @@ from sqlalchemy import select
 from .brokers import build_account_adapters, make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
-from .jobs.auto_trade import run_auto_trade_job
-from .jobs.daily_report import run_daily_report
+from .jobs.auto_trade import run_auto_trade_job, run_auto_trade_job_all_brokers
+from .jobs.daily_report import (
+    run_daily_report_all_brokers,
+    run_daily_report_for_account,
+)
 from .jobs.moomoo_parallel import run_moomoo_parallel
 from .jobs.movers import run_movers_email
-from .jobs.reconciliation import run_daily_reconciliation
-from .jobs.suggestion_expiry import sweep_expired_suggestions
+from .jobs.reconciliation import (
+    run_daily_reconciliation_all_brokers,
+)
+from .jobs.suggestion_expiry import (
+    sweep_expired_suggestions_all_brokers,
+)
 from .jobs.sync import run_sync_job
 from .jobs.weekly_review import run_weekly_review
-from .jobs.weekly_suggestions import run_weekly_suggestions
+from .jobs.weekly_suggestions import (
+    run_weekly_suggestions_all_brokers,
+    run_weekly_suggestions_for_account,
+)
 from .models import (
     AutoTradeCaps,
     AutoTradePromotionLog,
@@ -59,7 +69,11 @@ from .models import (
 )
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
-from .services.accounts import list_active_accounts
+from .services.accounts import (
+    AccountInfo,
+    list_active_accounts,
+    resolve_active_account_refs,
+)
 from .services.auto_trade import (
     _get_mode,
     _trigger_kill_switch,
@@ -97,6 +111,42 @@ def _get_settings() -> Settings:
     if _settings is None:
         raise RuntimeError("Settings not initialised")
     return _settings
+
+
+def _resolve_scope(
+    broker_account_id: int | None, *, default: Literal["primary", "all"]
+) -> list[int]:
+    """Resolve which broker account(s) an endpoint should act on (B-API).
+
+    A given ``broker_account_id`` must be an active account (404 otherwise) and yields
+    ``[id]``. When omitted, returns the primary account (``default="primary"``, for
+    single-resource reads) or all active accounts (``default="all"``, for job triggers
+    and bulk mutations). Active accounts come back primary-first.
+    """
+    with session_scope() as session:
+        active = resolve_active_account_refs(session)
+    if broker_account_id is not None:
+        if broker_account_id not in active:
+            raise HTTPException(
+                status_code=404, detail=f"No active broker account {broker_account_id}"
+            )
+        return [broker_account_id]
+    if default == "primary":
+        return active[:1]
+    return active
+
+
+def _active_accounts() -> list[AccountInfo]:
+    with session_scope() as session:
+        return list_active_accounts(session)
+
+
+def _require_account(broker_account_id: int) -> AccountInfo:
+    """Return the AccountInfo for an active account, or 404."""
+    for a in _active_accounts():
+        if a.account_ref == broker_account_id:
+            return a
+    raise HTTPException(status_code=404, detail=f"No active broker account {broker_account_id}")
 
 
 def admin_auth(
@@ -184,16 +234,21 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     app.state.earnings = earnings
     app.state.sentiment = sentiment
 
-    daily_fn = partial(run_daily_report, _settings, adapter, emailer)
-    weekly_fn = partial(run_weekly_suggestions, _settings, adapter, emailer, llm, earnings)
+    # Per-broker cron loops fan out over app.state.adapters (B8). Movers stays global
+    # (watchlist price moves), weekly_review stays primary-scoped (4.9a), moomoo_parallel
+    # is the soak comparison and is unchanged.
+    daily_fn = partial(run_daily_report_all_brokers, _settings, emailer, adapters)
+    weekly_fn = partial(
+        run_weekly_suggestions_all_brokers, _settings, emailer, llm, earnings, adapters
+    )
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
-    expiry_fn = partial(sweep_expired_suggestions, adapter)
-    recon_fn = partial(run_daily_reconciliation, _settings, adapter)
+    expiry_fn = partial(sweep_expired_suggestions_all_brokers, adapters)
+    recon_fn = partial(run_daily_reconciliation_all_brokers, _settings, adapters)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
     weekly_review_fn = partial(
         run_weekly_review, _settings, adapter, emailer, llm, tavily, sentiment
     )
-    auto_trade_fn = partial(run_auto_trade_job, _settings, adapter, emailer)
+    auto_trade_fn = partial(run_auto_trade_job_all_brokers, _settings, emailer, adapters)
     scheduler = make_scheduler(
         daily_fn,
         weekly_fn,
@@ -223,44 +278,44 @@ app = FastAPI(
 
 @app.get("/health", summary="Health check")
 def health() -> dict[str, Any]:
-    """Return service status, broker, last sync timestamp, and target count."""
-    settings = _get_settings()
-    last_sync: datetime | None = None
-    target_count = 0
+    """Return service status and a per-broker-account summary.
 
+    Each active account reports its nickname, broker, auto-trade mode, last sync
+    timestamp, and active target count.
+    """
+    accounts_out: list[dict[str, Any]] = []
     try:
         with session_scope() as session:
-            ref = resolve_primary_account_ref(session)
-            if ref is not None:
-                params = {"broker_account_id": ref}
-                row = session.execute(account_last_sync, params).fetchone()
-                if row:
-                    last_sync = row[0]
-                count_row = session.execute(targets_active_count, params).fetchone()
-                if count_row:
-                    target_count = int(count_row[0])
+            for acct in list_active_accounts(session):
+                params = {"broker_account_id": acct.account_ref}
+                ls_row = session.execute(account_last_sync, params).fetchone()
+                tc_row = session.execute(targets_active_count, params).fetchone()
+                accounts_out.append({
+                    "broker_account_id": acct.account_ref,
+                    "nickname": acct.nickname,
+                    "broker": acct.broker,
+                    "auto_trade_mode": _get_mode(session, acct.account_ref),
+                    "last_sync_ts": str(ls_row[0]) if ls_row and ls_row[0] else None,
+                    "target_count": int(tc_row[0]) if tc_row else 0,
+                })
     except Exception as exc:
         logger.warning("Health check DB query failed: %s", exc)
 
-    return {
-        "status": "ok",
-        "broker": settings.broker,
-        "last_sync_ts": str(last_sync) if last_sync else None,
-        "target_count": target_count,
-    }
+    return {"status": "ok", "accounts": accounts_out}
 
 
 @app.get("/positions", summary="Latest positions snapshot")
-def positions() -> list[dict[str, Any]]:
-    """Return the most recent positions snapshot per ticker."""
+def positions(broker_account_id: int | None = None) -> list[dict[str, Any]]:
+    """Return the most recent positions snapshot per ticker for one broker account
+    (defaults to the primary account)."""
+    ref = _resolve_scope(broker_account_id, default="primary")
+    if not ref:
+        return []
     try:
         with session_scope() as session:
-            ref = resolve_primary_account_ref(session)
-            rows = (
-                session.execute(positions_latest, {"broker_account_id": ref}).fetchall()
-                if ref is not None
-                else []
-            )
+            rows = session.execute(
+                positions_latest, {"broker_account_id": ref[0]}
+            ).fetchall()
     except Exception as exc:
         logger.error("/positions query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Database query failed") from exc
@@ -290,12 +345,15 @@ def _gap_row_to_dict(r: GapRow) -> dict[str, Any]:
 
 
 @app.get("/gap", summary="Allocation gap vs targets")
-def gap() -> list[dict[str, Any]]:
-    """Return gap between current allocation and targets, sorted by abs(gap_pct) desc."""
+def gap(broker_account_id: int | None = None) -> list[dict[str, Any]]:
+    """Return gap between current allocation and targets for one broker account
+    (defaults to the primary), sorted by abs(gap_pct) desc."""
+    ref = _resolve_scope(broker_account_id, default="primary")
+    if not ref:
+        return []
     try:
         with session_scope() as session:
-            ref = resolve_primary_account_ref(session)
-            rows: list[GapRow] = compute_gap(session, ref) if ref is not None else []
+            rows: list[GapRow] = compute_gap(session, ref[0])
     except Exception as exc:
         logger.error("/gap query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Gap computation failed") from exc
@@ -304,12 +362,15 @@ def gap() -> list[dict[str, Any]]:
 
 
 @app.get("/drift", summary="Out-of-band tickers only")
-def drift() -> list[dict[str, Any]]:
-    """Return only tickers whose current allocation is outside their rebalance band."""
+def drift(broker_account_id: int | None = None) -> list[dict[str, Any]]:
+    """Return only tickers whose current allocation is outside their rebalance band
+    (one broker account; defaults to the primary)."""
+    ref = _resolve_scope(broker_account_id, default="primary")
+    if not ref:
+        return []
     try:
         with session_scope() as session:
-            ref = resolve_primary_account_ref(session)
-            rows: list[GapRow] = compute_gap(session, ref) if ref is not None else []
+            rows: list[GapRow] = compute_gap(session, ref[0])
     except Exception as exc:
         logger.error("/drift query failed: %s", exc)
         raise HTTPException(status_code=500, detail="Gap computation failed") from exc
@@ -318,14 +379,25 @@ def drift() -> list[dict[str, Any]]:
 
 
 @app.get("/indicators", summary="Technical indicators per ticker")
-def indicators() -> list[dict[str, Any]]:
-    """Return latest SMA-20/50/200, EMA-21, RSI-14, MACD per watchlist ticker."""
+def indicators(broker_account_id: int | None = None) -> list[dict[str, Any]]:
+    """Return latest SMA-20/50/200, EMA-21, RSI-14, MACD per watchlist ticker.
+
+    Uses the watchlist of one broker account's targets file (defaults to the primary).
+    """
     from .config import load_targets
     from .services.indicators import compute_indicators
 
     settings = _get_settings()
+    ref = _resolve_scope(broker_account_id, default="primary")
+    if not ref:
+        return []
+    accounts = _active_accounts()
+    primary_ref = accounts[0].account_ref if accounts else None
+    path = targets_path_for_account(settings, ref[0], is_primary=(ref[0] == primary_ref))
+    if path is None:
+        return []
     try:
-        targets = load_targets(settings.targets_path)
+        targets = load_targets(path)
         rows = compute_indicators(targets.watchlist, settings.bars_dir)
     except Exception as exc:
         logger.error("/indicators failed: %s", exc)
@@ -351,15 +423,21 @@ def indicators() -> list[dict[str, Any]]:
 
 
 @app.get("/suggestions", summary="Pending order suggestions for current week")
-def suggestions() -> list[dict[str, Any]]:
-    """Return pending order suggestions for the current week."""
+def suggestions(broker_account_id: int | None = None) -> list[dict[str, Any]]:
+    """Return pending order suggestions for one broker account (defaults to primary)."""
     from .models import OrderSuggestion
 
+    ref = _resolve_scope(broker_account_id, default="primary")
+    if not ref:
+        return []
     try:
         with session_scope() as session:
             rows = (
                 session.query(OrderSuggestion)
-                .filter(OrderSuggestion.status == "pending")
+                .filter(
+                    OrderSuggestion.broker_account_id == ref[0],
+                    OrderSuggestion.status == "pending",
+                )
                 .order_by(OrderSuggestion.week_of.desc(), OrderSuggestion.id)
                 .all()
             )
@@ -472,18 +550,31 @@ def admin_run_sync() -> dict[str, str]:
     summary="Manual daily report trigger",
     dependencies=[Depends(admin_auth)],
 )
-def admin_run_daily_report() -> dict[str, str]:
-    """Manually trigger the daily report job — syncs, composes, and emails."""
+def admin_run_daily_report(broker_account_id: int | None = None) -> dict[str, str]:
+    """Manually trigger the daily report — all active brokers, or one via broker_account_id."""
     settings = _get_settings()
-    adapter = app.state.adapter
     emailer = app.state.emailer
-    logger.info("Daily report triggered via POST /admin/run-daily-report")
+    adapters = app.state.adapters
+    logger.info("Daily report triggered (account=%s)", broker_account_id)
     try:
-        run_daily_report(settings, adapter, emailer)
+        if broker_account_id is None:
+            run_daily_report_all_brokers(settings, emailer, adapters)
+            msg = "Daily report sent for all active brokers"
+        else:
+            acct = _require_account(broker_account_id)
+            adapter = adapters.get(acct.account_ref)
+            if adapter is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No adapter for account {broker_account_id}"
+                )
+            run_daily_report_for_account(settings, adapter, emailer, acct)
+            msg = f"Daily report sent for {acct.nickname}"
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Daily report failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Daily report failed: {exc}") from exc
-    return {"status": "ok", "message": "Daily report sent"}
+    return {"status": "ok", "message": msg}
 
 
 @app.post(
@@ -557,19 +648,35 @@ def admin_reload_targets(request: Request) -> dict[str, Any]:
     summary="Manual weekly suggestions trigger",
     dependencies=[Depends(admin_auth)],
 )
-def admin_run_weekly_suggestions(request: Request) -> dict[str, str]:
-    """Trigger the weekly suggestions job — computes indicators, levels, suggestions, and emails."""
+def admin_run_weekly_suggestions(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, str]:
+    """Trigger weekly suggestions — all active brokers, or one via broker_account_id."""
     settings = _get_settings()
-    adapter = request.app.state.adapter
     emailer = request.app.state.emailer
-    logger.info("Weekly suggestions triggered via POST /admin/run-weekly-suggestions")
+    adapters = request.app.state.adapters
+    llm = request.app.state.llm
+    earnings = request.app.state.earnings
+    logger.info("Weekly suggestions triggered (account=%s)", broker_account_id)
     try:
-        earnings = request.app.state.earnings
-        run_weekly_suggestions(settings, adapter, emailer, request.app.state.llm, earnings)
+        if broker_account_id is None:
+            run_weekly_suggestions_all_brokers(settings, emailer, llm, earnings, adapters)
+            msg = "Weekly suggestions sent for all active brokers"
+        else:
+            acct = _require_account(broker_account_id)
+            adapter = adapters.get(acct.account_ref)
+            if adapter is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No adapter for account {broker_account_id}"
+                )
+            run_weekly_suggestions_for_account(settings, adapter, emailer, llm, earnings, acct)
+            msg = f"Weekly suggestions sent for {acct.nickname}"
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Weekly suggestions failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly suggestions failed: {exc}") from exc
-    return {"status": "ok", "message": "Weekly suggestions email sent"}
+    return {"status": "ok", "message": msg}
 
 
 @app.post(
@@ -797,18 +904,32 @@ def admin_reconcile_manual(
     summary="Manual auto-trade trigger",
     dependencies=[Depends(admin_auth)],
 )
-def admin_run_auto_trade(request: Request) -> dict[str, Any]:
-    """Manually trigger one auto-trade pass."""
+def admin_run_auto_trade(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, Any]:
+    """Manually trigger an auto-trade pass — all active brokers, or one via broker_account_id."""
+    settings = request.app.state.settings
+    emailer = request.app.state.emailer
+    adapters = request.app.state.adapters
     try:
-        run_auto_trade_job(
-            request.app.state.settings,
-            request.app.state.adapter,
-            request.app.state.emailer,
-        )
+        if broker_account_id is None:
+            run_auto_trade_job_all_brokers(settings, emailer, adapters)
+            msg = "Auto-trade pass completed for all active brokers"
+        else:
+            acct = _require_account(broker_account_id)
+            adapter = adapters.get(acct.account_ref)
+            if adapter is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No adapter for account {broker_account_id}"
+                )
+            run_auto_trade_job(settings, adapter, emailer)
+            msg = f"Auto-trade pass completed for {acct.nickname}"
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Manual auto-trade pass failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Auto-trade pass failed: {exc}") from exc
-    return {"status": "ok", "message": "Auto-trade pass completed"}
+    return {"status": "ok", "message": msg}
 
 
 class AutoTradePromoteRequest(BaseModel):
@@ -934,17 +1055,21 @@ def admin_auto_trade_caps(body: AutoTradeCapsRequest) -> dict[str, Any]:
     summary="Cancel all open broker orders",
     dependencies=[Depends(admin_auth)],
 )
-def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
-    """Cancel every open (accepted_for_routing, dry_run=False) broker order.
-
-    Does NOT change auto-trade mode. Use emergency-stop if you also want mode → OFF.
+def admin_cancel_all_orders(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, Any]:
+    """Cancel every open (accepted_for_routing, dry_run=False) broker order — all active
+    brokers, or one via broker_account_id. Each order is cancelled via its own account's
+    adapter. Does NOT change auto-trade mode (use emergency-stop for mode → OFF).
     """
     from .models import OrderExecution
 
-    adapter = request.app.state.adapter
+    adapters = request.app.state.adapters
+    scope_refs = _resolve_scope(broker_account_id, default="all")
     with session_scope() as session:
         open_execs = session.scalars(
             select(OrderExecution).where(
+                OrderExecution.broker_account_id.in_(scope_refs),
                 OrderExecution.status.in_(["accepted_for_routing", "broker_cancelled"]),
                 OrderExecution.dry_run.is_(False),
                 OrderExecution.broker_order_id.is_not(None),
@@ -956,6 +1081,13 @@ def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
         for exe in open_execs:
             oid = exe.broker_order_id
             assert oid is not None  # guaranteed by IS NOT NULL filter above
+            adapter = adapters.get(exe.broker_account_id)
+            if adapter is None:
+                logger.warning(
+                    "cancel-all-orders: no adapter for account_ref=%s", exe.broker_account_id
+                )
+                failed.append(oid)
+                continue
             try:
                 adapter.cancel_order(oid)
                 exe.status = "broker_cancelled"
@@ -985,11 +1117,14 @@ def admin_cancel_all_orders(request: Request) -> dict[str, Any]:
 def admin_reset_week_buy_suggestions(
     request: Request,
     side: Literal["buy", "sell", "all"] = "buy",
+    broker_account_id: int | None = None,
 ) -> dict[str, Any]:
     """Cancel all live broker orders for the current week and reset
     those suggestions to pending so they can be re-evaluated.
 
-    For each accepted suggestion matching the requested side:
+    Scoped to all active brokers, or one via broker_account_id. Each order is
+    cancelled via its own account's adapter. For each accepted suggestion matching
+    the requested side:
     - Finds every execution row with a broker_order_id (accepted_for_routing OR
       broker_cancelled — the latter may still be live at the broker due to GTC
       cancel propagation lag) and attempts cancel_order() for each.
@@ -997,7 +1132,8 @@ def admin_reset_week_buy_suggestions(
     - Resets OrderSuggestion.status → "pending", clears acted_at.
     - Pass side="buy" (default) to reset only buys, "sell" for sells, "all" for both.
     """
-    adapter = request.app.state.adapter
+    adapters = request.app.state.adapters
+    scope_refs = _resolve_scope(broker_account_id, default="all")
     week_of = _next_monday()
 
     cancelled: list[str] = []
@@ -1009,6 +1145,7 @@ def admin_reset_week_buy_suggestions(
     with session_scope() as session:
         accepted_suggestions = session.scalars(
             select(OrderSuggestion).where(
+                OrderSuggestion.broker_account_id.in_(scope_refs),
                 OrderSuggestion.week_of == week_of,
                 OrderSuggestion.status == "accepted",
                 *side_clauses,
@@ -1043,9 +1180,13 @@ def admin_reset_week_buy_suggestions(
                 )
             ).all()
 
+            adapter = adapters.get(sug.broker_account_id)
             for exe in execs_with_order:
                 oid = exe.broker_order_id
                 assert oid is not None
+                if adapter is None:
+                    cancel_failed.append(oid)
+                    continue
                 try:
                     adapter.cancel_order(oid)
                     exe.status = "broker_cancelled"
@@ -1078,24 +1219,39 @@ def admin_reset_week_buy_suggestions(
     summary="Immediately trigger kill switch",
     dependencies=[Depends(admin_auth)],
 )
-def admin_auto_trade_emergency_stop(request: Request) -> dict[str, Any]:
+def admin_auto_trade_emergency_stop(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, Any]:
     """Trigger the kill switch immediately (mode → OFF, cancel open auto-trade orders).
 
-    Scoped to the primary active broker account in B1; B-API extends this to an
-    optional ``broker_account_id`` (default: all active accounts).
+    Default: every active broker account (safest). Pass broker_account_id to stop one.
+    Each account's orders are cancelled via its own adapter.
     """
-    with session_scope() as session:
-        account_ref = resolve_primary_account_ref(session)
-        if account_ref is None:
-            raise HTTPException(status_code=404, detail="No active broker account found")
-        _trigger_kill_switch(
-            session=session,
-            emailer=request.app.state.emailer,
-            adapter=request.app.state.adapter,
-            trigger="manual",
-            detail="Emergency stop triggered via POST /admin/auto-trade/emergency-stop",
-            settings_email_to=request.app.state.settings.email_to,
-            broker_account_id=account_ref,
-        )
+    emailer = request.app.state.emailer
+    adapters = request.app.state.adapters
+    email_to = request.app.state.settings.email_to
+    scope_refs = _resolve_scope(broker_account_id, default="all")
+    if not scope_refs:
+        raise HTTPException(status_code=404, detail="No active broker account found")
+    stopped: list[int] = []
+    for ref in scope_refs:
+        adapter = adapters.get(ref)
+        if adapter is None:
+            continue
+        with session_scope() as session:
+            _trigger_kill_switch(
+                session=session,
+                emailer=emailer,
+                adapter=adapter,
+                trigger="manual",
+                detail="Emergency stop via POST /admin/auto-trade/emergency-stop",
+                settings_email_to=email_to,
+                broker_account_id=ref,
+            )
+        stopped.append(ref)
 
-    return {"status": "ok", "message": "Kill switch activated. Auto-trade mode set to OFF."}
+    return {
+        "status": "ok",
+        "message": "Kill switch activated; auto-trade mode set to OFF.",
+        "broker_account_ids": stopped,
+    }

@@ -1,5 +1,6 @@
 Orders for the week of {{ week_of.strftime('%b %-d, %Y') }}
-{% if account %}Equity: ${{ "{:,.0f}".format(account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(account.cash_usd) }}  ({{ account.broker }} · {{ account.mode }}){% else %}No account data{% endif %}
+{% if account_nickname %}Account: {{ account_nickname }} · {{ account_broker }}
+{% endif %}{% if account %}Equity: ${{ "{:,.0f}".format(account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(account.cash_usd) }}  ({{ account.broker }} · {{ account.mode }}){% else %}No account data{% endif %}
 
 {% if untracked %}
 === UNTRACKED POSITIONS — NO TARGET ALLOCATION ===
