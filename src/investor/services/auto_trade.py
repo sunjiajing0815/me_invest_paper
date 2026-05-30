@@ -20,8 +20,9 @@ from sqlalchemy.orm import Session
 from ..brokers.base import BrokerAdapter, BrokerValidationError, OrderRequest
 from ..models import (
     AutoTradeCaps,
+    AutoTradeState,
+    BrokerAccount,
     KillSwitchLog,
-    Meta,
     OrderExecution,
     OrderSuggestion,
 )
@@ -30,7 +31,6 @@ from ..services.email import EmailSender
 logger = logging.getLogger(__name__)
 
 Mode = Literal["OFF", "DRY_RUN", "LIVE"]
-META_KEY_MODE = "auto_trade_mode"
 
 
 @dataclass(frozen=True)
@@ -69,14 +69,49 @@ def _next_client_order_id(session: Session, sug: OrderSuggestion) -> str:
     return f"sug-{sug.id}" if cancelled_count == 0 else f"sug-{sug.id}-r{cancelled_count}"
 
 
-def _get_mode(session: Session) -> Mode:
-    meta = session.get(Meta, META_KEY_MODE)
-    if meta is None:
+def resolve_active_account_refs(session: Session) -> list[int]:
+    """Return the account_ref of every active broker account (latest open row each)."""
+    rows = session.scalars(
+        select(BrokerAccount)
+        .where(BrokerAccount.effective_to.is_(None), BrokerAccount.is_active.is_(True))
+        .order_by(BrokerAccount.last_sync.desc())
+    ).all()
+    seen: set[int] = set()
+    refs: list[int] = []
+    for r in rows:
+        if r.account_ref is not None and r.account_ref not in seen:
+            seen.add(r.account_ref)
+            refs.append(r.account_ref)
+    return refs
+
+
+def resolve_primary_account_ref(session: Session) -> int | None:
+    """Return the primary (most-recently-synced active) broker account's account_ref."""
+    refs = resolve_active_account_refs(session)
+    return refs[0] if refs else None
+
+
+def _get_mode(session: Session, broker_account_id: int) -> Mode:
+    """Read the auto-trade mode for one broker account from auto_trade_state.
+
+    Falls back to OFF if no row exists (the safe default, e.g. a newly-onboarded broker).
+    """
+    state = session.get(AutoTradeState, broker_account_id)
+    if state is None:
         return "OFF"
-    val = meta.value.upper()
+    val = state.mode.upper()
     if val in ("OFF", "DRY_RUN", "LIVE"):
         return val  # type: ignore[return-value]
     return "OFF"
+
+
+def set_mode(session: Session, broker_account_id: int, mode: Mode) -> None:
+    """Upsert the auto-trade mode for one broker account in auto_trade_state."""
+    state = session.get(AutoTradeState, broker_account_id)
+    if state is None:
+        session.add(AutoTradeState(broker_account_id=broker_account_id, mode=mode))
+    else:
+        state.mode = mode
 
 
 def _get_active_caps(session: Session) -> AutoTradeCaps | None:
@@ -88,13 +123,13 @@ def _get_active_caps(session: Session) -> AutoTradeCaps | None:
 
 
 def _fetch_accepted_unexecuted(
-    session: Session, as_of: date | None = None
+    session: Session, broker_account_id: int, as_of: date | None = None
 ) -> list[OrderSuggestion]:
     """Return suggestions with status='accepted' that have no matching real execution row.
 
-    Only looks at the current calendar week (Mon–Sun). Suggestions from prior weeks
-    that are still accepted are stale — they should have been expired by the expiry
-    sweep and must not be re-traded in a new week.
+    Scoped to one broker account. Only looks at the current calendar week (Mon–Sun).
+    Suggestions from prior weeks that are still accepted are stale — they should have
+    been expired by the expiry sweep and must not be re-traded in a new week.
 
     Two queries (not N+1): one for accepted suggestions, one for already-executed IDs.
     A DRY_RUN execution row does not exclude the suggestion — only dry_run=False rows count.
@@ -106,6 +141,7 @@ def _fetch_accepted_unexecuted(
         select(OrderSuggestion).where(
             OrderSuggestion.status == "accepted",
             OrderSuggestion.week_of == current_week_monday,
+            OrderSuggestion.broker_account_id == broker_account_id,
         )
     ).all()
     if not accepted:
@@ -124,12 +160,15 @@ def _fetch_accepted_unexecuted(
     return [sug for sug in accepted if sug.id not in already_executed]
 
 
-def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> None:
+def _check_idempotency(
+    session: Session, sug: OrderSuggestion, mode: Mode, broker_account_id: int
+) -> None:
     """Raise _GuardFailure if a prior execution already exists for this suggestion."""
     dry_run_flag = mode == "DRY_RUN"
     existing = session.scalar(
         select(OrderExecution).where(
             OrderExecution.suggestion_id == sug.id,
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.dry_run.is_(dry_run_flag),
             OrderExecution.status != "broker_cancelled",
         )
@@ -140,15 +179,20 @@ def _check_idempotency(session: Session, sug: OrderSuggestion, mode: Mode) -> No
         )
 
 
-def _check_stale_live_order(session: Session, sug: OrderSuggestion) -> None:
-    """Raise _GuardFailure if a different accepted_for_routing execution exists for this ticker.
+def _check_stale_live_order(
+    session: Session, sug: OrderSuggestion, broker_account_id: int
+) -> None:
+    """Raise _GuardFailure if a different accepted_for_routing execution exists for this
+    ticker on the SAME broker account.
 
     Prevents placing a second live order while a prior-week GTC is still open at the broker.
-    The expiry sweep should clear these at 09:00 ET, but APScheduler delays can happen.
+    Scoped per broker — two live orders for the same ticker across *different* brokers is
+    fine (the multi-broker model); two on the *same* broker is what this prevents.
     """
     stale = session.scalars(
         select(OrderExecution).where(
             OrderExecution.ticker == sug.ticker,
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.status == "accepted_for_routing",
             OrderExecution.dry_run.is_(False),
             OrderExecution.suggestion_id != sug.id,
@@ -161,10 +205,11 @@ def _check_stale_live_order(session: Session, sug: OrderSuggestion) -> None:
         )
 
 
-def _check_wash_sale(session: Session, sug: OrderSuggestion) -> None:
+def _check_wash_sale(session: Session, sug: OrderSuggestion, broker_account_id: int) -> None:
     """Raise _GuardFailure if a real loss-sell for this ticker occurred within 30 calendar days.
 
     dry_run=False filter is CRITICAL — simulated losses must never block real trades.
+    Scoped per broker account in 4.9a (cross-broker / tax-lot wash-sale is Phase 6).
     """
     if sug.side != "buy":
         return
@@ -172,6 +217,7 @@ def _check_wash_sale(session: Session, sug: OrderSuggestion) -> None:
     loss_sell = session.scalar(
         select(OrderExecution).where(
             OrderExecution.ticker == sug.ticker,
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.side == "sell",
             OrderExecution.dry_run.is_(False),
             OrderExecution.realized_pnl_usd < 0,
@@ -190,8 +236,12 @@ def _check_caps(
     sug: OrderSuggestion,
     caps: AutoTradeCaps,
     mode: Mode,
+    broker_account_id: int,
 ) -> None:
-    """Raise _GuardFailure if any spending cap would be breached."""
+    """Raise _GuardFailure if any spending cap would be breached.
+
+    Spend/count sums are scoped per broker account — each broker has its own caps.
+    """
     order_cost = sug.qty * sug.limit_price
 
     # Per-order cap
@@ -207,6 +257,7 @@ def _check_caps(
     # Per-day total spend
     day_spend = session.scalar(
         select(func.sum(OrderExecution.submitted_qty * OrderExecution.limit_price)).where(
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.dry_run.is_(dry_run_flag),
             OrderExecution.created_at >= today_start,
             OrderExecution.status != "rejected",
@@ -222,6 +273,7 @@ def _check_caps(
     ticker_week_spend = session.scalar(
         select(func.sum(OrderExecution.submitted_qty * OrderExecution.limit_price)).where(
             OrderExecution.ticker == sug.ticker,
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.dry_run.is_(dry_run_flag),
             OrderExecution.created_at >= week_start,
             OrderExecution.status != "rejected",
@@ -236,6 +288,7 @@ def _check_caps(
     # Per-day order count
     day_order_count = session.execute(
         select(func.count(OrderExecution.id)).where(
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.dry_run.is_(dry_run_flag),
             OrderExecution.created_at >= today_start,
             OrderExecution.status != "rejected",
@@ -267,21 +320,26 @@ def _trigger_kill_switch(
     trigger: str,
     detail: str,
     settings_email_to: str,
+    broker_account_id: int,
 ) -> None:
-    """Flip mode to OFF, cancel open auto-trade orders, log, and alert."""
-    logger.error("AUTO-TRADE KILL SWITCH: trigger=%s detail=%s", trigger, detail)
+    """Flip this broker's mode to OFF, cancel its open auto-trade orders, log, and alert."""
+    logger.error(
+        "AUTO-TRADE KILL SWITCH: broker_account_id=%s trigger=%s detail=%s",
+        broker_account_id, trigger, detail,
+    )
 
-    # Flip mode to OFF
-    meta = session.get(Meta, META_KEY_MODE)
-    if meta is not None:
-        meta.value = "OFF"
-    else:
-        session.add(Meta(key=META_KEY_MODE, value="OFF"))
+    # Flip this broker's mode to OFF (per-broker — other brokers are unaffected).
+    set_mode(session, broker_account_id, "OFF")
+    state = session.get(AutoTradeState, broker_account_id)
+    if state is not None:
+        state.last_kill_switch_event = datetime.now(UTC)
 
-    # Find and cancel recent auto-trade placed orders (last 24h, real, accepted_for_routing)
+    # Find and cancel recent auto-trade placed orders for THIS broker
+    # (last 24h, real, accepted_for_routing).
     cutoff = datetime.now(UTC) - timedelta(hours=24)
     recent_executions = session.scalars(
         select(OrderExecution).where(
+            OrderExecution.broker_account_id == broker_account_id,
             OrderExecution.match_method == "auto_trade_placed",
             OrderExecution.dry_run.is_(False),
             OrderExecution.created_at >= cutoff,
@@ -336,36 +394,51 @@ def run_auto_trade_pass(
     email_to: str,
     broker: str,
     *,
+    broker_account_id: int | None = None,
     as_of: date | None = None,
 ) -> list[AutoTradeOutcome]:
-    """Single auto-trade pass: fetch accepted suggestions, run guards, place/simulate orders.
+    """Single auto-trade pass for ONE broker account: fetch accepted suggestions,
+    run guards, place/simulate orders.
 
     Args:
         session: open SQLAlchemy session. Caller manages commit (session_scope).
-        adapter: broker adapter (Alpaca or Moomoo).
+        adapter: broker adapter (Alpaca or Moomoo) for this account.
         emailer: for kill-switch alert emails.
         email_to: alert recipient.
         broker: broker name string stored on OrderExecution rows (e.g. "alpaca", "moomoo").
+        broker_account_id: the account_ref to trade for. Defaults to the primary active
+            account when None (single-broker / back-compat).
 
     Returns list of AutoTradeOutcome for each suggestion processed.
-    Kill switch is triggered on readback mismatch or broker error — mode flips to OFF.
-    Per-suggestion guard failures (_GuardFailure) skip the suggestion without killing.
+    Kill switch is triggered on readback mismatch or broker error — this broker's mode
+    flips to OFF. Per-suggestion guard failures (_GuardFailure) skip without killing.
     """
-    mode = _get_mode(session)
+    if broker_account_id is None:
+        broker_account_id = resolve_primary_account_ref(session)
+        if broker_account_id is None:
+            logger.warning("run_auto_trade_pass: no active broker account — nothing to do")
+            return []
+
+    mode = _get_mode(session, broker_account_id)
     if mode == "OFF":
-        logger.debug("run_auto_trade_pass: mode=OFF, nothing to do")
+        logger.debug(
+            "run_auto_trade_pass: broker_account_id=%s mode=OFF, nothing to do",
+            broker_account_id,
+        )
         return []
 
     caps = _get_active_caps(session)
-    suggestions = _fetch_accepted_unexecuted(session, as_of=as_of)
+    suggestions = _fetch_accepted_unexecuted(session, broker_account_id, as_of=as_of)
     if not suggestions:
         logger.info(
-            "run_auto_trade_pass: mode=%s, no accepted unexecuted suggestions", mode
+            "run_auto_trade_pass: broker_account_id=%s mode=%s, no accepted unexecuted"
+            " suggestions", broker_account_id, mode,
         )
         return []
 
     logger.info(
-        "run_auto_trade_pass: mode=%s, processing %d suggestions",
+        "run_auto_trade_pass: broker_account_id=%s mode=%s, processing %d suggestions",
+        broker_account_id,
         mode,
         len(suggestions),
     )
@@ -374,16 +447,16 @@ def run_auto_trade_pass(
 
     for sug in suggestions:
         try:
-            _check_idempotency(session, sug, mode)
-            _check_stale_live_order(session, sug)
-            _check_wash_sale(session, sug)
+            _check_idempotency(session, sug, mode, broker_account_id)
+            _check_stale_live_order(session, sug, broker_account_id)
+            _check_wash_sale(session, sug, broker_account_id)
             if caps is None:
                 logger.warning(
                     "auto_trade: no active AutoTradeCaps row — skipping sug-%d (caps unconfigured)",
                     sug.id,
                 )
                 raise _GuardFailure("no active AutoTradeCaps row — configure caps first")
-            _check_caps(session, sug, caps, mode)
+            _check_caps(session, sug, caps, mode, broker_account_id)
             _check_cash_sufficiency(adapter, sug)
         except _GuardFailure as gf:
             logger.info("auto_trade: sug-%d skipped by guard: %s", sug.id, gf)
@@ -402,6 +475,7 @@ def run_auto_trade_pass(
             client_order_id = f"sug-{sug.id}"
             session.add(
                 OrderExecution(
+                    broker_account_id=broker_account_id,
                     suggestion_id=sug.id,
                     ticker=sug.ticker,
                     side=sug.side,
@@ -513,6 +587,7 @@ def run_auto_trade_pass(
                     trigger="broker_error",
                     detail=f"submit_order for sug-{sug.id} raised: {broker_exc}",
                     settings_email_to=email_to,
+                    broker_account_id=broker_account_id,
                 )
                 outcomes.append(
                     AutoTradeOutcome(
@@ -539,6 +614,7 @@ def run_auto_trade_pass(
                             f" but read back {readback.client_order_id!r}"
                         ),
                         settings_email_to=email_to,
+                        broker_account_id=broker_account_id,
                     )
                     outcomes.append(
                         AutoTradeOutcome(
@@ -558,6 +634,7 @@ def run_auto_trade_pass(
                     trigger="readback_failed",
                     detail=f"get_order({conf.broker_order_id}) raised: {readback_exc}",
                     settings_email_to=email_to,
+                    broker_account_id=broker_account_id,
                 )
                 outcomes.append(
                     AutoTradeOutcome(
@@ -572,6 +649,7 @@ def run_auto_trade_pass(
 
             session.add(
                 OrderExecution(
+                    broker_account_id=broker_account_id,
                     suggestion_id=sug.id,
                     ticker=sug.ticker,
                     side=sug.side,

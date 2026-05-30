@@ -14,9 +14,10 @@ from investor.brokers.base import Account, BrokerValidationError, OrderConfirmat
 from investor.db import override_engine_for_testing
 from investor.models import (
     AutoTradeCaps,
+    AutoTradeState,
     Base,
+    BrokerAccount,
     KillSwitchLog,
-    Meta,
     OrderExecution,
     OrderSuggestion,
 )
@@ -24,16 +25,37 @@ from investor.services.auto_trade import run_auto_trade_pass
 
 _NOW = datetime(2026, 5, 1, 9, 35, tzinfo=UTC)
 _WEEK = date(2026, 4, 27)  # Monday
+_ACCT = 1  # account_ref of the seeded primary broker account
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def _seed_account(session: Session) -> None:
+    """Seed the primary broker account (account_ref=_ACCT) that resolve_primary uses."""
+    session.add(
+        BrokerAccount(
+            account_ref=_ACCT,
+            account_id="test",
+            broker="alpaca",
+            mode="paper",
+            nickname="Test",
+            is_active=True,
+            cash_usd=100_000.0,
+            equity_usd=100_000.0,
+            last_sync=_NOW,
+            effective_from=_NOW,
+            effective_to=None,
+        )
+    )
+    session.flush()
+
+
 def _set_mode(session: Session, mode: str) -> None:
-    meta = session.get(Meta, "auto_trade_mode")
-    if meta is None:
-        session.add(Meta(key="auto_trade_mode", value=mode))
+    state = session.get(AutoTradeState, _ACCT)
+    if state is None:
+        session.add(AutoTradeState(broker_account_id=_ACCT, mode=mode))
     else:
-        meta.value = mode
+        state.mode = mode
     session.flush()
 
 
@@ -66,6 +88,7 @@ def _add_suggestion(
     status: str = "accepted",
 ) -> OrderSuggestion:
     sug = OrderSuggestion(
+        broker_account_id=_ACCT,
         week_of=_WEEK,
         ticker=ticker,
         side=side,
@@ -116,6 +139,7 @@ def db_session() -> Session:
     Base.metadata.create_all(engine)
     override_engine_for_testing(engine)
     with Session(engine) as session:
+        _seed_account(session)
         yield session
 
 
@@ -255,8 +279,8 @@ def test_live_readback_mismatch_triggers_kill_switch(db_session: Session) -> Non
     assert outcomes[0].placed is False
     assert outcomes[0].rejected_reason == "readback_mismatch"
 
-    meta = db_session.get(Meta, "auto_trade_mode")
-    assert meta is not None and meta.value == "OFF"
+    state = db_session.get(AutoTradeState, _ACCT)
+    assert state is not None and state.mode == "OFF"
 
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert len(kill_rows) == 1
@@ -277,8 +301,8 @@ def test_live_broker_error_triggers_kill_switch(db_session: Session) -> None:
     assert outcomes[0].placed is False
     assert outcomes[0].rejected_reason is not None and "broker_error" in outcomes[0].rejected_reason
 
-    meta = db_session.get(Meta, "auto_trade_mode")
-    assert meta is not None and meta.value == "OFF"
+    state = db_session.get(AutoTradeState, _ACCT)
+    assert state is not None and state.mode == "OFF"
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert any(k.trigger == "broker_error" for k in kill_rows)
 
@@ -312,6 +336,7 @@ def test_wash_sale_guard_blocks_real_buy(db_session: Session) -> None:
 
     _recent = datetime.now(UTC) - timedelta(days=5)
     recent_loss = OrderExecution(
+        broker_account_id=_ACCT,
         ticker="AAPL",
         side="sell",
         filled_qty=3.0,
@@ -345,6 +370,7 @@ def test_wash_sale_dry_run_loss_does_not_block_real_buy(db_session: Session) -> 
     _add_caps(db_session)
 
     dry_loss = OrderExecution(
+        broker_account_id=_ACCT,
         ticker="AAPL",
         side="sell",
         filled_qty=3.0,
@@ -392,8 +418,8 @@ def test_no_active_caps_skips_suggestion_not_kill_switch(db_session: Session) ->
     assert outcomes[0].rejected_reason is not None
     adapter.submit_order.assert_not_called()
 
-    meta = db_session.get(Meta, "auto_trade_mode")
-    assert meta is not None and meta.value == "LIVE"
+    state = db_session.get(AutoTradeState, _ACCT)
+    assert state is not None and state.mode == "LIVE"
 
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert kill_rows == []
@@ -448,8 +474,8 @@ def test_live_readback_exception_triggers_kill_switch(db_session: Session) -> No
     assert len(outcomes) == 1
     assert outcomes[0].placed is False
     assert "readback_failed" in (outcomes[0].rejected_reason or "")
-    meta = db_session.get(Meta, "auto_trade_mode")
-    assert meta is not None and meta.value == "OFF"
+    state = db_session.get(AutoTradeState, _ACCT)
+    assert state is not None and state.mode == "OFF"
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert any(k.trigger == "readback_failed" for k in kill_rows)
 
@@ -518,8 +544,8 @@ def test_validation_error_skips_suggestion_stays_live(db_session: Session) -> No
     assert outcomes[1].broker_order_id == "broker-msft"
 
     # Kill switch must NOT have fired — mode stays LIVE
-    meta = db_session.get(Meta, "auto_trade_mode")
-    assert meta is not None and meta.value == "LIVE"
+    state = db_session.get(AutoTradeState, _ACCT)
+    assert state is not None and state.mode == "LIVE"
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert kill_rows == []
 
@@ -543,8 +569,8 @@ def test_real_broker_error_fires_kill_switch(db_session: Session) -> None:
     assert "broker_error" in (outcomes[0].rejected_reason or "")
 
     # Kill switch fired — mode is OFF
-    meta = db_session.get(Meta, "auto_trade_mode")
-    assert meta is not None and meta.value == "OFF"
+    state = db_session.get(AutoTradeState, _ACCT)
+    assert state is not None and state.mode == "OFF"
     kill_rows = db_session.scalars(select(KillSwitchLog)).all()
     assert any(k.trigger == "broker_error" for k in kill_rows)
 
@@ -565,6 +591,7 @@ def test_stale_live_order_blocks_placement(db_session: Session) -> None:
 
     # A different (older) suggestion for AAPL — simulates a GTC from last week
     old_sug = OrderSuggestion(
+        broker_account_id=_ACCT,
         week_of=_WEEK - timedelta(days=7),
         ticker="AAPL",
         side="buy",
@@ -579,6 +606,7 @@ def test_stale_live_order_blocks_placement(db_session: Session) -> None:
 
     # Linked accepted_for_routing execution for the old suggestion (dry_run=False)
     stale_exec = OrderExecution(
+        broker_account_id=_ACCT,
         suggestion_id=old_sug.id,
         ticker="AAPL",
         side="buy",
@@ -606,4 +634,54 @@ def test_stale_live_order_blocks_placement(db_session: Session) -> None:
     assert outcomes[0].suggestion_id == current_sug.id
     assert outcomes[0].placed is False
     assert "stale live order" in (outcomes[0].rejected_reason or "")
+    adapter.submit_order.assert_not_called()
+
+
+# ── per-broker mode isolation (Phase 4.9a B1) ────────────────────────────────
+
+def test_mode_is_per_broker_account(db_session: Session) -> None:
+    """auto_trade_state mode is per broker account — account A LIVE does not enable account B."""
+    acct_b = 2
+    db_session.add(
+        BrokerAccount(
+            account_ref=acct_b,
+            account_id="test-b",
+            broker="moomoo",
+            mode="live",
+            nickname="Broker B",
+            is_active=True,
+            cash_usd=100_000.0,
+            equity_usd=100_000.0,
+            last_sync=_NOW,
+            effective_from=_NOW,
+            effective_to=None,
+        )
+    )
+    db_session.flush()
+
+    _set_mode(db_session, "LIVE")  # account A (_ACCT) → LIVE
+    db_session.add(AutoTradeState(broker_account_id=acct_b, mode="OFF"))  # account B → OFF
+    _add_caps(db_session)
+
+    # A suggestion on account B should NOT trade (B is OFF), even though A is LIVE.
+    sug_b = OrderSuggestion(
+        broker_account_id=acct_b,
+        week_of=_WEEK,
+        ticker="TSLA",
+        side="buy",
+        qty=1.0,
+        limit_price=100.0,
+        reason="test",
+        status="accepted",
+        created_at=_NOW - timedelta(hours=1),
+    )
+    db_session.add(sug_b)
+    db_session.flush()
+
+    adapter = _mock_adapter()
+    outcomes_b = run_auto_trade_pass(
+        db_session, adapter, _emailer(), "t@t.com", "moomoo",
+        broker_account_id=acct_b, as_of=_WEEK,
+    )
+    assert outcomes_b == []  # B is OFF
     adapter.submit_order.assert_not_called()

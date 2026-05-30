@@ -52,14 +52,19 @@ from .jobs.weekly_suggestions import run_weekly_suggestions
 from .models import (
     AutoTradeCaps,
     AutoTradePromotionLog,
+    AutoTradeState,
     BrokerAccount,
-    Meta,
     OrderExecution,
     OrderSuggestion,
 )
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
-from .services.auto_trade import _trigger_kill_switch
+from .services.auto_trade import (
+    _get_mode,
+    _trigger_kill_switch,
+    resolve_primary_account_ref,
+    set_mode,
+)
 from .services.daily_report import AccountSnapshot
 from .services.email import SMTPEmailer
 from .services.gap import GapRow, compute_gap, get_untracked_positions
@@ -755,6 +760,7 @@ class AutoTradePromoteRequest(BaseModel):
     to_mode: Literal["OFF", "DRY_RUN", "LIVE"]
     broker_scope: Literal["alpaca_paper", "alpaca_live", "moomoo"]
     reason: str | None = None
+    broker_account_id: int | None = None  # None → the primary active broker account
 
 
 SOAK_WINDOWS: dict[tuple[str, str], int] = {
@@ -776,17 +782,22 @@ def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
     to_mode = body.to_mode  # already validated by Pydantic Literal
 
     with session_scope() as session:
-        meta = session.get(Meta, "auto_trade_mode")
-        current_mode = meta.value if meta else "OFF"
+        account_ref = body.broker_account_id or resolve_primary_account_ref(session)
+        if account_ref is None:
+            raise HTTPException(status_code=404, detail="No active broker account found")
+        current_mode = _get_mode(session, account_ref)
 
         # Demote to OFF is always allowed immediately
         if to_mode != "OFF":
             soak_days = SOAK_WINDOWS.get((body.broker_scope, to_mode), 0)
             if soak_days > 0:
-                # Clock starts when we last entered the current mode
+                # Clock starts when we last entered the current mode (per broker scope)
                 last_entry = (
                     session.query(AutoTradePromotionLog)
-                    .filter(AutoTradePromotionLog.to_mode == current_mode)
+                    .filter(
+                        AutoTradePromotionLog.to_mode == current_mode,
+                        AutoTradePromotionLog.broker_scope == body.broker_scope,
+                    )
                     .order_by(AutoTradePromotionLog.ts.desc())
                     .first()
                 )
@@ -806,11 +817,11 @@ def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
                         ),
                     )
 
-        # Apply the promotion
-        if meta is None:
-            session.add(Meta(key="auto_trade_mode", value=to_mode))
-        else:
-            meta.value = to_mode
+        # Apply the promotion to this broker's auto_trade_state row
+        set_mode(session, account_ref, to_mode)
+        state = session.get(AutoTradeState, account_ref)
+        if state is not None:
+            state.promoted_at = datetime.now(UTC)
 
         session.add(AutoTradePromotionLog(
             ts=datetime.now(UTC),
@@ -821,7 +832,7 @@ def admin_auto_trade_promote(body: AutoTradePromoteRequest) -> dict[str, Any]:
             actor="admin",
         ))
 
-    return {"mode": to_mode, "broker_scope": body.broker_scope}
+    return {"mode": to_mode, "broker_scope": body.broker_scope, "broker_account_id": account_ref}
 
 
 class AutoTradeCapsRequest(BaseModel):
@@ -1013,8 +1024,15 @@ def admin_reset_week_buy_suggestions(
     dependencies=[Depends(admin_auth)],
 )
 def admin_auto_trade_emergency_stop(request: Request) -> dict[str, Any]:
-    """Trigger the kill switch immediately (mode → OFF, cancel open auto-trade orders)."""
+    """Trigger the kill switch immediately (mode → OFF, cancel open auto-trade orders).
+
+    Scoped to the primary active broker account in B1; B-API extends this to an
+    optional ``broker_account_id`` (default: all active accounts).
+    """
     with session_scope() as session:
+        account_ref = resolve_primary_account_ref(session)
+        if account_ref is None:
+            raise HTTPException(status_code=404, detail="No active broker account found")
         _trigger_kill_switch(
             session=session,
             emailer=request.app.state.emailer,
@@ -1022,6 +1040,7 @@ def admin_auto_trade_emergency_stop(request: Request) -> dict[str, Any]:
             trigger="manual",
             detail="Emergency stop triggered via POST /admin/auto-trade/emergency-stop",
             settings_email_to=request.app.state.settings.email_to,
+            broker_account_id=account_ref,
         )
 
     return {"status": "ok", "message": "Kill switch activated. Auto-trade mode set to OFF."}
