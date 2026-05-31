@@ -41,8 +41,10 @@ def _active_rows(session: Session) -> list[BrokerAccount]:
 def list_active_accounts(session: Session) -> list[AccountInfo]:
     """Return one AccountInfo per distinct active account (latest open row wins).
 
-    Ordered primary-first (most recently synced). Frozen dataclasses are safe to use
-    after the session closes — the canonical pattern for feeding job loops.
+    Ordered most-recently-synced first. NOTE: index 0 is NOT the primary — the primary
+    is the lowest account_ref (see resolve_primary_account_ref). Job loops iterate all
+    accounts, so this order is cosmetic. Frozen dataclasses are safe after the session
+    closes — the canonical pattern for feeding job loops.
     """
     out: list[AccountInfo] = []
     seen: set[int] = set()
@@ -66,6 +68,14 @@ def resolve_active_account_refs(session: Session) -> list[int]:
 
 
 def resolve_primary_account_ref(session: Session) -> int | None:
-    """Return the primary (most-recently-synced active) account's account_ref, or None."""
+    """Return the primary account's account_ref — the LOWEST active ref (the first
+    account onboarded, normally Alpaca) — or None if no account is active.
+
+    Deliberately NOT "most recently synced": onboarding a broker stamps its
+    ``last_sync`` to now, so a last_sync-ordered primary would silently flip to the
+    newest broker. The primary is the default for no-arg reads, the lifespan adapter,
+    the back-compat job entrypoints, and the auto-trade promote default — it must stay
+    stable across onboards.
+    """
     refs = resolve_active_account_refs(session)
-    return refs[0] if refs else None
+    return min(refs) if refs else None

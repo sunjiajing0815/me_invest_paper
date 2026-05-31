@@ -43,6 +43,7 @@ from ..services.suggest import (
     _next_monday,
     generate_suggestions,
 )
+from ..services.targets import targets_path_for_account
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,16 @@ def run_weekly_suggestions_for_account(
         "run_weekly_suggestions started for %s (account_ref=%s)", acct.nickname, bid
     )
 
-    targets = load_targets(settings.targets_path)
+    with session_scope() as session:
+        primary_ref = resolve_primary_account_ref(session)
+    targets_path = targets_path_for_account(settings, bid, is_primary=bid == primary_ref)
+    if targets_path is None:
+        logger.warning(
+            "run_weekly_suggestions: no targets file for %s (account_ref=%s); skipping",
+            acct.nickname, bid,
+        )
+        return
+    targets = load_targets(targets_path)
     tickers = targets.watchlist
 
     try:

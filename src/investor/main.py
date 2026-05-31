@@ -54,7 +54,7 @@ from .jobs.reconciliation import (
 from .jobs.suggestion_expiry import (
     sweep_expired_suggestions_all_brokers,
 )
-from .jobs.sync import run_sync_job
+from .jobs.sync import run_sync_for_account
 from .jobs.weekly_review import run_weekly_review
 from .jobs.weekly_suggestions import (
     run_weekly_suggestions_all_brokers,
@@ -133,7 +133,9 @@ def _resolve_scope(
             )
         return [broker_account_id]
     if default == "primary":
-        return active[:1]
+        # Primary = lowest active ref (stable across onboards), NOT active[0], which is
+        # most-recently-synced order. Mirrors resolve_primary_account_ref.
+        return [min(active)] if active else []
     return active
 
 
@@ -655,16 +657,31 @@ def suggestion_magic_link(
 
 
 @app.post("/admin/run-sync", summary="Ad-hoc sync trigger", dependencies=[Depends(admin_auth)])
-def admin_run_sync() -> dict[str, str]:
-    """Trigger an immediate sync from the broker. Runs synchronously."""
+def admin_run_sync(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, Any]:
+    """Trigger an immediate sync. Defaults to ALL active brokers; ``?broker_account_id``
+    targets one. Each account syncs through its OWN adapter (``app.state.adapters``) —
+    never the primary adapter, which is what wrote Alpaca's positions under Moomoo."""
     settings = _get_settings()
-    logger.info("Ad-hoc sync triggered via POST /admin/run-sync")
-    try:
-        run_sync_job(settings)
-    except Exception as exc:
-        logger.error("Ad-hoc sync failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Sync failed: {exc}") from exc
-    return {"status": "ok", "message": "Sync completed"}
+    refs = _resolve_scope(broker_account_id, default="all")
+    adapters = request.app.state.adapters
+    synced: dict[int, int] = {}
+    errors: dict[int, str] = {}
+    for ref in refs:
+        adapter = adapters.get(ref)
+        if adapter is None:
+            errors[ref] = "no adapter registered for this account"
+            continue
+        try:
+            synced[ref] = run_sync_for_account(adapter, settings, ref)
+        except Exception as exc:
+            logger.exception("Ad-hoc sync failed for account_ref=%s", ref)
+            errors[ref] = str(exc)
+    if errors and not synced:
+        raise HTTPException(status_code=502, detail=f"Sync failed: {errors}")
+    logger.info("Ad-hoc sync via /admin/run-sync: synced=%s errors=%s", synced, errors)
+    return {"status": "ok", "synced": synced, "errors": errors}
 
 
 @app.post(

@@ -19,6 +19,7 @@ from ..services.daily_report import compose_daily_report
 from ..services.email import EmailSender
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
+from ..services.targets import targets_path_for_account
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,18 @@ def run_daily_report_for_account(
         account.nickname, account.account_ref,
     )
 
-    targets = load_targets(settings.targets_path)
+    with session_scope() as session:
+        primary_ref = resolve_primary_account_ref(session)
+    targets_path = targets_path_for_account(
+        settings, account.account_ref, is_primary=account.account_ref == primary_ref
+    )
+    if targets_path is None:
+        logger.warning(
+            "run_daily_report: no targets file for %s (account_ref=%s); skipping",
+            account.nickname, account.account_ref,
+        )
+        return
+    targets = load_targets(targets_path)
 
     try:
         update_bars(
