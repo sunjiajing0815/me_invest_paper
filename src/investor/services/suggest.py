@@ -193,7 +193,15 @@ def generate_suggestions(
             anchor_method: str | None = None
             anchor_rationale: str | None = None
             ticker_scored = (scored_levels or {}).get(g.ticker)
-            buy_levels = [lv for lv in (ticker_scored or []) if lv.type == "support"]
+            cur_price = nearby.current_price or 0.0
+            # Directional: a BUY anchors to a support AT OR BELOW the current price. A
+            # scored "support" can sit above current once price drops through it, and
+            # anchoring there puts the limit above market (fills immediately, not the
+            # intended pullback). Above-current supports fall through to the fallback.
+            buy_levels = [
+                lv for lv in (ticker_scored or [])
+                if lv.type == "support" and lv.price <= cur_price
+            ]
             if buy_levels:
                 anchor = select_anchor(
                     buy_levels,
@@ -291,7 +299,12 @@ def generate_suggestions(
             anchor_method_sell: str | None = None
             anchor_rationale_sell: str | None = None
             ticker_scored_sell = (scored_levels or {}).get(g.ticker)
-            sell_levels = [lv for lv in (ticker_scored_sell or []) if lv.type == "resistance"]
+            cur_price_sell = nearby.current_price or 0.0
+            # Directional mirror: a SELL/trim anchors to a resistance AT OR ABOVE current.
+            sell_levels = [
+                lv for lv in (ticker_scored_sell or [])
+                if lv.type == "resistance" and lv.price >= cur_price_sell
+            ]
             if sell_levels:
                 anchor_sell = select_anchor(
                     sell_levels,

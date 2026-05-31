@@ -354,6 +354,47 @@ class TestGenerateSuggestionsWithScoredLevels:
         # confidence_at_creation must be None when using fallback path
         assert s.confidence_at_creation is None
 
+    def test_buy_anchor_must_be_at_or_below_current_price(self) -> None:
+        """A scored 'support' above current must NOT become the BUY limit (it would
+        fill at market). The below-current support wins even though it scored lower."""
+        scored = {
+            "VOO": [
+                _make_scored("ema_21", 201.0, "support", 0.90),  # ABOVE current — reject
+                _make_scored("sma_50", 196.0, "support", 0.60),  # below current — valid anchor
+            ]
+        }
+        gap = [_gap("VOO", gap_pct=8.0, band_status="under")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, support_price=196.0)}
+        suggestions, _ = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby,
+            account=_account(cash=2_000.0), scored_levels=scored,
+        )
+        assert len(suggestions) == 1
+        s = suggestions[0]
+        assert s.side == "buy"
+        assert s.limit_price == 196.0           # below-current support, not the 201 above
+        assert s.confidence_at_creation == 0.60  # used the scored path, not the fallback
+
+    def test_sell_anchor_must_be_at_or_above_current_price(self) -> None:
+        """Mirror: a scored 'resistance' below current must NOT become the SELL limit."""
+        scored = {
+            "VOO": [
+                _make_scored("ema_21", 199.0, "resistance", 0.90),  # BELOW current — reject
+                _make_scored("sma_50", 204.0, "resistance", 0.60),  # above current — valid anchor
+            ]
+        }
+        gap = [_gap("VOO", gap_pct=-8.0, band_status="over")]
+        nearby = {"VOO": _levels("VOO", current_price=200.0, resistance_price=204.0)}
+        suggestions, _ = generate_suggestions(
+            gap_rows=gap, nearby_levels=nearby,
+            account=_account(cash=2_000.0), scored_levels=scored,
+        )
+        assert len(suggestions) == 1
+        s = suggestions[0]
+        assert s.side == "sell"
+        assert s.limit_price == 204.0
+        assert s.confidence_at_creation == 0.60
+
     def test_generate_suggestions_populates_confidence_when_scored_levels_provided(self) -> None:
         """generate_suggestions uses scored_levels when non-empty and populates confidence."""
         scored = {
