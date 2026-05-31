@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     opend_host: str = ""
     opend_port: int = 11111
     opend_security_firm: str = "FUTUSECURITIES"
+    opend_rsa_key_path: str = ""  # in-container path to OpenD's RSA key (empty = unencrypted)
 
     # Tavily search API (Phase 4.5 weekly market context)
     tavily_api_key: str = ""

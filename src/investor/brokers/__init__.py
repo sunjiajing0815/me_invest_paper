@@ -43,6 +43,7 @@ def make_adapter(settings: Settings) -> BrokerAdapter:
             port=settings.opend_port,
             paper=False,
             security_firm=settings.opend_security_firm,
+            rsa_key_path=settings.opend_rsa_key_path or None,
         )
     raise NotImplementedError(
         f"Broker {settings.broker!r} not yet implemented."
@@ -79,6 +80,9 @@ def make_account_adapter(
             security_firm=connection_config.get(
                 "security_firm", settings.opend_security_firm
             ),
+            rsa_key_path=connection_config.get("rsa_key_path")
+            or settings.opend_rsa_key_path
+            or None,
         )
     raise NotImplementedError(f"Broker {broker!r} not yet implemented for per-account adapters.")
 

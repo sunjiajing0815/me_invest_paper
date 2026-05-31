@@ -39,11 +39,20 @@ class MoomooAdapter:
         *,
         paper: bool = True,
         security_firm: str = "FUTUSECURITIES",
+        rsa_key_path: str | None = None,
     ) -> None:
         # Import futu lazily so the module remains importable without OpenD running
         import futu as ft
 
         self._ft = ft
+        # When OpenD requires an encrypted connection, the SDK must use the SAME RSA
+        # private key file OpenD was configured with. SysConfig is process-global and
+        # MUST be set before any context is created. No key path → unencrypted (OpenD
+        # must then also have encryption off, or InitConnect fails: "check sha error").
+        if rsa_key_path:
+            ft.SysConfig.enable_proto_encrypt(True)
+            ft.SysConfig.set_init_rsa_file(rsa_key_path)
+            logger.info("MoomooAdapter: protocol encryption enabled (rsa key=%s)", rsa_key_path)
         self._trd_env = ft.TrdEnv.SIMULATE if paper else ft.TrdEnv.REAL
         self._security_firm = security_firm
         self._host = host

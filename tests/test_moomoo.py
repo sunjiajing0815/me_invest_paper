@@ -57,6 +57,22 @@ def adapter(ft_mock: MagicMock) -> MoomooAdapter:
     return MoomooAdapter(host="localhost", port=11111, paper=True)
 
 
+# ── encryption (RSA) ──────────────────────────────────────────────────────────
+
+def test_encryption_enabled_when_rsa_key_path_given(ft_mock: MagicMock) -> None:
+    """OpenD with encryption on: the SDK must enable proto encryption + load the key."""
+    MoomooAdapter(host="h", port=11111, paper=True, rsa_key_path="/app/data/secrets/k.txt")
+    ft_mock.SysConfig.enable_proto_encrypt.assert_called_once_with(True)
+    ft_mock.SysConfig.set_init_rsa_file.assert_called_once_with("/app/data/secrets/k.txt")
+
+
+def test_no_encryption_when_rsa_key_path_absent(ft_mock: MagicMock) -> None:
+    """Default (no key) stays unencrypted — Alpaca-only setups are unaffected."""
+    MoomooAdapter(host="h", port=11111, paper=True)
+    ft_mock.SysConfig.enable_proto_encrypt.assert_not_called()
+    ft_mock.SysConfig.set_init_rsa_file.assert_not_called()
+
+
 # ── get_positions ─────────────────────────────────────────────────────────────
 
 def test_get_positions_strips_prefix_and_maps_fields(
