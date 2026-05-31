@@ -73,6 +73,36 @@ def test_no_encryption_when_rsa_key_path_absent(ft_mock: MagicMock) -> None:
     ft_mock.SysConfig.set_init_rsa_file.assert_not_called()
 
 
+# ── account base currency ─────────────────────────────────────────────────────
+
+def test_get_account_requests_configured_currency(ft_mock: MagicMock) -> None:
+    """accinfo_query must be pinned to the account's base currency — Futu defaults to
+    HKD, which silently converts an AUD/USD account's totals."""
+    ft_mock.Currency.USD = "USD"
+    ft_mock.Currency.AUD = "AUD"
+    tc = ft_mock.OpenSecTradeContext.return_value
+    tc.accinfo_query.return_value = (
+        ft_mock.RET_OK,
+        pd.DataFrame([{"acc_id": "1819", "cash": 1000.0, "total_assets": 5000.0, "power": 2000.0}]),
+    )
+    adapter = MoomooAdapter(host="h", port=11111, paper=False, currency="USD")
+    acct = adapter.get_account()
+    assert tc.accinfo_query.call_args.kwargs["currency"] == "USD"
+    assert acct.equity_usd == 5000.0
+    assert acct.cash_usd == 1000.0
+
+
+def test_get_account_currency_defaults_to_usd(ft_mock: MagicMock) -> None:
+    ft_mock.Currency.USD = "USD"
+    tc = ft_mock.OpenSecTradeContext.return_value
+    tc.accinfo_query.return_value = (
+        ft_mock.RET_OK,
+        pd.DataFrame([{"acc_id": "x", "cash": 0.0, "total_assets": 0.0, "power": 0.0}]),
+    )
+    MoomooAdapter(host="h", port=11111, paper=False).get_account()
+    assert tc.accinfo_query.call_args.kwargs["currency"] == "USD"
+
+
 # ── get_positions ─────────────────────────────────────────────────────────────
 
 def test_get_positions_strips_prefix_and_maps_fields(

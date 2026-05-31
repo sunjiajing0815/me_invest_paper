@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     opend_port: int = 11111
     opend_security_firm: str = "FUTUSECURITIES"
     opend_rsa_key_path: str = ""  # in-container path to OpenD's RSA key (empty = unencrypted)
+    opend_currency: str = "USD"  # base currency for Moomoo account totals (accinfo_query)
 
     # Tavily search API (Phase 4.5 weekly market context)
     tavily_api_key: str = ""

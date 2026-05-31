@@ -40,6 +40,7 @@ class MoomooAdapter:
         paper: bool = True,
         security_firm: str = "FUTUSECURITIES",
         rsa_key_path: str | None = None,
+        currency: str = "USD",
     ) -> None:
         # Import futu lazily so the module remains importable without OpenD running
         import futu as ft
@@ -55,6 +56,9 @@ class MoomooAdapter:
             logger.info("MoomooAdapter: protocol encryption enabled (rsa key=%s)", rsa_key_path)
         self._trd_env = ft.TrdEnv.SIMULATE if paper else ft.TrdEnv.REAL
         self._security_firm = security_firm
+        # Base currency for account totals. accinfo_query defaults to HKD, so without
+        # this an AUD/USD account's total_assets/cash come back converted to HKD.
+        self._currency = currency
         self._host = host
         self._port = port
         self._trade_ctx = ft.OpenSecTradeContext(
@@ -68,10 +72,11 @@ class MoomooAdapter:
         )
         self._quote_ctx = ft.OpenQuoteContext(host=host, port=port)
         logger.info(
-            "MoomooAdapter initialised: host=%s port=%d paper=%s",
+            "MoomooAdapter initialised: host=%s port=%d paper=%s currency=%s",
             host,
             port,
             paper,
+            currency,
         )
 
     def close(self) -> None:
@@ -82,7 +87,13 @@ class MoomooAdapter:
     def get_account(self) -> Account:
         """Return account summary from Moomoo accinfo_query."""
         ft = self._ft
-        ret, data = self._trade_ctx.accinfo_query(trd_env=self._trd_env)
+        # Pin the currency: accinfo_query defaults to Currency.HKD, which silently
+        # converts an AUD/USD account's totals into HKD. Request the account's base
+        # currency so total_assets/cash match what the broker shows.
+        ret, data = self._trade_ctx.accinfo_query(
+            trd_env=self._trd_env,
+            currency=getattr(ft.Currency, self._currency, ft.Currency.USD),
+        )
         if ret != ft.RET_OK:
             raise RuntimeError(f"Moomoo accinfo_query failed: {data}")
         row = data.iloc[0]

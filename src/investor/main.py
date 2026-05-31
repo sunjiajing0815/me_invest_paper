@@ -312,6 +312,7 @@ class BrokerAccountCreateRequest(BaseModel):
 
     broker: str  # "alpaca" | "moomoo" | …
     nickname: str
+    currency: str = "USD"  # base currency for account totals (e.g. USD, AUD)
     connection_config: dict[str, Any] = {}  # creds/host refs; see make_account_adapter
 
 
@@ -361,22 +362,25 @@ def admin_create_broker_account(
     requires that broker's own soak ladder (ADR-0014/0024).
     """
     settings = _get_settings()
+    # Base currency is surfaced as its own setup field; fold it into the stored
+    # connection_config so the adapter (and every later rebuild) reads it back.
+    connection_config = {**body.connection_config, "currency": body.currency}
     try:
         adapter = make_account_adapter(
-            broker=body.broker, connection_config=body.connection_config, settings=settings
+            broker=body.broker, connection_config=connection_config, settings=settings
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not build adapter: {exc}") from exc
 
     now = datetime.now(UTC)
-    paper = bool(body.connection_config.get("paper", True))
+    paper = bool(connection_config.get("paper", True))
     with session_scope() as session:
         row = BrokerAccount(
             broker=body.broker,
             mode="paper" if paper else "live",
             nickname=body.nickname,
             is_active=True,
-            connection_config=json.dumps(body.connection_config),
+            connection_config=json.dumps(connection_config),
             account_ref=0,  # placeholder; set to self id after flush
             cash_usd=0.0,
             equity_usd=0.0,
