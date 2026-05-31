@@ -1,15 +1,19 @@
 # Phase 4.9a — Multi-Broker Plumbing + Per-Broker Reports — Progress Report
 
-> **Status: CODE-COMPLETE — Stages A, B, and C committed on `main`.**
+> **Status: SMOKE-TESTED — Alpaca + Moomoo both live on `main`.**
 > The app is fully multi-broker across the data model, read path, write path, jobs,
-> scheduler, and API. The only thing between here and the `v0.4.9a.0` tag is the
-> 2-broker smoke test (connect Moomoo paper alongside Alpaca; confirm two daily +
-> two weekly emails, per-broker audit columns, per-broker mode isolation).
+> scheduler, and API. The 2-broker smoke test was executed live on **2026-05-31**
+> (Moomoo connected to its REAL funded account alongside Alpaca, app in Docker); it
+> surfaced and fixed three multi-broker wiring bugs and added encrypted-OpenD support
+> — see **"Smoke test execution + hardening"** below. Remaining before the
+> `v0.4.9a.0` tag: confirm tonight's two per-broker weekly emails look right.
 >
 > **Commits (on top of `v0.4.8`):** foundation hardening → B1 (auto_trade_state) →
 > B2 (adapter factory) → B3–B5 (partition-key threading) → B6 (per-broker targets) →
 > B7+B-API+B8 (emails + endpoint params + scheduler fan-out) → B9 (NOT NULL) →
-> C (onboarding endpoints) → docs (ADR-0024, CLAUDE.md, README, product_plan).
+> C (onboarding endpoints) → docs (ADR-0024, CLAUDE.md, README, product_plan) →
+> `47d5d2b` (docker extra_hosts) → `ee77737` (sync routing + stable primary) →
+> `04d4fae` (OpenD RSA encryption).
 
 ## Context
 
@@ -82,6 +86,66 @@ The migration deletes `meta.auto_trade_mode` and seeds `auto_trade_state`. **B1 
 
 ---
 
+## Smoke test execution + hardening (2026-05-31) ✅
+
+The live 2-broker smoke test (Moomoo connected alongside Alpaca, app in Docker)
+exercised the real fan-out and surfaced bugs the unit tests had not. All fixed,
+re-tested, and verified end-to-end against the running deployment.
+
+### Setup
+- `docker-compose.yml`: added `extra_hosts: ["host.docker.internal:host-gateway"]` so
+  the container reaches host-side OpenD on a Linux VPS too (no-op on macOS Docker
+  Desktop). Commit `47d5d2b`.
+- Moomoo onboarded via `POST /admin/broker-accounts` → **`account_ref=62`**
+  (`security_firm=FUTUAU`), `auto_trade_state` seeded **OFF**. Alpaca is `account_ref=61`.
+- Per-account targets authored at `data/targets/62.yaml` (11 tickers; sum 90 + 10% cash
+  buffer = 100; bands corrected to bracket each target; watchlist set to the target set).
+
+### Three multi-broker bugs found + fixed (commit `ee77737`)
+1. **Sync routing (Bug A).** `/admin/run-sync` ignored `?broker_account_id` and
+   `run_sync_job` always used the *primary* adapter + *primary* account — so syncing
+   broker B pulled broker A's positions and wrote them under B. Fix: the endpoint now
+   takes `?broker_account_id` (default all-active) and syncs each account through its
+   own `app.state.adapters[ref]`; added `run_sync_for_account` / `run_sync_all_brokers`.
+2. **Unstable primary (Bug B).** `resolve_primary_account_ref` (and
+   `_resolve_scope(default="primary")`) returned the *most-recently-synced* account.
+   Onboarding stamps `last_sync=now`, so "primary" silently flipped to the new broker —
+   mis-routing the sync above and every no-arg default (reads, lifespan adapter,
+   promote). Fix: primary = **lowest active `account_ref`** (stable across onboards).
+3. **Per-account targets not loaded in jobs (Bug C).** The daily/weekly jobs loaded
+   `settings.targets_path` (the primary file) for every account. Fix: they now call
+   `targets_path_for_account(settings, ref, is_primary=…)`; a non-primary account
+   without its own file is skipped with a warning.
+
+Regression test `tests/test_multibroker_sync.py`: onboarding a more-recently-synced
+broker keeps primary on the lowest ref; per-account sync uses that account's own
+adapter (no cross-contamination).
+
+### Encrypted OpenD support (commit `04d4fae`)
+OpenD was configured to require an encrypted connection while the adapter connected in
+the clear, so InitConnect (proto 1001) failed with `check sha error`. Fix:
+`MoomooAdapter` now calls Futu `SysConfig.enable_proto_encrypt(True)` +
+`set_init_rsa_file(path)` (process-global, before any context) when a key path is set.
+- New setting `opend_rsa_key_path` (env `OPEND_RSA_KEY_PATH`); per-account override via
+  `connection_config["rsa_key_path"]`. No key → unencrypted (default; Alpaca unaffected).
+- The 1024-bit PKCS#1 key lives at `data/secrets/moomoo_opend_rsa.txt` (gitignored,
+  bind-mounted); only the *path* is in env/`connection_config`, never the key itself
+  (honours "no secrets in the DB"). Tests in `tests/test_moomoo.py`.
+
+### Recovery of the mis-synced account
+Before the fix, account 62 held Alpaca's positions (from Bugs A/B). Recovery: backed up
+the DB (`data/investor.db.bak-fix-2026-05-31`), deleted 62's bogus `positions_snapshot`
+rows, and re-synced through the corrected, encrypted path. The bogus `broker_account`
+state row was superseded by close-and-insert; Alpaca (61) was never touched.
+
+### Verified end state
+- **61 = Alpaca paper** — auto-trade `LIVE`, the primary, 10 targets, holdings intact.
+- **62 = Moomoo** — **REAL funded** account, encrypted OpenD, **auto-trade OFF**
+  (suggest-only), 11 targets, **15 real holdings** synced. Switched from SIMULATE to
+  REAL by setting `connection_config.paper=false` (durable; carried forward on sync).
+- No-arg `/positions` resolves to Alpaca (primary stable); gap for 62 uses its own 11
+  targets; `check sha error` gone; re-sync returns `{"62": 15}` with zero errors.
+
 ## Test summary
 
 | Milestone | Tests |
@@ -90,8 +154,9 @@ The migration deletes `meta.auto_trade_mode` and seeds `auto_trade_state`. **B1 
 | Phase 4.9a Stage A + foundation hardening | 346 |
 | Stage B (B1 mode isolation, B2 factory, B3 gap isolation, B-API scope/404) | 360 |
 | Stage C (broker-account onboarding) | **364** |
+| Smoke-test fixes (sync routing, stable primary, per-account targets, OpenD encryption) | **369** |
 
-`uv run pytest` → 364 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 15 model tables.
+`uv run pytest` → 369 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 15 model tables.
 
 ## Files changed (Stage A)
 
@@ -117,12 +182,12 @@ The work is split into three commits so the safe foundation lands first, indepen
 
 ## Tag
 
-Stages A–C are code-complete. Apply `v0.4.9a.0` once the 2-broker smoke checklist is green:
-1. Migration: existing single-broker rows carry through to one `broker_account_id` group (validated on a real-DB copy).
-2. `POST /admin/broker-accounts` connects Moomoo paper; `make_account_adapter` returns the right adapter; it appears in `/health`.
-3. Daily report fires per active broker → two emails with `[nickname]` subjects.
-4. Weekly suggestions Sunday → each broker its own email; a ticker held in both yields independent per-broker suggestions.
-5. Promote Alpaca → LIVE leaves Moomoo OFF in `auto_trade_state`.
-6. Stale-live-order guard: two live AAPL orders across *different* brokers allowed; two on the *same* broker still blocked.
-7. `data/targets/<id>.yaml` edited independently; `config/targets.yaml` still aliases the primary.
-8. Soft-delete (`is_active=False`) excludes a broker from cron loops; its history stays queryable.
+The 2-broker smoke test was executed live on 2026-05-31 (see "Smoke test execution + hardening" above). Apply `v0.4.9a.0` once the remaining ⏳ rows (tonight's per-broker emails) look right:
+1. ✅ Migration: existing single-broker rows carry through to one `broker_account_id` group (validated on a real-DB copy; the live restart applied the chain cleanly).
+2. ✅ `POST /admin/broker-accounts` connects Moomoo (`account_ref=62`); `make_account_adapter` returns the right (encrypted Moomoo) adapter; it appears in `/health`.
+3. ⏳ Daily report fires per active broker → two emails with `[nickname]` subjects (fires next weekday 16:15 ET).
+4. ⏳ Weekly suggestions Sunday → each broker its own email; a ticker held in both yields independent per-broker suggestions (fires tonight 18:00 ET — both accounts active).
+5. ✅ Promote Alpaca → LIVE leaves Moomoo OFF in `auto_trade_state` (verified: 61 LIVE, 62 OFF).
+6. ⏳ Stale-live-order guard: two live AAPL orders across *different* brokers allowed; two on the *same* broker still blocked (per-broker scoping in place; not yet exercised live).
+7. ✅ `data/targets/62.yaml` edited independently (gap for 62 uses its own 11 targets); `config/targets.yaml` still aliases the primary.
+8. ✅ Soft-delete (`is_active=False`) excludes a broker from cron loops (used to hold 62 from a run; `/health` excluded it); its history stays queryable.
