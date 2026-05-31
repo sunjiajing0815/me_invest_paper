@@ -25,6 +25,17 @@ def _strip_market_prefix(symbol: str) -> str:
     return symbol
 
 
+_MARKET_CURRENCY = {
+    "US": "USD", "AU": "AUD", "HK": "HKD", "SG": "SGD", "JP": "JPY", "CN": "CNH",
+}
+
+
+def _currency_for_code(code: str, default: str = "USD") -> str:
+    """Map a market-prefixed Moomoo code ('US.AAPL', 'AU.CSL') to its native currency."""
+    market = code.split(".", 1)[0].upper() if "." in code else ""
+    return _MARKET_CURRENCY.get(market, default)
+
+
 class MoomooAdapter:
     """Broker adapter for Moomoo/Futu via futu-api + local OpenD daemon.
 
@@ -103,6 +114,7 @@ class MoomooAdapter:
             equity_usd=float(row["total_assets"]),
             buying_power_usd=float(row["power"]),
             as_of=datetime.now(UTC),
+            currency=self._currency,
         )
 
     def get_positions(self) -> list[Position]:
@@ -113,7 +125,8 @@ class MoomooAdapter:
             raise RuntimeError(f"Moomoo position_list_query failed: {data}")
         positions = []
         for _, row in data.iterrows():
-            ticker = _strip_market_prefix(str(row["code"]))
+            code = str(row["code"])
+            ticker = _strip_market_prefix(code)
             positions.append(
                 Position(
                     ticker=ticker,
@@ -121,6 +134,7 @@ class MoomooAdapter:
                     avg_cost=float(row["cost_price"]),
                     market_value=float(row["market_val"]),
                     as_of=datetime.now(UTC),
+                    currency=_currency_for_code(code, self._currency),
                 )
             )
         return positions

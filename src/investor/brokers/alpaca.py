@@ -43,6 +43,7 @@ class AlpacaAdapter:
             equity_usd=float(raw.equity),
             buying_power_usd=float(raw.buying_power),
             as_of=datetime.now(UTC),
+            currency="USD",
         )
 
     def get_positions(self) -> list[Position]:
@@ -55,6 +56,7 @@ class AlpacaAdapter:
                 avg_cost=float(p.avg_entry_price),
                 market_value=float(p.market_value),
                 as_of=now,
+                currency="USD",
             )
             for p in raw_positions
         ]

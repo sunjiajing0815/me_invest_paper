@@ -131,6 +131,18 @@ def test_get_positions_empty_returns_empty_list(adapter: MoomooAdapter) -> None:
     assert adapter.get_positions() == []
 
 
+def test_get_positions_labels_native_currency_from_market(adapter: MoomooAdapter) -> None:
+    """Per-position currency is derived from the market prefix: US.→USD, AU.→AUD."""
+    df = pd.DataFrame([
+        {"code": "US.AAPL", "qty": 10.0, "cost_price": 150.0, "market_val": 1600.0},
+        {"code": "AU.CSL", "qty": 25.0, "cost_price": 130.0, "market_val": 2415.0},
+    ])
+    adapter._trade_ctx.position_list_query.return_value = (0, df)
+    by_ticker = {p.ticker: p for p in adapter.get_positions()}
+    assert by_ticker["AAPL"].currency == "USD"
+    assert by_ticker["CSL"].currency == "AUD"
+
+
 # ── get_activities ────────────────────────────────────────────────────────────
 
 def test_get_activities_uses_deal_list_query_not_order_list(

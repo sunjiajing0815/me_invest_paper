@@ -45,6 +45,7 @@ def take_snapshot(
                 avg_cost=p.avg_cost,
                 market_value=p.market_value,
                 weight_pct=weight_pct,
+                currency=p.currency,
             )
         )
 
@@ -72,6 +73,7 @@ def take_snapshot(
                     avg_cost=0.0,
                     market_value=0.0,
                     weight_pct=0.0,
+                    currency=account.currency,
                 )
             )
             logger.info("Snapshot: tombstone written for closed position %s", ticker)

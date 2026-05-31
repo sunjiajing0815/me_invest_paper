@@ -78,6 +78,9 @@ class PositionsSnapshot(Base):
     avg_cost: Mapped[float] = mapped_column(Double, nullable=False)
     market_value: Mapped[float] = mapped_column(Double, nullable=False)
     weight_pct: Mapped[float] = mapped_column(Double, nullable=False)
+    # Native currency of price/market_value (USD for US, AUD for ASX, …). The account
+    # summary totals are in the account's base currency; per-position values stay native.
+    currency: Mapped[str] = mapped_column(String, nullable=False, server_default="USD")
     __table_args__ = (
         Index("ix_positions_account_ticker_ts", "broker_account_id", "ticker", "ts"),
     )

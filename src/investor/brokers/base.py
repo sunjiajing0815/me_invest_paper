@@ -18,6 +18,7 @@ class Account:
     equity_usd: float
     buying_power_usd: float
     as_of: datetime
+    currency: str = "USD"  # base currency of the summary totals (cash/equity)
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class Position:
     avg_cost: float
     market_value: float
     as_of: datetime
+    currency: str = "USD"  # native currency of this holding's price / market_value
 
 
 @dataclass(frozen=True)
