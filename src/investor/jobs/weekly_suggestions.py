@@ -22,7 +22,7 @@ from ..services.accounts import (
     resolve_primary_account_ref,
 )
 from ..services.bars import update_bars
-from ..services.daily_report import AccountSnapshot
+from ..services.daily_report import AccountSnapshot, _account_currency
 from ..services.email import EmailSender
 from ..services.gap import compute_gap, get_untracked_positions
 from ..services.indicators import compute_indicators
@@ -211,6 +211,7 @@ def run_weekly_suggestions_for_account(
                 mode=orm_account.mode,
                 cash_usd=orm_account.cash_usd,
                 equity_usd=orm_account.equity_usd,
+                currency=_account_currency(orm_account.connection_config),
             )
             if orm_account is not None
             else AccountSnapshot(broker="unknown", mode="unknown", cash_usd=0.0, equity_usd=0.0)

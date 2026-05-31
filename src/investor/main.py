@@ -456,6 +456,7 @@ def positions(broker_account_id: int | None = None) -> list[dict[str, Any]]:
             "avg_cost": r.avg_cost,
             "market_value": r.market_value,
             "weight_pct": r.weight_pct,
+            "currency": r.currency,
         }
         for r in rows
     ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -23,6 +24,15 @@ class AccountSnapshot:
     mode: str
     cash_usd: float
     equity_usd: float
+    currency: str = "USD"  # base currency of cash_usd / equity_usd
+
+
+def _account_currency(connection_config: str | None) -> str:
+    """Base currency from a broker_account's connection_config JSON (default USD)."""
+    try:
+        return str(json.loads(connection_config or "{}").get("currency", "USD"))
+    except (ValueError, TypeError):
+        return "USD"
 
 
 @dataclass(frozen=True)
@@ -65,6 +75,7 @@ def compose_daily_report(
             mode=orm_account.mode,
             cash_usd=orm_account.cash_usd,
             equity_usd=orm_account.equity_usd,
+            currency=_account_currency(orm_account.connection_config),
         )
         if orm_account is not None
         else None

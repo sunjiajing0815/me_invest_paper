@@ -29,6 +29,7 @@ class UntrackedPosition:
     qty: float
     market_value: float
     weight_pct: float
+    currency: str = "USD"  # native currency of market_value
 
 
 def get_untracked_positions(
@@ -44,6 +45,7 @@ def get_untracked_positions(
             qty=float(row.qty),
             market_value=float(row.market_value),
             weight_pct=float(row.weight_pct),
+            currency=row.currency,
         )
         for row in result
     ]

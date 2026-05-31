@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from investor.db import override_engine_for_testing
 from investor.models import Base, BrokerAccount, PositionsSnapshot, TargetAllocation
-from investor.services.gap import GapRow, compute_gap
+from investor.services.gap import GapRow, compute_gap, get_untracked_positions
 
 _ACCT = 1  # account_ref for the seeded test account
 
@@ -271,3 +271,17 @@ class TestComputeGapPerBrokerIsolation:
         assert a_tickers == {"VOO"}                  # B's TSLA must not leak into A
         assert set(b_rows) == {"TSLA"}               # A's VOO must not leak into B
         assert b_rows["TSLA"].band_status == "in_band"
+
+
+def test_untracked_positions_carry_native_currency(db_session: Session) -> None:
+    """An untracked holding returns its stored native currency (e.g. AUD for an ASX stock)."""
+    ts = _seed_account(db_session)
+    db_session.add(PositionsSnapshot(
+        broker_account_id=_ACCT, ts=ts, ticker="CSL", qty=25.0,
+        avg_cost=130.0, market_value=2415.0, weight_pct=5.5, currency="AUD",
+    ))
+    db_session.commit()
+    untracked = get_untracked_positions(db_session, _ACCT)
+    assert len(untracked) == 1
+    assert untracked[0].ticker == "CSL"
+    assert untracked[0].currency == "AUD"

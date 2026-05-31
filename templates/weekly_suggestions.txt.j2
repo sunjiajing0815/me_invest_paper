@@ -1,11 +1,11 @@
 Orders for the week of {{ week_of.strftime('%b %-d, %Y') }}
 {% if account_nickname %}Account: {{ account_nickname }} · {{ account_broker }}
-{% endif %}{% if account %}Equity: ${{ "{:,.0f}".format(account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(account.cash_usd) }}  ({{ account.broker }} · {{ account.mode }}){% else %}No account data{% endif %}
+{% endif %}{% if account %}Equity: ${{ "{:,.0f}".format(account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(account.cash_usd) }}  ({{ account.currency }} · {{ account.broker }} · {{ account.mode }}){% else %}No account data{% endif %}
 
 {% if untracked %}
 === UNTRACKED POSITIONS — NO TARGET ALLOCATION ===
 {% for p in untracked %}
-  {{ p.ticker }}: {{ "{:.2f}".format(p.qty) }} shares  ${{ "{:,.0f}".format(p.market_value) }}  ({{ "{:.1f}".format(p.weight_pct) }}% of portfolio)
+  {{ p.ticker }}: {{ "{:.2f}".format(p.qty) }} shares  ${{ "{:,.0f}".format(p.market_value) }} {{ p.currency }}  ({{ "{:.1f}".format(p.weight_pct) }}% of portfolio)
 {% endfor %}
   Action: add {{ untracked | map(attribute='ticker') | join(', ') }} to targets.yaml or trim the position.
 

@@ -4,7 +4,7 @@ WITH ranked AS (
   FROM positions_snapshot
   WHERE broker_account_id = :broker_account_id
 )
-SELECT ticker, ts, qty, avg_cost, market_value, weight_pct
+SELECT ticker, ts, qty, avg_cost, market_value, weight_pct, currency
 FROM ranked
 WHERE rn = 1
   AND qty > 0

@@ -1,6 +1,6 @@
 Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
 {% if account_nickname %}Account: {{ account_nickname }} · {{ account_broker }}
-{% endif %}{% if report.account %}Equity: ${{ "{:,.0f}".format(report.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(report.account.cash_usd) }}  ({{ report.account.broker }} · {{ report.account.mode }}){% else %}No account data{% endif %}
+{% endif %}{% if report.account %}Equity: ${{ "{:,.0f}".format(report.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(report.account.cash_usd) }}  ({{ report.account.currency }} · {{ report.account.broker }} · {{ report.account.mode }}){% else %}No account data{% endif %}
 
 {% if report.drift_alerts %}
 === DRIFT ALERTS — {{ report.drift_alerts|length }} ticker(s) outside band ===
@@ -12,7 +12,7 @@ Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
 {% if report.untracked_positions %}
 === UNTRACKED POSITIONS — NO TARGET ALLOCATION ===
 {% for p in report.untracked_positions %}
-  {{ p.ticker }}: {{ "{:.2f}".format(p.qty) }} shares  ${{ "{:,.0f}".format(p.market_value) }}  ({{ "{:.1f}".format(p.weight_pct) }}% of portfolio)
+  {{ p.ticker }}: {{ "{:.2f}".format(p.qty) }} shares  ${{ "{:,.0f}".format(p.market_value) }} {{ p.currency }}  ({{ "{:.1f}".format(p.weight_pct) }}% of portfolio)
 {% endfor %}
   Action: add {{ report.untracked_positions | map(attribute='ticker') | join(', ') }} to targets.yaml or trim the position.
 

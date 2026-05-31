@@ -17,7 +17,7 @@
     </td>
     <td style="padding:20px; text-align:right;">
       {% if report.account %}
-      <p style="margin:0 0 4px 0; font-size:22px; font-weight:bold;">${{ "{:,.0f}".format(report.account.equity_usd) }}</p>
+      <p style="margin:0 0 4px 0; font-size:22px; font-weight:bold;">${{ "{:,.0f}".format(report.account.equity_usd) }} <span style="font-size:13px; font-weight:normal; opacity:0.7;">{{ report.account.currency }}</span></p>
       <p style="margin:0; font-size:13px; opacity:0.8;">Equity &nbsp;|&nbsp; Cash ${{ "{:,.0f}".format(report.account.cash_usd) }}</p>
       <p style="margin:4px 0 0 0; font-size:11px; opacity:0.6;">{{ report.account.broker }} · {{ report.account.mode }}</p>
       {% else %}
@@ -63,7 +63,7 @@
         <tr style="color:#922b21;">
           <td style="padding:2px 8px; font-weight:bold;">{{ p.ticker }}</td>
           <td style="padding:2px 8px; text-align:right;">{{ "{:.2f}".format(p.qty) }}</td>
-          <td style="padding:2px 8px; text-align:right;">${{ "{:,.0f}".format(p.market_value) }}</td>
+          <td style="padding:2px 8px; text-align:right;">${{ "{:,.0f}".format(p.market_value) }} {{ p.currency }}</td>
           <td style="padding:2px 8px; text-align:right;">{{ "{:.1f}".format(p.weight_pct) }}%</td>
         </tr>
         {% endfor %}
@@ -103,7 +103,7 @@
       <td style="padding:7px 10px; font-weight:bold;">{{ pos.ticker }}</td>
       <td style="padding:7px 10px; text-align:right;">{{ "{:.2f}".format(pos.qty) }}</td>
       <td style="padding:7px 10px; text-align:right;">${{ "{:,.2f}".format(pos.avg_cost) }}</td>
-      <td style="padding:7px 10px; text-align:right;">${{ "{:,.0f}".format(pos.market_value) }}</td>
+      <td style="padding:7px 10px; text-align:right;">${{ "{:,.0f}".format(pos.market_value) }} {{ pos.currency }}</td>
       <td style="padding:7px 10px; text-align:right;">{{ "{:.1f}".format(pos.weight_pct) }}%</td>
       <td style="padding:7px 10px; text-align:right;">{{ "{:.1f}".format(gap.target_pct) if gap else '—' }}%</td>
       <td style="padding:7px 10px; text-align:right; color:{{ '#c0392b' if gap and gap.gap_pct < 0 else '#27ae60' }};">
