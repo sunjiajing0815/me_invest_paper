@@ -20,6 +20,7 @@ from investor.graphs.suggestion_review import (
     ReviewContext,
     SuggestionReviewState,
     _apply_changes,
+    _find_level,
     critic_node,
     gather_context_node,
     reason_node,
@@ -529,3 +530,30 @@ class TestGatherContextNodeSessionLeak:
         assert isinstance(ctx.indicators, dict)
         assert isinstance(ctx.account, AccountSnapshot)
         assert isinstance(ctx.untracked_positions, list)
+
+
+def _lv(method: str, price: float, type_: str) -> ScoredLevel:
+    return ScoredLevel(method=method, price=price, type=type_, confidence=0.6, rationale="t")
+
+
+class TestFindLevelDirectional:
+    """The critic's prefer_anchor re-anchor must respect direction (a BUY can't anchor
+    to a 'support' that price has fallen through — the BTC pivot_weekly_S2 regression)."""
+
+    def test_buy_rejects_support_above_current(self) -> None:
+        levels = [_lv("pivot_weekly_S2", 32.77, "support")]
+        assert _find_level(levels, "pivot_weekly_S2", "buy", 32.48) is None  # above current
+        assert _find_level(levels, "pivot_weekly_S2", "buy", 33.00) is not None  # below current
+
+    def test_sell_rejects_resistance_below_current(self) -> None:
+        levels = [_lv("ema_21", 199.0, "resistance")]
+        assert _find_level(levels, "ema_21", "sell", 200.0) is None  # below current
+        assert _find_level(levels, "ema_21", "sell", 198.0) is not None  # above current
+
+    def test_no_current_price_falls_back_to_method_and_type(self) -> None:
+        levels = [_lv("pivot_weekly_S2", 32.77, "support")]
+        assert _find_level(levels, "pivot_weekly_S2", "buy", 0.0) is not None
+
+    def test_wrong_type_for_side_is_rejected(self) -> None:
+        levels = [_lv("ema_21", 199.0, "resistance")]
+        assert _find_level(levels, "ema_21", "buy", 250.0) is None  # resistance can't anchor a BUY

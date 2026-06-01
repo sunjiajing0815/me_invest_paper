@@ -349,10 +349,29 @@ def _deeper_anchor(
     return min(candidates, key=lambda lv: lv.price) if candidates else None
 
 
-def _find_level(levels: list[ScoredLevel], method: str, side: str) -> ScoredLevel | None:
-    """Return level matching method only if correct type for side; None otherwise."""
+def _find_level(
+    levels: list[ScoredLevel], method: str, side: str, current_price: float
+) -> ScoredLevel | None:
+    """Return the scored level matching `method` only if it is the correct type AND on
+    the correct side of `current_price` for `side`: a BUY anchors to a support at/below
+    current, a SELL to a resistance at/above current.
+
+    Without the price check the critic could re-anchor a BUY onto a "support" that price
+    has already fallen through (a limit above market) — exactly the directional guard
+    generate_suggestions applies to drafts. ``current_price <= 0`` (no indicator) skips
+    the price check and falls back to method+type only.
+    """
     expected_type = "support" if side == "buy" else "resistance"
-    return next((lv for lv in levels if lv.method == method and lv.type == expected_type), None)
+    for lv in levels:
+        if lv.method != method or lv.type != expected_type:
+            continue
+        if current_price > 0:
+            if side == "buy" and lv.price > current_price:
+                continue
+            if side == "sell" and lv.price < current_price:
+                continue
+        return lv
+    return None
 
 
 def context_adjust_node(
@@ -482,7 +501,9 @@ def context_adjust_node(
             )
             note_parts.append(earnings_note)
         elif prefer_anchor is not None:
-            found = _find_level(ticker_levels, prefer_anchor, d.side)
+            ind = ctx.indicators.get(d.ticker)
+            cur = ind.close if ind is not None else 0.0
+            found = _find_level(ticker_levels, prefer_anchor, d.side, cur)
             if found is not None:
                 new_limit = _floor2dp(found.price) if d.side == "buy" else _ceil2dp(found.price)
                 new_anchor = found.method
