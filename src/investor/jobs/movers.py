@@ -64,6 +64,48 @@ def _compute_movers(bars_dir: str) -> pd.DataFrame:
             )
 
 
+def _build_news_events(
+    tickers: list[str],
+    news_by_ticker: dict[str, list[NewsRaw]],
+    final_by_ticker: dict[str, list[NewsTriageItem]],
+    arbitrated_hashes: set[str],
+    existing_hashes: set[str],
+) -> list[NewsEvent]:
+    """Build NewsEvent rows for a movers run, deduped by ``url_hash``.
+
+    Skips any url_hash already in the DB (``existing_hashes``) AND any already emitted
+    earlier in this run: the same article can surface under multiple movers (e.g. a
+    Micron piece tagged to both MU and MSFT), and a second insert of the same url_hash
+    trips the news_event UNIQUE constraint when the session autoflushes — which crashed
+    the whole job. Pure (no session) so it's unit-testable; the first ticker in
+    ``tickers`` that carries a shared article claims it.
+    """
+    seen: set[str] = set(existing_hashes)
+    events: list[NewsEvent] = []
+    for ticker in tickers:
+        final_map = {item.url_hash: item for item in final_by_ticker.get(ticker, [])}
+        for r in news_by_ticker.get(ticker, []):
+            if r.url_hash in seen:
+                continue
+            f = final_map.get(r.url_hash)
+            events.append(NewsEvent(
+                ticker=ticker,
+                published_at=r.published_at,
+                source=r.source,
+                headline=r.headline,
+                url=r.url,
+                url_hash=r.url_hash,
+                llm_material=f.is_material if f else None,
+                llm_sentiment=f.sentiment if f else None,
+                llm_summary=f.summary if f else None,
+                llm_model=SONNET if r.url_hash in arbitrated_hashes else HAIKU,
+                llm_cost_usd=None,  # cost is tracked via llm_call_log
+                arbitrated=r.url_hash in arbitrated_hashes,
+            ))
+            seen.add(r.url_hash)
+    return events
+
+
 def run_movers_email(
     settings: Settings,
     adapter: BrokerAdapter,
@@ -193,29 +235,15 @@ def run_movers_email(
                 ).all()
             }
 
-        # Persist NewsEvent rows (inside the same session as graph call_log flushes)
-        for t_info in tickers_to_process:
-            ticker = t_info["ticker"]
-            raws = news_by_ticker.get(ticker, [])
-            final_map = {item.url_hash: item for item in final_by_ticker.get(ticker, [])}
-            for r in raws:
-                if r.url_hash in existing_hashes:
-                    continue
-                f = final_map.get(r.url_hash)
-                session.add(NewsEvent(
-                    ticker=ticker,
-                    published_at=r.published_at,
-                    source=r.source,
-                    headline=r.headline,
-                    url=r.url,
-                    url_hash=r.url_hash,
-                    llm_material=f.is_material if f else None,
-                    llm_sentiment=f.sentiment if f else None,
-                    llm_summary=f.summary if f else None,
-                    llm_model=SONNET if r.url_hash in arbitrated_hashes else HAIKU,
-                    llm_cost_usd=None,  # cost is tracked via llm_call_log
-                    arbitrated=r.url_hash in arbitrated_hashes,
-                ))
+        # Persist NewsEvent rows (inside the same session as graph call_log flushes),
+        # deduped by url_hash against the DB and within this run (see _build_news_events).
+        session.add_all(_build_news_events(
+            [t["ticker"] for t in tickers_to_process],
+            news_by_ticker,
+            final_by_ticker,
+            arbitrated_hashes,
+            existing_hashes,
+        ))
 
         # 7. Update MoverState for processed tickers
         now = datetime.now(UTC)
