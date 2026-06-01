@@ -72,3 +72,34 @@ def test_arbitrated_hash_marks_sonnet_and_flag() -> None:
     by_hash = {e.url_hash: e for e in events}
     assert by_hash["a1"].arbitrated is True and by_hash["a1"].llm_model == SONNET
     assert by_hash["a2"].arbitrated is False and by_hash["a2"].llm_model == HAIKU
+
+
+def test_compute_movers_uses_prior_week_close_not_7_days_back(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """last_week_close = the previous week's last trading day (prior Friday), NOT the
+    close exactly 7 days back — which on a Monday run lands two Fridays ago and inflates
+    the move (the MU "+37.8%" bug)."""
+    import pandas as pd
+
+    from investor.jobs.movers import _compute_movers
+
+    bars = tmp_path / "bars"
+    bars.mkdir()
+
+    def _bar(day: str, close: float) -> dict:
+        return {
+            "symbol": "FOO", "timestamp": pd.Timestamp(day),
+            "open": close, "high": close, "low": close, "close": close,
+            "volume": 1000, "trade_count": 10, "vwap": close,
+        }
+
+    pd.DataFrame([
+        _bar("2026-05-22", 100.0),  # Fri, two weeks back   (the OLD buggy "last week")
+        _bar("2026-05-28", 190.0),  # Thu, last week
+        _bar("2026-05-29", 200.0),  # Fri, last week        (the CORRECT last week's close)
+        _bar("2026-06-01", 220.0),  # Mon, "today"
+    ]).to_parquet(bars / "FOO.parquet", index=False)
+
+    row = _compute_movers(str(bars)).set_index("ticker").loc["FOO"]
+    assert row["today_close"] == 220.0
+    assert row["last_week_close"] == 200.0       # May 29 (last Fri), not May 22 ($100)
+    assert round(row["pct_change"], 2) == 10.0   # 220/200-1, not the +120% the bug gave

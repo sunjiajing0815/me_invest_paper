@@ -42,11 +42,15 @@ def _compute_movers(bars_dir: str) -> pd.DataFrame:
                     WHERE date = (SELECT MAX(date) FROM price_bar)
                 ),
                 last_week AS (
+                    -- Last trading day of the PREVIOUS week (the prior Friday, or the last
+                    -- open day if Friday was a holiday) — NOT exactly 7 days back, which on a
+                    -- Monday run lands two Fridays ago. date_trunc('week', ...) is the current
+                    -- week's Monday; last week's close is the latest bar strictly before it.
                     SELECT ticker, close AS last_week_close
                     FROM price_bar
                     WHERE date = (
                         SELECT MAX(date) FROM price_bar
-                        WHERE date <= (SELECT MAX(date) FROM price_bar) - INTERVAL 7 DAYS
+                        WHERE date < date_trunc('week', (SELECT MAX(date) FROM price_bar))
                     )
                 )
                 SELECT today.ticker,
