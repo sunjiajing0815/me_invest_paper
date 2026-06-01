@@ -726,11 +726,14 @@ def admin_run_daily_report(broker_account_id: int | None = None) -> dict[str, st
     summary="Reload targets from targets.yaml",
     dependencies=[Depends(admin_auth)],
 )
-def admin_reload_targets(request: Request) -> dict[str, Any]:
+def admin_reload_targets(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, Any]:
     """Reload target allocations from targets.yaml and backfill bars for any new tickers.
 
-    Bar backfill runs in a background thread (new tickers get 2 years of history;
-    existing tickers get an incremental update). Check logs for completion.
+    Defaults to ALL active accounts; ``?broker_account_id`` reloads just that one (404 if
+    it isn't an active account). Bar backfill runs in a background thread (new tickers get
+    2 years of history; existing tickers get an incremental update). Check logs.
     """
     import threading
 
@@ -738,6 +741,7 @@ def admin_reload_targets(request: Request) -> dict[str, Any]:
 
     settings = _get_settings()
     adapters = request.app.state.adapters
+    scope_refs = set(_resolve_scope(broker_account_id, default="all"))
     results: dict[str, str] = {}
     all_tickers: set[str] = set()
     try:
@@ -745,6 +749,8 @@ def admin_reload_targets(request: Request) -> dict[str, Any]:
             accounts = list_active_accounts(sess)
             primary_ref = resolve_primary_account_ref(sess)
         for acct in accounts:
+            if acct.account_ref not in scope_refs:
+                continue
             path = targets_path_for_account(
                 settings, acct.account_ref, is_primary=(acct.account_ref == primary_ref)
             )
