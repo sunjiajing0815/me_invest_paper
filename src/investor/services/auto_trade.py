@@ -169,16 +169,31 @@ def _check_idempotency(
 
 
 def _check_stale_live_order(
-    session: Session, sug: OrderSuggestion, broker_account_id: int
+    session: Session,
+    adapter: BrokerAdapter,
+    sug: OrderSuggestion,
+    broker_account_id: int,
+    mode: str,
 ) -> None:
-    """Raise _GuardFailure if a different accepted_for_routing execution exists for this
-    ticker on the SAME broker account.
+    """Reconcile any prior ``accepted_for_routing`` execution for this ticker (same broker
+    account) against the broker before placing — cancel-and-replace.
 
-    Prevents placing a second live order while a prior-week GTC is still open at the broker.
-    Scoped per broker — two live orders for the same ticker across *different* brokers is
-    fine (the multi-broker model); two on the *same* broker is what this prevents.
+    A pure DB check is unreliable: ``sync_open_order_statuses`` only transitions
+    ``accepted_for_routing → broker_cancelled`` (never → filled), so a filled order leaves
+    a stale ``accepted_for_routing`` row that would wrongly block. We ask the broker the
+    real status of each prior live order:
+
+    - **genuinely open** (a working GTC) → cancel it so this suggestion can replace it at
+      the new limit;
+    - **done** (filled / canceled / rejected / expired) → clear the stale placement row so
+      it no longer blocks. The fill itself, if any, is recorded by reconciliation in its
+      own row, so we do NOT mark this row filled (that would double-count).
+
+    Only LIVE mode touches the broker; DRY_RUN keeps the conservative block (a simulation
+    must never cancel real orders). Raises _GuardFailure if the broker status can't be
+    determined — then we skip rather than risk a duplicate live order. Scoped per broker.
     """
-    stale = session.scalars(
+    stales = session.scalars(
         select(OrderExecution).where(
             OrderExecution.ticker == sug.ticker,
             OrderExecution.broker_account_id == broker_account_id,
@@ -186,12 +201,43 @@ def _check_stale_live_order(
             OrderExecution.dry_run.is_(False),
             OrderExecution.suggestion_id != sug.id,
         )
-    ).first()
-    if stale is not None:
+    ).all()
+    if not stales:
+        return
+    if mode != "LIVE":
+        s0 = stales[0]
         raise _GuardFailure(
-            f"stale live order exists for {sug.ticker} (exec_id={stale.id}, "
-            f"sug_id={stale.suggestion_id}) — expiry sweep may have missed; skipping"
+            f"stale live order exists for {sug.ticker} (exec_id={s0.id}, "
+            f"sug_id={s0.suggestion_id}); not reconciling in {mode} mode — skipping"
         )
+    for stale in stales:
+        if not stale.broker_order_id:
+            stale.status = "broker_cancelled"  # no broker order → cannot be live
+            continue
+        try:
+            live = adapter.get_order(stale.broker_order_id)
+        except Exception as exc:
+            raise _GuardFailure(
+                f"stale order for {sug.ticker} (exec_id={stale.id}, "
+                f"sug_id={stale.suggestion_id}) — broker status unknown ({exc}); "
+                f"skipping to avoid a duplicate live order"
+            ) from exc
+        if live.status in _LIVE_ORDER_STATUSES:
+            adapter.cancel_order(stale.broker_order_id)
+            stale.status = "broker_cancelled"
+            logger.info(
+                "auto_trade: cancelled stale live order %s (%s) for %s to place "
+                "replacement sug-%d (exec_id=%d)",
+                stale.broker_order_id, live.status, sug.ticker, sug.id, stale.id,
+            )
+        else:
+            stale.status = "broker_cancelled"
+            logger.info(
+                "auto_trade: stale order %s for %s already %s at broker — clearing the "
+                "blocking row (exec_id=%d)",
+                stale.broker_order_id, sug.ticker, live.status, stale.id,
+            )
+    session.flush()
 
 
 def _check_wash_sale(session: Session, sug: OrderSuggestion, broker_account_id: int) -> None:
@@ -437,7 +483,7 @@ def run_auto_trade_pass(
     for sug in suggestions:
         try:
             _check_idempotency(session, sug, mode, broker_account_id)
-            _check_stale_live_order(session, sug, broker_account_id)
+            _check_stale_live_order(session, adapter, sug, broker_account_id, mode)
             _check_wash_sale(session, sug, broker_account_id)
             if caps is None:
                 logger.warning(

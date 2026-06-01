@@ -21,7 +21,11 @@ from investor.models import (
     OrderExecution,
     OrderSuggestion,
 )
-from investor.services.auto_trade import run_auto_trade_pass
+from investor.services.auto_trade import (
+    _check_stale_live_order,
+    _GuardFailure,
+    run_auto_trade_pass,
+)
 
 _NOW = datetime(2026, 5, 1, 9, 35, tzinfo=UTC)
 _WEEK = date(2026, 4, 27)  # Monday
@@ -575,66 +579,71 @@ def test_real_broker_error_fires_kill_switch(db_session: Session) -> None:
     assert any(k.trigger == "broker_error" for k in kill_rows)
 
 
-def test_stale_live_order_blocks_placement(db_session: Session) -> None:
-    """_check_stale_live_order blocks placement when another sug has accepted_for_routing exec."""
-    _set_mode(db_session, "LIVE")
-    _add_caps(
-        db_session,
-        per_order=10_000.0,
-        per_day=50_000.0,
-        per_week_ticker=50_000.0,
-        per_day_orders=20,
+def _add_stale_exec(db_session: Session, sug_id: int, ticker: str, order_id: str) -> OrderExecution:
+    """A prior-week accepted_for_routing real execution — the kind the guard reconciles."""
+    ex = OrderExecution(
+        broker_account_id=_ACCT, suggestion_id=sug_id, ticker=ticker, side="buy",
+        submitted_qty=2.0, filled_qty=0, limit_price=98.0, broker="alpaca",
+        broker_order_id=order_id, client_order_id=f"sug-{sug_id}", dry_run=False,
+        status="accepted_for_routing", match_method="auto_trade_placed",
+        match_confidence=1.0, created_at=_NOW - timedelta(days=7),
     )
-
-    # This week's suggestion for AAPL — the one auto_trade would try to place
-    current_sug = _add_suggestion(db_session, ticker="AAPL", side="buy", qty=2.0, limit_price=100.0)
-
-    # A different (older) suggestion for AAPL — simulates a GTC from last week
-    old_sug = OrderSuggestion(
-        broker_account_id=_ACCT,
-        week_of=_WEEK - timedelta(days=7),
-        ticker="AAPL",
-        side="buy",
-        qty=2.0,
-        limit_price=98.0,
-        reason="last week suggestion",
-        status="accepted",
-        created_at=_NOW - timedelta(days=7),
-    )
-    db_session.add(old_sug)
+    db_session.add(ex)
     db_session.flush()
+    return ex
 
-    # Linked accepted_for_routing execution for the old suggestion (dry_run=False)
-    stale_exec = OrderExecution(
-        broker_account_id=_ACCT,
-        suggestion_id=old_sug.id,
-        ticker="AAPL",
-        side="buy",
-        submitted_qty=2.0,
-        filled_qty=0,
-        limit_price=98.0,
-        broker="alpaca",
-        broker_order_id="stale-ord-001",
-        client_order_id=f"sug-{old_sug.id}",
-        dry_run=False,
-        status="accepted_for_routing",
-        match_method="auto_trade_placed",
-        match_confidence=1.0,
-        created_at=_NOW - timedelta(days=7),
-    )
-    db_session.add(stale_exec)
-    db_session.flush()
 
-    adapter = _mock_adapter()
-    outcomes = run_auto_trade_pass(
-        db_session, adapter, _emailer(), "t@t.com", "alpaca", as_of=_WEEK
+def _conf(order_id: str, status: str) -> OrderConfirmation:
+    return OrderConfirmation(
+        broker_order_id=order_id, client_order_id=None, status=status, submitted_at=_NOW
     )
 
-    assert len(outcomes) == 1
-    assert outcomes[0].suggestion_id == current_sug.id
-    assert outcomes[0].placed is False
-    assert "stale live order" in (outcomes[0].rejected_reason or "")
-    adapter.submit_order.assert_not_called()
+
+def test_stale_open_order_cancelled_and_row_cleared(db_session: Session) -> None:
+    """LIVE: a prior order still OPEN at the broker is cancelled (cancel-and-replace) and
+    its stale row cleared, so the guard no longer blocks this week's suggestion."""
+    cur = _add_suggestion(db_session, ticker="AAPL", side="buy", qty=2.0, limit_price=100.0)
+    stale = _add_stale_exec(db_session, cur.id + 1, "AAPL", "stale-open")
+    adapter = MagicMock()
+    adapter.get_order.return_value = _conf("stale-open", "new")  # still working at broker
+    _check_stale_live_order(db_session, adapter, cur, _ACCT, "LIVE")  # must NOT raise
+    adapter.cancel_order.assert_called_once_with("stale-open")
+    assert stale.status == "broker_cancelled"
+
+
+def test_stale_filled_order_cleared_without_cancel(db_session: Session) -> None:
+    """LIVE: a prior order already FILLED at the broker (the GOOG bug — sync only marks
+    cancellations, not fills) leaves a stale row; clear it without cancelling, don't block."""
+    cur = _add_suggestion(db_session, ticker="GOOG", side="buy", qty=2.0, limit_price=100.0)
+    stale = _add_stale_exec(db_session, cur.id + 1, "GOOG", "stale-filled")
+    adapter = MagicMock()
+    adapter.get_order.return_value = _conf("stale-filled", "filled")
+    _check_stale_live_order(db_session, adapter, cur, _ACCT, "LIVE")  # must NOT raise
+    adapter.cancel_order.assert_not_called()
+    assert stale.status == "broker_cancelled"
+
+
+def test_stale_order_blocks_when_broker_status_unknown(db_session: Session) -> None:
+    """LIVE: if the broker status can't be fetched, skip (block) rather than risk a dup."""
+    cur = _add_suggestion(db_session, ticker="MSFT", side="buy", qty=2.0, limit_price=100.0)
+    stale = _add_stale_exec(db_session, cur.id + 1, "MSFT", "stale-unknown")
+    adapter = MagicMock()
+    adapter.get_order.side_effect = RuntimeError("broker down")
+    with pytest.raises(_GuardFailure):
+        _check_stale_live_order(db_session, adapter, cur, _ACCT, "LIVE")
+    adapter.cancel_order.assert_not_called()
+    assert stale.status == "accepted_for_routing"  # unchanged — still blocks
+
+
+def test_stale_order_dry_run_blocks_without_broker_calls(db_session: Session) -> None:
+    """DRY_RUN must never touch the broker — keep the conservative block."""
+    cur = _add_suggestion(db_session, ticker="VOO", side="buy", qty=2.0, limit_price=100.0)
+    _add_stale_exec(db_session, cur.id + 1, "VOO", "stale-dry")
+    adapter = MagicMock()
+    with pytest.raises(_GuardFailure):
+        _check_stale_live_order(db_session, adapter, cur, _ACCT, "DRY_RUN")
+    adapter.get_order.assert_not_called()
+    adapter.cancel_order.assert_not_called()
 
 
 # ── per-broker mode isolation (Phase 4.9a B1) ────────────────────────────────
