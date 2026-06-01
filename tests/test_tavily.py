@@ -113,6 +113,22 @@ class TestTavilyConcreteClient:
             client.search_news("any query")
         assert "Tavily search failed" in caplog.text
 
+    def test_passes_time_range_for_recency(self):
+        """finance topic ignores `days`; time_range must be sent so recency is honored."""
+        client = self._make_client()
+        client._client.search.return_value = {"results": []}
+        client.search_finance("BTC stock news this week", days=7)
+        kwargs = client._client.search.call_args.kwargs
+        assert kwargs["topic"] == "finance"
+        assert kwargs["time_range"] == "week"
+
+    def test_days_to_time_range_buckets(self):
+        from investor.services.tavily import _days_to_time_range
+        assert _days_to_time_range(1) == "day"
+        assert _days_to_time_range(7) == "week"
+        assert _days_to_time_range(30) == "month"
+        assert _days_to_time_range(365) == "year"
+
     def test_success_increments_counter(self):
         client = self._make_client()
         client._client.search.return_value = {

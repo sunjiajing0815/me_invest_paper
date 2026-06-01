@@ -48,6 +48,23 @@ def _parse_date(raw: str | None) -> date | None:
         return None
 
 
+def _days_to_time_range(days: int) -> str:
+    """Map a 'days back' window to Tavily's ``time_range`` bucket.
+
+    Tavily honors ``days`` only for ``topic="news"``; for ``topic="finance"`` (and
+    "general") it is ignored, so a finance search returns its most *relevant* match
+    regardless of date — which surfaced a stale "BTC hit $73k" article in a later
+    week's review. ``time_range`` is honored for ALL topics, so we always send it.
+    """
+    if days <= 1:
+        return "day"
+    if days <= 7:
+        return "week"
+    if days <= 31:
+        return "month"
+    return "year"
+
+
 class TavilyClient(Protocol):
     """Protocol so the concrete impl can be swapped if Tavily becomes unsuitable."""
 
@@ -101,6 +118,9 @@ class TavilyConcreteClient:
                 query=query,
                 topic=topic,
                 days=days,
+                # `days` is honored only for topic="news"; `time_range` filters recency
+                # for every topic — without it, finance searches return stale matches.
+                time_range=_days_to_time_range(days),
                 max_results=max_results,
                 search_depth="advanced",
             )
