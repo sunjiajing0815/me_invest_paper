@@ -147,8 +147,13 @@ def persist_reconciliation(
     for r in results:
         existing = session.scalar(
             select(OrderExecution).where(
+                # Match by broker_order_id (unique per order) + account, NOT the broker
+                # string. The placement row may carry the full broker ("alpaca_paper",
+                # written by the back-compat auto-trade entrypoint) while reconciliation
+                # passes the bare family ("alpaca"); requiring equality missed the
+                # placement row and inserted a duplicate filled row, leaving the original
+                # stuck at accepted_for_routing. broker_order_id + account is exact.
                 OrderExecution.broker_order_id == r.activity.broker_order_id,
-                OrderExecution.broker == broker,
                 OrderExecution.broker_account_id == broker_account_id,
                 OrderExecution.dry_run.is_(False),  # NEVER match against DRY_RUN rows
             )

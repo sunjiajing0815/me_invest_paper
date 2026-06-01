@@ -157,6 +157,32 @@ def test_rule1_auto_trade_row_updated_not_duplicated(db_session: Session) -> Non
     assert rows[0].filled_price == pytest.approx(100.5)
 
 
+def test_auto_trade_row_updated_despite_broker_string_mismatch(db_session: Session) -> None:
+    """The placement row may carry broker='alpaca_paper' (back-compat auto-trade entrypoint)
+    while reconciliation passes the bare family 'alpaca'. Matching by broker_order_id +
+    account (not the broker string) updates the placement row IN PLACE — no duplicate filled
+    row, no orphan accepted_for_routing (the GOOG regression)."""
+    sug = _sug(db_session)
+    _exe(
+        db_session, broker_order_id="b-002", dry_run=False, broker="alpaca_paper",
+        status="accepted_for_routing", filled_qty=0.0, filled_price=0.0,
+    )
+    act = _act(broker_order_id="b-002", client_order_id=f"sug-{sug.id}", filled_price=101.0)
+    results = reconcile_activities(
+        broker_account_id=_ACCT, session=db_session,
+        adapter=_adapter([act]), since=_NOW - timedelta(hours=2),
+    )
+    persist_reconciliation(db_session, results, broker="alpaca", broker_account_id=_ACCT)
+    db_session.flush()
+
+    rows = db_session.scalars(
+        select(OrderExecution).where(OrderExecution.broker_order_id == "b-002")
+    ).all()
+    assert len(rows) == 1                            # updated in place, not duplicated
+    assert rows[0].status == "filled"
+    assert rows[0].filled_price == pytest.approx(101.0)
+
+
 def test_rule1_dry_run_rows_ignored_by_reconciliation(db_session: Session) -> None:
     """A dry_run=True row does NOT satisfy the existing-row check in persist_reconciliation.
 
