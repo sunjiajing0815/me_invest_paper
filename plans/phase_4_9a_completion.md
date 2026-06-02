@@ -1,19 +1,22 @@
 # Phase 4.9a — Multi-Broker Plumbing + Per-Broker Reports — Progress Report
 
-> **Status: SMOKE-TESTED — Alpaca + Moomoo both live on `main`.**
+> **Status: SMOKE-TESTED + HARDENED — Alpaca + Moomoo live on `main`.**
 > The app is fully multi-broker across the data model, read path, write path, jobs,
-> scheduler, and API. The 2-broker smoke test was executed live on **2026-05-31**
-> (Moomoo connected to its REAL funded account alongside Alpaca, app in Docker); it
-> surfaced and fixed three multi-broker wiring bugs and added encrypted-OpenD support
-> — see **"Smoke test execution + hardening"** below. Remaining before the
-> `v0.4.9a.0` tag: confirm tonight's two per-broker weekly emails look right.
+> scheduler, and API. The 2-broker smoke test ran live on **2026-05-31** (Moomoo on its
+> REAL funded account alongside Alpaca, app in Docker); then **operating** it through real
+> daily / weekly / movers / auto-trade cycles on **2026-06-01 → 06-02** surfaced a further batch of
+> bugs — all fixed with regression tests (see **"Smoke test execution"** and
+> **"Post-smoke-test fixes (live operation)"** below). Remaining before the `v0.4.9a.0`
+> tag: a clean week of scheduled runs with no new surprises.
 >
 > **Commits (on top of `v0.4.8`):** foundation hardening → B1 (auto_trade_state) →
 > B2 (adapter factory) → B3–B5 (partition-key threading) → B6 (per-broker targets) →
 > B7+B-API+B8 (emails + endpoint params + scheduler fan-out) → B9 (NOT NULL) →
 > C (onboarding endpoints) → docs (ADR-0024, CLAUDE.md, README, product_plan) →
 > `47d5d2b` (docker extra_hosts) → `ee77737` (sync routing + stable primary) →
-> `04d4fae` (OpenD RSA encryption).
+> `04d4fae` (OpenD RSA encryption) → **post-smoke-test hardening**: `b5d8103` `e60f434`
+> `ba8742f` `391d062` `c87eb42` `86284c1` `98abe6b` `9413d41` `0047d53` `567ffb3`
+> `e9bd724` `5f8cf92`.
 
 ## Context
 
@@ -146,6 +149,86 @@ state row was superseded by close-and-insert; Alpaca (61) was never touched.
 - No-arg `/positions` resolves to Alpaca (primary stable); gap for 62 uses its own 11
   targets; `check sha error` gone; re-sync returns `{"62": 15}` with zero errors.
 
+## Post-smoke-test fixes — live operation (2026-06-01 → 06-02)
+
+Running the deployed app through real daily / weekly / movers / auto-trade cycles surfaced
+a further batch of bugs, each fixed with a regression test. Grouped by area.
+
+### Currency & multi-currency reporting
+- **Moomoo totals were ~5.6× too high** (`b5d8103`). `get_account` called Futu's
+  `accinfo_query` with no `currency`, which defaults to **HKD** — so the AUD account's
+  total_assets/cash came back in HKD. Added a per-account **base currency**, chosen at
+  onboarding (`BrokerAccountCreateRequest.currency`, default USD, folded into
+  `connection_config`; `Settings.opend_currency` fallback) and passed to
+  `accinfo_query(currency=…)`. Account 62 set to USD; equity corrected from $246,795 (HKD)
+  to ~$31,497 (USD), `mode` corrected to `live`.
+- **Per-position native currency, labeled** (`ba8742f` data layer, `391d062` display).
+  Per the design decision (user-chosen), per-position prices stay in each holding's native
+  currency (USD for US, AUD for ASX) rather than being FX-converted — but are now
+  **labeled**. Added `Position.currency` / `Account.currency` (Alpaca → USD; Moomoo derived
+  from the market prefix), a `positions_snapshot.currency` column (migration `fbdf8f40c65a`,
+  default USD, validated on a real-DB copy), and currency labels in the daily/weekly email
+  summary + untracked + holdings tables and the `/positions` API. The cross-currency % stays
+  approximate against base-currency equity (exact for base-currency holdings — all targets
+  are USD — with the row's label flagging the rest).
+
+### Suggestion correctness — directional limits
+A BUY limit must sit at/below the current price (a pullback), a SELL at/above. Two places
+violated it (both surfaced as GOOG/BTC/BRK.B limits *above* market):
+- **Draft generation** (`e60f434`): `select_anchor` picked the highest-confidence S/R level
+  in a symmetric ±15% band with no direction check, so a "support" sitting just above market
+  (a trailing EMA/pivot) became the BUY limit. The scored-levels path now filters supports
+  to ≤ current and resistances to ≥ current.
+- **Critic re-anchor** (`86284c1`): the review graph's `_find_level` accepted any level of
+  the right method+type for the critic's `prefer_anchor`, re-anchoring a BUY onto an
+  above-market "support" (BTC `pivot_weekly_S2` 32.77 vs 32.48 current) — bypassing the draft
+  guard. `_find_level` is now direction-aware (uses `ctx.indicators[ticker].close`).
+
+### Emails & market context
+- **Broker name hardcoded** (`c87eb42`): the weekly email said *"Log into Alpaca to act"* on
+  every account, including Moomoo. Now `{{ account_broker | capitalize }}`.
+- **Stale Ticker Catch-Up** (`9413d41`): Tavily honors the `days` recency window only for
+  `topic="news"`; the per-ticker/sector catch-ups used `topic="finance"`, which ignored it
+  and surfaced a weeks-old "Bitcoin hit $73k" article in a later review. `_search` now also
+  sends `time_range` (honored for all topics).
+
+### Movers
+- **Daily movers crashed** (`0047d53`): a shared article (a Micron piece tagged to both MU
+  and MSFT) was `session.add`-ed twice → `UNIQUE constraint failed: news_event.url_hash` on
+  the next autoflush, aborting the whole job (no email). Extracted a pure `_build_news_events`
+  that dedupes by url_hash against the DB **and** within the run. First `tests/test_movers.py`.
+- **Inflated week-over-week move** (`567ffb3`): "last week's close" used the close exactly 7
+  days back — on a Monday run that lands two Fridays ago, so MU showed +37.8% (vs May 22) when
+  the real move vs last Friday (May 29) is +6.6%, and 8 "movers" were really 4. Now uses
+  `date_trunc('week', …)` to take the prior week's last trading day.
+
+### Auto-trade & reconciliation — order lifecycle
+The stale-order guard skipped accepted suggestions whose ticker had a prior
+`accepted_for_routing` execution, but that DB status drifts from the broker. Fixed both ends:
+- **Broker-aware stale-order guard — cancel-and-replace** (`e9bd724`). The guard now
+  reconciles each prior order against the broker (LIVE only; DRY_RUN keeps the conservative
+  block, never touching real orders): genuinely-open GTC → cancel + replace; already done
+  (filled/canceled) → clear the stale row + proceed; broker status unknown → skip (avoid a
+  duplicate). Verified live: the 4 skipped Alpaca orders (AMZN/GOOG/QQQ/VOO) cancelled-and-
+  replaced cleanly (3 open cancelled, GOOG's filled row cleared).
+- **Reconciliation matches fills by `broker_order_id`, not the broker string** (`5f8cf92`).
+  The placement row could carry `alpaca_paper` (back-compat auto-trade entrypoint) while
+  reconciliation passed the bare family `alpaca`, so the upsert missed the placement row and
+  inserted a *duplicate* filled row — leaving the original stuck at `accepted_for_routing`
+  (the GOOG stale row that wrongly blocked). Now matched by `broker_order_id` + account +
+  `dry_run=False`; fills update the placement row in place. Fixes the stale-row class at the
+  source (`order_execution.broker` is consumed only by this match).
+
+### API scoping
+- **`/admin/reload-targets` honors `?broker_account_id`** (`98abe6b`) — it had ignored the
+  scope param and reloaded all active accounts (the last B-API endpoint missing scoping;
+  `cancel-all-orders` / `reset-week-suggestions` already had it). Idempotent, so the impact
+  was benign, but now consistent (default all-active; an id targets one; 404 if inactive).
+
+### Migrations added
+`fbdf8f40c65a` — `positions_snapshot.currency` column (ADD COLUMN default `USD`; existing
+rows backfill to USD; validated on a real-DB copy with downgrade round-trip).
+
 ## Test summary
 
 | Milestone | Tests |
@@ -155,8 +238,9 @@ state row was superseded by close-and-insert; Alpaca (61) was never touched.
 | Stage B (B1 mode isolation, B2 factory, B3 gap isolation, B-API scope/404) | 360 |
 | Stage C (broker-account onboarding) | **364** |
 | Smoke-test fixes (sync routing, stable primary, per-account targets, OpenD encryption) | **369** |
+| Post-smoke live-operation fixes (currency, directional limits, movers, stale-order guard, reconciliation upsert) | **389** |
 
-`uv run pytest` → 369 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 15 model tables.
+`uv run pytest` → 389 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a + `fbdf8f40c65a` migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 16 model tables.
 
 ## Files changed (Stage A)
 
@@ -186,8 +270,8 @@ The 2-broker smoke test was executed live on 2026-05-31 (see "Smoke test executi
 1. ✅ Migration: existing single-broker rows carry through to one `broker_account_id` group (validated on a real-DB copy; the live restart applied the chain cleanly).
 2. ✅ `POST /admin/broker-accounts` connects Moomoo (`account_ref=62`); `make_account_adapter` returns the right (encrypted Moomoo) adapter; it appears in `/health`.
 3. ⏳ Daily report fires per active broker → two emails with `[nickname]` subjects (fires next weekday 16:15 ET).
-4. ⏳ Weekly suggestions Sunday → each broker its own email; a ticker held in both yields independent per-broker suggestions (fires tonight 18:00 ET — both accounts active).
+4. ✅ Weekly suggestions → each broker its own email; a ticker held in both yields independent per-broker suggestions (re-run live for both accounts during the post-smoke fixes — 0 directional violations after `e60f434`/`86284c1`).
 5. ✅ Promote Alpaca → LIVE leaves Moomoo OFF in `auto_trade_state` (verified: 61 LIVE, 62 OFF).
-6. ⏳ Stale-live-order guard: two live AAPL orders across *different* brokers allowed; two on the *same* broker still blocked (per-broker scoping in place; not yet exercised live).
+6. ✅ Stale-live-order guard exercised live (`e9bd724`): the 4 Alpaca orders blocked by a stale `accepted_for_routing` row cancelled-and-replaced cleanly on the *same* broker; cross-broker independence holds by `broker_account_id` scoping (the two-different-brokers allow path is covered by unit tests, not yet exercised live since Moomoo is OFF).
 7. ✅ `data/targets/62.yaml` edited independently (gap for 62 uses its own 11 targets); `config/targets.yaml` still aliases the primary.
 8. ✅ Soft-delete (`is_active=False`) excludes a broker from cron loops (used to hold 62 from a run; `/health` excluded it); its history stays queryable.
