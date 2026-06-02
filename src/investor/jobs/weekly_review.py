@@ -14,11 +14,11 @@ from ..models import (
     AutoTradePromotionLog,
     BrokerAccount,
     KillSwitchLog,
-    Meta,
     OrderExecution,
     OrderSuggestion,
 )
 from ..services.accounts import resolve_primary_account_ref
+from ..services.auto_trade import _get_mode
 from ..services.daily_report import AccountSnapshot
 from ..services.email import EmailSender
 from ..services.gap import GapRow, compute_gap
@@ -176,9 +176,10 @@ def _build_review(
         for ticker, items in material_news_raw.items()
     }
 
-    # Auto-trade summary
-    meta = session.get(Meta, "auto_trade_mode")
-    auto_trade_mode = meta.value if meta else "OFF"
+    # Auto-trade summary — per-account mode from auto_trade_state (the weekly review is
+    # primary-scoped). NOT the meta.auto_trade_mode key, which migration d8589 deleted —
+    # reading it always returned OFF regardless of the real mode.
+    auto_trade_mode = _get_mode(session, broker_account_id)
 
     promotions = session.query(AutoTradePromotionLog).filter(
         AutoTradePromotionLog.ts >= week_start

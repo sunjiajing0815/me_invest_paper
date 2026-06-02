@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 from investor.brokers.base import Account
 from investor.db import override_engine_for_testing
 from investor.jobs.weekly_review import SuggestionAudit, WeeklyReview, _build_review, _week_start
-from investor.models import Base, OrderSuggestion
+from investor.models import AutoTradeState, Base, OrderSuggestion
 
 # ── _week_start ────────────────────────────────────────────────────────────────
 
@@ -170,3 +170,21 @@ def test_pending_past_expires_at_shows_expiry_note(_db_session: Session) -> None
 
     assert len(review.suggestion_audits) == 1
     assert review.suggestion_audits[0].status == "pending (expires Mon)"
+
+
+def test_auto_trade_mode_sourced_from_auto_trade_state_not_meta(_db_session: Session) -> None:
+    """Regression: _build_review must read auto_trade_mode from auto_trade_state (per
+    account), NOT the meta.auto_trade_mode key that migration d8589 deleted. Before the
+    fix the deleted-key lookup always returned 'OFF', so a LIVE account read as OFF."""
+    _db_session.add(AutoTradeState(broker_account_id=1, mode="LIVE"))
+    _db_session.flush()
+
+    review = _build_review(
+        session=_db_session,
+        adapter=_mock_adapter(),
+        settings=_mock_settings(),
+        week_of=date(2026, 5, 25),
+        broker_account_id=1,
+    )
+
+    assert review.auto_trade_mode == "LIVE"
