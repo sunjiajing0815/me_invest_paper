@@ -16,7 +16,7 @@
 > `47d5d2b` (docker extra_hosts) → `ee77737` (sync routing + stable primary) →
 > `04d4fae` (OpenD RSA encryption) → **post-smoke-test hardening**: `b5d8103` `e60f434`
 > `ba8742f` `391d062` `c87eb42` `86284c1` `98abe6b` `9413d41` `0047d53` `567ffb3`
-> `e9bd724` `5f8cf92`.
+> `e9bd724` `5f8cf92` `1b77dff`.
 
 ## Context
 
@@ -218,6 +218,20 @@ The stale-order guard skipped accepted suggestions whose ticker had a prior
   (the GOOG stale row that wrongly blocked). Now matched by `broker_order_id` + account +
   `dry_run=False`; fills update the placement row in place. Fixes the stale-row class at the
   source (`order_execution.broker` is consumed only by this match).
+- **Broker string + traded account sourced from the account row, not globals** (`1b77dff`,
+  hardening follow-up to `5f8cf92`). The root cause of the drift above was the back-compat
+  `run_auto_trade_job` trusting globals: it wrote `broker=settings.broker` (`alpaca_paper`)
+  rather than the account's family string, *and* it ignored the account it was handed —
+  resolving the *primary* instead. So `/admin/run-auto-trade?broker_account_id=N` would run
+  the primary's suggestions through account N's adapter. Now a per-account wrapper
+  (`run_auto_trade_job_for_account`) sources both the broker string and the traded
+  `account_ref` from the `AccountInfo` (the family string — identical to what reconciliation
+  writes), and the all-brokers loop + the admin endpoint both route through it.
+  `settings.broker` no longer reaches the `order_execution` write path, so the column is
+  self-consistent per account. No backfill: `order_execution.broker` is write-only after
+  `5f8cf92` (no readers in `src/`), so historical drifted strings are inert. Two regression
+  tests in `tests/test_auto_trade_routing.py` (placed row carries `account.broker`;
+  per-account trigger trades that account, not the primary).
 
 ### API scoping
 - **`/admin/reload-targets` honors `?broker_account_id`** (`98abe6b`) — it had ignored the
@@ -239,8 +253,9 @@ rows backfill to USD; validated on a real-DB copy with downgrade round-trip).
 | Stage C (broker-account onboarding) | **364** |
 | Smoke-test fixes (sync routing, stable primary, per-account targets, OpenD encryption) | **369** |
 | Post-smoke live-operation fixes (currency, directional limits, movers, stale-order guard, reconciliation upsert) | **389** |
+| Auto-trade write-path hardening (broker string + traded account from the account, not globals) | **391** |
 
-`uv run pytest` → 389 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a + `fbdf8f40c65a` migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 16 model tables.
+`uv run pytest` → 391 passed, 1 skipped. `ruff check src/ tests/` clean. `mypy src/` → 30 pre-existing errors, no new ones. The d8589 + 6a4a + `fbdf8f40c65a` migrations were validated on a copy of the real DB (one `broker_account_id` group, counts preserved, all 5 columns NOT NULL, constraints survived the batch recreate, downgrade round-trips); fresh `alembic upgrade head` builds all 16 model tables.
 
 ## Files changed (Stage A)
 
