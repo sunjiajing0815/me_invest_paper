@@ -6,7 +6,11 @@ import logging
 from ..brokers.base import BrokerAdapter
 from ..config import Settings
 from ..db import session_scope
-from ..services.accounts import list_active_accounts, resolve_primary_account_ref
+from ..services.accounts import (
+    AccountInfo,
+    list_active_accounts,
+    resolve_primary_account_ref,
+)
 from ..services.auto_trade import AutoTradeOutcome, run_auto_trade_pass
 from ..services.email import EmailSender
 
@@ -39,6 +43,32 @@ def _send_summary(
         logger.error("auto_trade summary email failed: %s", exc)
 
 
+def run_auto_trade_job_for_account(
+    settings: Settings,
+    adapter: BrokerAdapter,
+    emailer: EmailSender,
+    account: AccountInfo,
+) -> list[AutoTradeOutcome]:
+    """Run ONE account's auto-trade pass (its own session for isolation); return outcomes.
+
+    The broker string written to ``order_execution.broker`` is sourced from the account
+    row (``account.broker`` — the family, e.g. "alpaca"), NEVER ``settings.broker`` (the
+    "_paper"/"_live" variant). This keeps the column identical to what
+    ``persist_reconciliation`` writes for the same account, so a later fill upserts the
+    placement row in place instead of inserting a duplicate filled row and leaving the
+    original stuck at ``accepted_for_routing``. Does NOT email — the caller summarises.
+    """
+    with session_scope() as session:
+        return run_auto_trade_pass(
+            session=session,
+            adapter=adapter,
+            emailer=emailer,
+            email_to=settings.email_to,
+            broker=account.broker,
+            broker_account_id=account.account_ref,
+        )
+
+
 def run_auto_trade_job_all_brokers(
     settings: Settings,
     emailer: EmailSender,
@@ -59,16 +89,9 @@ def run_auto_trade_job_all_brokers(
             )
             continue
         try:
-            with session_scope() as session:
-                outcomes = run_auto_trade_pass(
-                    session=session,
-                    adapter=adapter,
-                    emailer=emailer,
-                    email_to=settings.email_to,
-                    broker=acct.broker,
-                    broker_account_id=acct.account_ref,
-                )
-            all_outcomes.extend(outcomes)
+            all_outcomes.extend(
+                run_auto_trade_job_for_account(settings, adapter, emailer, acct)
+            )
         except Exception:
             logger.exception(
                 "auto-trade failed for account_ref=%s (%s); continuing",
@@ -83,16 +106,25 @@ def run_auto_trade_job(
     settings: Settings,
     adapter: BrokerAdapter,
     emailer: EmailSender,
+    account: AccountInfo | None = None,
 ) -> None:
-    """Single-broker (primary account) auto-trade pass. Back-compat entrypoint."""
-    with session_scope() as session:
-        primary_ref = resolve_primary_account_ref(session)
-        outcomes = run_auto_trade_pass(
-            session=session,
-            adapter=adapter,
-            emailer=emailer,
-            email_to=settings.email_to,
-            broker=settings.broker,
-            broker_account_id=primary_ref,
-        )
+    """Single-account auto-trade pass. Defaults to the primary account (back-compat).
+
+    Pass ``account`` to trade a SPECIFIC account (the per-account admin trigger does
+    this); omit it for the primary-account path. Both the traded account_ref and the
+    broker string come from ``account`` — never from ``settings`` — so the account the
+    caller asked for is the one actually traded (and the broker string matches
+    reconciliation's). The earlier code hardcoded the primary ref + ``settings.broker``,
+    which (a) ran the primary's suggestions through whatever adapter was passed and
+    (b) wrote a drifting broker string.
+    """
+    if account is None:
+        with session_scope() as session:
+            primary_ref = resolve_primary_account_ref(session)
+            accounts = list_active_accounts(session)
+        account = next((a for a in accounts if a.account_ref == primary_ref), None)
+    if account is None:
+        logger.warning("run_auto_trade_job: no active broker account — skipping")
+        return
+    outcomes = run_auto_trade_job_for_account(settings, adapter, emailer, account)
     _send_summary(emailer, settings.email_to, outcomes)

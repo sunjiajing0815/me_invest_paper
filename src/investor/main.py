@@ -1072,7 +1072,7 @@ def admin_run_auto_trade(
                 raise HTTPException(
                     status_code=404, detail=f"No adapter for account {broker_account_id}"
                 )
-            run_auto_trade_job(settings, adapter, emailer)
+            run_auto_trade_job(settings, adapter, emailer, account=acct)
             msg = f"Auto-trade pass completed for {acct.nickname}"
     except HTTPException:
         raise
