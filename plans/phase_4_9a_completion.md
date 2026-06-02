@@ -42,8 +42,10 @@ The app was hard-wired to one broker: `make_adapter(settings)` returned a single
 - Adds the columns; backfills every existing per-account row to Jane's canonical Alpaca account (latest open `broker_account` row); sets identity columns; seeds `auto_trade_state` from the old `meta.auto_trade_mode`; deletes the meta key; swaps the unique constraint; adds indexes. `auto_trade_state` creation is guarded (`create_all` may make it first in `init_db`). Downgrade reverses and restores the meta key.
 
 **Validation against a copy of the real DB** (`data/investor.db`, never the live file — copied via SQLite backup API):
-- 31 / 309 / 22 / 30 rows in the four per-account tables → exactly **one** `broker_account_id` group (= 59, Jane's latest open row), counts preserved, zero NULLs.
-- `auto_trade_state` seeded `(59, 'LIVE')` — prior mode preserved; `meta.auto_trade_mode` removed.
+- 31 / 309 / 22 / 30 rows in the four per-account tables → exactly **one** `broker_account_id` group, counts preserved, zero NULLs. The group value is `jane_ref` = the **`id` of the latest-open `broker_account` row at migration time** (`59` on this particular copy), and the migration sets `account_ref` **and** every per-account `broker_account_id` to that same value in one transaction, so `broker_account_id == account_ref` by construction. The number is therefore non-deterministic (it's "the origin row's id") and differs between the copy and the live DB — see the note below; what's invariant is the equality, never the literal.
+- `auto_trade_state` seeded `(jane_ref, 'LIVE')` — prior mode preserved; `meta.auto_trade_mode` removed.
+
+> **Note — the live value is `61`, not `59`.** This validation ran on an earlier copy whose origin/latest-open row was `id=59`. The live migration ran later, when the Alpaca origin row was `id=61`, so on the live DB `account_ref == broker_account_id == 61` (and Moomoo, onboarded after, self-assigned `account_ref=62`). Confirmed live: every per-account `broker_account_id ∈ {61, 62}` matches a live (`effective_to IS NULL`) `account_ref`, zero orphans — and the Alpaca account has since close-and-inserted from origin `id=61` to live `id=74` with `account_ref` unchanged at `61`, which is the whole point of keying per-account rows on `account_ref` rather than the mutable `id`.
 - Identity columns set on the latest open row (`nickname='Alpaca paper'`, `is_active=1`, `connection_config` naming the env vars).
 - Full **downgrade → re-upgrade round-trip** clean.
 
