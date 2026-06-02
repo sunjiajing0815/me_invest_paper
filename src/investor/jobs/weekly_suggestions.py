@@ -391,21 +391,3 @@ def run_weekly_suggestions_all_brokers(
                 acct.account_ref, acct.nickname,
             )
             continue
-
-
-def run_weekly_suggestions(
-    settings: Settings,
-    adapter: BrokerAdapter,
-    emailer: EmailSender,
-    llm: LLMClient,
-    earnings_client: Any,
-) -> None:
-    """Single-broker (primary account) weekly suggestions. Back-compat entrypoint."""
-    with session_scope() as session:
-        accounts = list_active_accounts(session)
-        primary_ref = resolve_primary_account_ref(session)
-    acct = next((a for a in accounts if a.account_ref == primary_ref), None)
-    if acct is None:
-        logger.warning("run_weekly_suggestions: no active broker account — skipping")
-        return
-    run_weekly_suggestions_for_account(settings, adapter, emailer, llm, earnings_client, acct)

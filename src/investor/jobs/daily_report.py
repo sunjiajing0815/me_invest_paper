@@ -112,19 +112,3 @@ def run_daily_report_all_brokers(
                 account.account_ref, account.nickname,
             )
             continue
-
-
-def run_daily_report(settings: Settings, adapter: BrokerAdapter, emailer: EmailSender) -> None:
-    """Single-broker (primary account) daily report. Back-compat entrypoint.
-
-    Resolves the primary active account and runs the report for it. No-ops with a
-    warning if no active account exists yet (a fresh DB before broker onboarding).
-    """
-    with session_scope() as session:
-        accounts = list_active_accounts(session)
-        primary_ref = resolve_primary_account_ref(session)
-    account = next((a for a in accounts if a.account_ref == primary_ref), None)
-    if account is None:
-        logger.warning("run_daily_report: no active broker account — skipping")
-        return
-    run_daily_report_for_account(settings, adapter, emailer, account)

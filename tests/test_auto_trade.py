@@ -149,7 +149,10 @@ def db_session() -> Session:
 
 # ── mode = OFF ────────────────────────────────────────────────────────────────
 
-def test_default_off_does_nothing(db_session: Session) -> None:
+def test_no_auto_trade_state_row_defaults_to_off(db_session: Session) -> None:
+    """Safety default: with no auto_trade_state row, _get_mode falls back to OFF, so a
+    fresh/un-promoted account never trades (CLAUDE.md gotcha 17). The fixture seeds no
+    mode row."""
     _add_suggestion(db_session)
     _add_caps(db_session)
     adapter = _mock_adapter()
@@ -158,15 +161,6 @@ def test_default_off_does_nothing(db_session: Session) -> None:
     )
     assert outcomes == []
     adapter.submit_order.assert_not_called()
-
-
-def test_no_meta_row_defaults_to_off(db_session: Session) -> None:
-    _add_suggestion(db_session)
-    _add_caps(db_session)
-    outcomes = run_auto_trade_pass(
-        db_session, _mock_adapter(), _emailer(), "t@t.com", "alpaca", as_of=_WEEK
-    )
-    assert outcomes == []
 
 
 def test_off_mode_returns_empty_even_with_accepted_suggestions(db_session: Session) -> None:

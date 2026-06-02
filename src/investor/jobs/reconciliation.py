@@ -12,7 +12,6 @@ from ..models import Meta
 from ..services.accounts import (
     AccountInfo,
     list_active_accounts,
-    resolve_primary_account_ref,
 )
 from ..services.reconciliation import (
     persist_reconciliation,
@@ -88,15 +87,3 @@ def run_daily_reconciliation_all_brokers(
                 account.account_ref, account.nickname,
             )
             continue
-
-
-def run_daily_reconciliation(settings: Settings, adapter: BrokerAdapter) -> None:
-    """Single-broker (primary account) reconciliation. Back-compat entrypoint."""
-    with session_scope() as session:
-        accounts = list_active_accounts(session)
-        primary_ref = resolve_primary_account_ref(session)
-    account = next((a for a in accounts if a.account_ref == primary_ref), None)
-    if account is None:
-        logger.warning("run_daily_reconciliation: no active broker account — skipping")
-        return
-    run_daily_reconciliation_for_account(settings, adapter, account)
