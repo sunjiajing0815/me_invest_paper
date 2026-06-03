@@ -79,7 +79,7 @@ def classify_node(state: NewsTriageState, config: RunnableConfig) -> NewsTriageS
     })
     result, tel = llm_node_call(
         purpose="news_classify",
-        model=HAIKU,
+        model=config["configurable"].get("classify_model", HAIKU),
         system=system,
         user=user,
         schema=NewsTriageBatch,
@@ -116,7 +116,7 @@ def critic_node(state: NewsTriageState, config: RunnableConfig) -> NewsTriageSta
     })
     result, tel = llm_node_call(
         purpose="news_critic",
-        model=HAIKU,
+        model=config["configurable"].get("critic_model", SONNET),
         system=system,
         user=user,
         schema=NewsCriticReview,
@@ -151,7 +151,7 @@ def arbitrate_node(state: NewsTriageState, config: RunnableConfig) -> NewsTriage
     })
     result, tel = llm_node_call(
         purpose="news_arbitrate",
-        model=SONNET,
+        model=config["configurable"].get("arbitrate_model", SONNET),
         system=system,
         user=user,
         schema=NewsTriageBatch,

@@ -325,6 +325,7 @@ def reason_node(
             fallback_factory=lambda: DraftRationales(items=[]),
             llm=llm,
             session=s,
+            temperature=0.3,  # prose rationales — slightly above the structured-default 0.0
         )
 
     new_rationales = {it.draft_index: it.rationale[:600] for it in parsed.items}

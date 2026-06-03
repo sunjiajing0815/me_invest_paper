@@ -11,6 +11,8 @@ import yaml
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .services.llm import HAIKU, SONNET
+
 logger = logging.getLogger(__name__)
 
 VALID_BROKERS = {"alpaca_paper", "alpaca_live", "moomoo"}
@@ -68,6 +70,13 @@ class Settings(BaseSettings):
     llm_daily_cost_cap_usd: float = 3.0
     llm_backend: str = "anthropic_api"
     llm_cli_path: str = ""  # override claude CLI for agent_sdk; empty = use bundled
+
+    # Per-node models for the movers news-triage graph. The critic defaults to a DIFFERENT
+    # class than the classifier (Sonnet judging Haiku) so the graph doesn't depend on
+    # same-class self-judgment; all three are env-overridable.
+    news_classify_model: str = HAIKU
+    news_critic_model: str = SONNET
+    news_arbitrate_model: str = SONNET
 
     auto_trade_promotion_token: str = ""  # separate from admin_token; required for promotions
 

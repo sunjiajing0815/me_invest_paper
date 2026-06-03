@@ -219,6 +219,9 @@ def run_movers_email(
                             "thread_id": f"news-{ticker}-{date.today()}",
                             "llm": llm,
                             "session": session,
+                            "classify_model": settings.news_classify_model,
+                            "critic_model": settings.news_critic_model,
+                            "arbitrate_model": settings.news_arbitrate_model,
                         }
                     },
                 )

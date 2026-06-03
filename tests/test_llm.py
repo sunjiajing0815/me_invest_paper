@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock, patch
 
+import anthropic
+import httpx
 import pytest
 
 from investor.services.llm import (
@@ -14,9 +16,19 @@ from investor.services.llm import (
     LLMClient,
     LLMResponse,
     _calc_cost,
+    _is_transient,
+    _run_with_retry,
     _strip_fences,
+    _usage_int,
     make_llm_client,
 )
+
+
+def _transient_exc() -> anthropic.APIConnectionError:
+    """A real retryable anthropic error (no network needed)."""
+    return anthropic.APIConnectionError(
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
 
 
 class TestStripFences:
@@ -70,6 +82,32 @@ class TestCalcCost:
         # Only input tokens, no output
         cost = _calc_cost(SONNET, 1_000_000, 0)
         assert abs(cost - 3.0) < 0.001
+
+    def test_cache_write_billed_at_1_25x_base_input(self):
+        # 1M cache-write tokens @ Sonnet base $3/M × 1.25 = $3.75
+        cost = _calc_cost(SONNET, 0, 0, cache_write_toks=1_000_000)
+        assert abs(cost - 3.75) < 0.001
+
+    def test_cache_read_billed_at_0_1x_base_input(self):
+        # 1M cache-read tokens @ Sonnet base $3/M × 0.10 = $0.30
+        cost = _calc_cost(SONNET, 0, 0, cache_read_toks=1_000_000)
+        assert abs(cost - 0.30) < 0.001
+
+    def test_cost_combines_all_tiers(self):
+        # 100 in + 100 out + 200 write + 800 read, all at once
+        cost = _calc_cost(SONNET, 100, 100, cache_write_toks=200, cache_read_toks=800)
+        base_in = 3.00 / 1_000_000
+        expected = (
+            100 * base_in
+            + 100 * (15.0 / 1_000_000)
+            + 200 * base_in * 1.25
+            + 800 * base_in * 0.10
+        )
+        assert abs(cost - expected) < 1e-12
+
+    def test_cache_tiers_default_zero(self):
+        # Omitting cache args == the legacy 3-arg behaviour
+        assert _calc_cost(HAIKU, 100, 100) == _calc_cost(HAIKU, 100, 100, 0, 0)
 
 
 class TestAnthropicAPIClientCostGuard:
@@ -215,6 +253,164 @@ class TestAnthropicAPIClientCostGuard:
     def test_satisfies_llm_client_protocol(self):
         client = self._make_client()
         assert isinstance(client, LLMClient)
+
+
+class TestTemperatureAndCaching:
+    """temperature forwarding + cache_control system block + cache-tier capture."""
+
+    def _client(self) -> AnthropicAPIClient:
+        return AnthropicAPIClient(api_key="k", daily_cost_cap_usd=5.0)
+
+    def _mock_msg(self, *, cache_write=0, cache_read=0, in_toks=100, out_toks=50):
+        from anthropic.types import TextBlock
+        m = MagicMock()
+        block = MagicMock(spec=TextBlock)
+        block.text = '{"ok": 1}'
+        m.content = [block]
+        m.usage.input_tokens = in_toks
+        m.usage.output_tokens = out_toks
+        m.usage.cache_creation_input_tokens = cache_write
+        m.usage.cache_read_input_tokens = cache_read
+        return m
+
+    def test_temperature_forwarded_to_create(self):
+        client = self._client()
+        with patch.object(
+            client._client.messages, "create", return_value=self._mock_msg()
+        ) as create:
+            client.call(model=HAIKU, system="s", user="u", temperature=0.4)
+        assert create.call_args.kwargs["temperature"] == 0.4
+
+    def test_temperature_recorded_on_response(self):
+        client = self._client()
+        with patch.object(client._client.messages, "create", return_value=self._mock_msg()):
+            resp, _ = client.call(model=HAIKU, system="s", user="u", temperature=0.25)
+        assert resp.temperature == 0.25
+
+    def test_cache_system_true_sends_block_list_with_cache_control(self):
+        client = self._client()
+        with patch.object(
+            client._client.messages, "create", return_value=self._mock_msg()
+        ) as create:
+            client.call(model=HAIKU, system="SYS", user="u", cache_system=True)
+        system_arg = create.call_args.kwargs["system"]
+        assert isinstance(system_arg, list)
+        assert system_arg[0]["cache_control"] == {"type": "ephemeral"}
+        assert system_arg[0]["text"] == "SYS"
+
+    def test_cache_system_false_sends_plain_string(self):
+        client = self._client()
+        with patch.object(
+            client._client.messages, "create", return_value=self._mock_msg()
+        ) as create:
+            client.call(model=HAIKU, system="SYS", user="u", cache_system=False)
+        assert create.call_args.kwargs["system"] == "SYS"
+
+    def test_cache_tiers_captured_and_costed(self):
+        client = self._client()
+        msg = self._mock_msg(cache_write=200, cache_read=800, in_toks=100, out_toks=50)
+        with patch.object(client._client.messages, "create", return_value=msg):
+            resp, _ = client.call(model=SONNET, system="s", user="u")
+        assert resp.cache_write_tokens == 200
+        assert resp.cache_read_tokens == 800
+        assert abs(resp.cost_usd - _calc_cost(SONNET, 100, 50, 200, 800)) < 1e-12
+
+    def test_missing_cache_usage_defaults_zero(self):
+        """A usage object lacking cache fields (MagicMock children) → 0, not a crash."""
+        from anthropic.types import TextBlock
+        client = self._client()
+        m = MagicMock()
+        block = MagicMock(spec=TextBlock)
+        block.text = "{}"
+        m.content = [block]
+        m.usage.input_tokens = 10
+        m.usage.output_tokens = 5
+        with patch.object(client._client.messages, "create", return_value=m):
+            resp, _ = client.call(model=HAIKU, system="s", user="u")
+        assert resp.cache_write_tokens == 0
+        assert resp.cache_read_tokens == 0
+
+
+class TestUsageInt:
+    def test_returns_int(self):
+        u = MagicMock()
+        u.x = 7
+        assert _usage_int(u, "x") == 7
+
+    def test_non_int_coerced_to_zero(self):
+        u = MagicMock()  # u.x is a child MagicMock, not an int
+        assert _usage_int(u, "x") == 0
+
+    def test_missing_attr_zero(self):
+        assert _usage_int(object(), "nope") == 0
+
+
+class TestRetry:
+    def test_is_transient_true_for_connection_error(self):
+        assert _is_transient(_transient_exc()) is True
+
+    def test_is_transient_false_for_value_error(self):
+        assert _is_transient(ValueError("bad json")) is False
+
+    def test_run_with_retry_retries_then_succeeds(self):
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise _transient_exc()
+            return "ok"
+
+        with patch("investor.services.llm.time.sleep"):
+            result = _run_with_retry(fn, label="t")
+        assert result == "ok"
+        assert calls["n"] == 2
+
+    def test_run_with_retry_gives_up_after_max_attempts(self):
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            raise _transient_exc()
+
+        with (
+            patch("investor.services.llm.time.sleep"),
+            pytest.raises(anthropic.APIConnectionError),
+        ):
+            _run_with_retry(fn, label="t")
+        assert calls["n"] == 3  # _RETRY_MAX_ATTEMPTS
+
+    def test_run_with_retry_does_not_retry_non_transient(self):
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            raise ValueError("permanent")
+
+        with pytest.raises(ValueError):
+            _run_with_retry(fn, label="t")
+        assert calls["n"] == 1
+
+    def test_client_retries_transient_create_error(self):
+        from anthropic.types import TextBlock
+        client = AnthropicAPIClient(api_key="k", daily_cost_cap_usd=5.0)
+        ok = MagicMock()
+        block = MagicMock(spec=TextBlock)
+        block.text = "{}"
+        ok.content = [block]
+        ok.usage.input_tokens = 10
+        ok.usage.output_tokens = 5
+        ok.usage.cache_creation_input_tokens = 0
+        ok.usage.cache_read_input_tokens = 0
+        with (
+            patch.object(
+                client._client.messages, "create", side_effect=[_transient_exc(), ok]
+            ) as create,
+            patch("investor.services.llm.time.sleep"),
+        ):
+            resp, _ = client.call(model=HAIKU, system="s", user="u")
+        assert create.call_count == 2
+        assert resp.content == "{}"
 
 
 def _make_mock_result_message(
@@ -419,6 +615,22 @@ class TestAgentSDKClient:
         assert client.daily_spent_usd == 0.0
         client._spent_today = 1.23
         assert client.daily_spent_usd == 1.23
+
+    def test_temperature_and_cache_are_noops(self):
+        """agent_sdk can't set temperature or caching → records temperature=None, tiers 0."""
+        client = self._make_client()
+        result_msg = _make_mock_result_message(input_tokens=100, output_tokens=50)
+
+        async def fake_async_call(*args, **kwargs):
+            return result_msg
+
+        with patch.object(client, "_async_call", fake_async_call):
+            resp, _ = client.call(
+                model=HAIKU, system="s", user="u", temperature=0.7, cache_system=True
+            )
+        assert resp.temperature is None
+        assert resp.cache_write_tokens == 0
+        assert resp.cache_read_tokens == 0
 
     def test_satisfies_llm_client_protocol(self):
         client = self._make_client()

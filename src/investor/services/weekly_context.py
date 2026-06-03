@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import WeeklyMarketContextRow
-from .llm import SONNET, LLMClient, load_prompt
+from .llm import SONNET, LLMClient, load_prompt, persist_llm_call_log
 from .sentiment import SentimentClient
 from .tavily import NewsResult, TavilyClient
 
@@ -169,6 +169,7 @@ def build_weekly_market_context(
     *,
     tavily: TavilyClient,
     llm: LLMClient,
+    session: Session,
     watchlist: list[str],
     week_of: date,
     prompt_version: str = "1",
@@ -178,6 +179,9 @@ def build_weekly_market_context(
 
     Returns None when Tavily returns nothing (capped or unavailable) so the
     caller can omit the section gracefully rather than render a broken one.
+
+    ``session`` is used only to persist the synthesis LLMCallLog row (cost/latency/temp/
+    cache tiers) so weekly-context spend shows up in the audit log like every other call.
     """
     from .sentiment import FakeSentimentClient
     _sentiment = sentiment_client if sentiment_client is not None else FakeSentimentClient()
@@ -270,12 +274,19 @@ def build_weekly_market_context(
     )
 
     system_prompt = load_prompt(f"weekly_context_v{prompt_version}.txt")
-    _, parsed = llm.call(
+    resp, parsed = llm.call(
         model=SONNET,
         system=system_prompt,
         user=user_payload,
         max_tokens=2048,
         response_schema=_WeeklyContextSynthesis,
+        temperature=0.3,  # synthesised prose, not structured labels
+    )
+    persist_llm_call_log(
+        session,
+        resp,
+        purpose="weekly_context",
+        status="ok" if parsed is not None else "schema_error",
     )
 
     if parsed is None:

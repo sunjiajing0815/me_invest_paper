@@ -28,6 +28,8 @@ def llm_node_call[T: BaseModel](
     llm: LLMClient,
     session: Session,
     max_tokens: int = 4096,
+    temperature: float = 0.0,
+    cache_system: bool = True,
 ) -> tuple[T, dict[str, object]]:
     """Call the LLM and persist a diagnostic log row; return (result, telemetry).
 
@@ -50,6 +52,10 @@ def llm_node_call[T: BaseModel](
         session: Open SQLAlchemy Session for persisting the LLMCallLog row.
         max_tokens: Token budget for the completion (default 4096 — larger than
             Phase 3a's 1500 because news batches require more headroom).
+        temperature: Sampling temperature (default 0.0 for reproducible structured
+            output; prose nodes pass higher). Forwarded to the LLM; recorded in the log.
+        cache_system: Mark the system prompt as an ephemeral cache breakpoint
+            (anthropic_api only; harmless no-op below the cache minimum).
 
     Returns:
         A two-tuple of (parsed_result_or_fallback, telemetry_dict).
@@ -64,6 +70,8 @@ def llm_node_call[T: BaseModel](
         user=user,
         max_tokens=max_tokens,
         response_schema=schema,
+        temperature=temperature,
+        cache_system=cache_system,
     )
 
     error_msg: str | None = None

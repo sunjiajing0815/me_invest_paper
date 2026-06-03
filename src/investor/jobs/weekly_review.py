@@ -343,16 +343,20 @@ def run_weekly_review(
         logger.warning("run_weekly_review: preview generation failed: %s", exc)
         preview_suggestions = []
 
-    # Phase 4.5: Tavily weekly market context (runs outside session scope)
+    # Phase 4.5: Tavily weekly market context. Wrapped in its own short session scope so
+    # the synthesis LLM call lands in llm_call_log; the SQLite write lock is taken only at
+    # the final flush, not during the Tavily/LLM I/O.
     try:
-        market_context = build_weekly_market_context(
-            tavily=tavily,
-            llm=llm,
-            watchlist=tickers,
-            week_of=week_of,
-            prompt_version=settings.weekly_context_prompt_version,
-            sentiment_client=sentiment_client,
-        )
+        with session_scope() as ctx_session:
+            market_context = build_weekly_market_context(
+                tavily=tavily,
+                llm=llm,
+                session=ctx_session,
+                watchlist=tickers,
+                week_of=week_of,
+                prompt_version=settings.weekly_context_prompt_version,
+                sentiment_client=sentiment_client,
+            )
     except Exception as exc:
         logger.warning(
             "run_weekly_review: weekly market context failed; omitting section: %s",

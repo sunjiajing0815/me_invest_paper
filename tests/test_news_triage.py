@@ -216,6 +216,43 @@ class TestCriticNode:
         assert result["flagged"] == []
 
 
+class TestConfigurableModels:
+    """Per-node models are settings-configurable; the critic defaults to a DIFFERENT
+    class than the Haiku classifier (Sonnet) so the graph isn't same-class self-judgment."""
+
+    def test_classify_uses_configured_model(self) -> None:
+        state = _make_state(raws=[_make_raw("h1")])
+        batch = NewsTriageBatch(items=[])
+        llm = _make_llm_client_with_parsed(batch.model_dump_json(), batch)
+        config = _make_config(llm=llm, session=_make_mock_session())
+        config["configurable"]["classify_model"] = SONNET  # override the HAIKU default
+        classify_node(state, config)
+        assert llm.call.call_args.kwargs["model"] == SONNET
+
+    def test_critic_defaults_to_sonnet(self) -> None:
+        cls_item = NewsTriageItem(
+            url_hash="h1", is_material=True, sentiment="bullish", summary="x"
+        )
+        state = _make_state(raws=[_make_raw("h1")], classifications=[cls_item])
+        review = NewsCriticReview(flagged=[])
+        llm = _make_llm_client_with_parsed(review.model_dump_json(), review)
+        config = _make_config(llm=llm, session=_make_mock_session())  # no critic_model key
+        critic_node(state, config)
+        assert llm.call.call_args.kwargs["model"] == SONNET
+
+    def test_critic_uses_configured_model(self) -> None:
+        cls_item = NewsTriageItem(
+            url_hash="h1", is_material=True, sentiment="bullish", summary="x"
+        )
+        state = _make_state(raws=[_make_raw("h1")], classifications=[cls_item])
+        review = NewsCriticReview(flagged=[])
+        llm = _make_llm_client_with_parsed(review.model_dump_json(), review)
+        config = _make_config(llm=llm, session=_make_mock_session())
+        config["configurable"]["critic_model"] = HAIKU  # override back to Haiku
+        critic_node(state, config)
+        assert llm.call.call_args.kwargs["model"] == HAIKU
+
+
 # ---------------------------------------------------------------------------
 # arbitrate_node
 # ---------------------------------------------------------------------------

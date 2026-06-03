@@ -221,6 +221,13 @@ class LLMCallLog(Base):
     # "ok" | "schema_error" | "api_error"
     status: Mapped[str] = mapped_column(String, nullable=False)
     error: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Sampling temperature applied (NULL = backend couldn't set it, e.g. agent_sdk).
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    # Prompt-cache tiers — billed at 1.25x (write) / 0.10x (read) of base input. Stored
+    # separately so cost is tier-correct and the cache-hit ratio is derivable; 0 when
+    # caching is inactive or unsupported (agent_sdk).
+    cache_write_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class NewsEvent(Base):
