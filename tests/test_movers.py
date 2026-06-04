@@ -14,11 +14,11 @@ from types import SimpleNamespace
 from investor.jobs.movers import _build_news_events
 
 
-def _raw(url_hash: str, headline: str = "headline") -> SimpleNamespace:
+def _raw(url_hash: str, headline: str = "headline", source: str = "alpaca") -> SimpleNamespace:
     return SimpleNamespace(
         url_hash=url_hash,
         published_at=datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
-        source="alpaca",
+        source=source,
         headline=headline,
         url=f"https://example.com/{url_hash}",
     )
@@ -52,6 +52,24 @@ def test_shared_article_across_movers_inserted_once() -> None:
     # triage fields carried through for the claimed article
     assert shared_ev.llm_material is True
     assert shared_ev.llm_sentiment == "bullish"
+
+
+def test_tavily_items_never_persisted_to_news_event() -> None:
+    """ADR-0020: Tavily-sourced movers articles are shown in the email (via final_by_ticker)
+    but MUST NOT be written to news_event — that table feeds the suggestion engine."""
+    news = {
+        "NFLX": [
+            _raw("alpaca_hash", source="alpaca"),
+            _raw("tavily_hash", source="tavily"),
+        ]
+    }
+    final = {"NFLX": [_final("alpaca_hash"), _final("tavily_hash")]}
+    events = _build_news_events(
+        ["NFLX"], news, final, arbitrated_hashes=set(), existing_hashes=set()
+    )
+    hashes = [e.url_hash for e in events]
+    assert hashes == ["alpaca_hash"]  # tavily excluded from persistence
+    assert all(e.url_hash != "tavily_hash" for e in events)
 
 
 def test_skips_articles_already_in_db() -> None:

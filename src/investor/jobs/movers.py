@@ -22,6 +22,7 @@ from ..services.email import EmailSender
 from ..services.llm import HAIKU, SONNET, LLMClient
 from ..services.news import NewsRaw, get_news_for_movers
 from ..services.render import render_template
+from ..services.tavily import TavilyClient
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,10 @@ def _build_news_events(
     for ticker in tickers:
         final_map = {item.url_hash: item for item in final_by_ticker.get(ticker, [])}
         for r in news_by_ticker.get(ticker, []):
+            # ADR-0020: Tavily items are shown in the email (via final_by_ticker) but
+            # never written to news_event — that table feeds the suggestion engine.
+            if r.source == "tavily":
+                continue
             if r.url_hash in seen:
                 continue
             f = final_map.get(r.url_hash)
@@ -115,12 +120,17 @@ def run_movers_email(
     adapter: BrokerAdapter,
     emailer: EmailSender,
     llm: LLMClient,
+    tavily: TavilyClient | None = None,
 ) -> None:
     """Run daily movers detection, news triage, persistence, and email.
 
     Uses tiered threshold logic: fires at 5% first time, then 10%, then 15%, etc.
     Resets threshold when a ticker's move drops back below 5%.
     Never sends email if no ticker crossed a new threshold today.
+
+    ``tavily`` (optional) gap-fills news for movers the structured feeds miss (e.g. NFLX).
+    Tavily items are triaged and shown in the email but never persisted to news_event,
+    so they cannot reach the suggestion engine (ADR-0020).
     """
     log.info("run_movers_email started")
 
@@ -190,6 +200,7 @@ def run_movers_email(
         alpaca_api_key=settings.alpaca_api_key,
         alpaca_secret_key=settings.alpaca_secret_key,
         finnhub_api_key=settings.finnhub_api_key,
+        tavily=tavily,
     )
 
     # 5. Build graph once, invoke per ticker

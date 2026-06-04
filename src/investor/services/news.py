@@ -1,13 +1,16 @@
-"""News fetching service — Alpaca primary, Finnhub fallback.
+"""News fetching service — Alpaca primary, Finnhub fallback, Tavily gap-fill.
 
 Accepts credentials as parameters so the module is pure/testable and does not
 read from DB or global config directly.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from math import ceil
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse, urlunparse
 
@@ -17,8 +20,23 @@ from ..models import NewsEvent
 
 if TYPE_CHECKING:
     from ..graphs.news_triage import NewsTriageItem  # avoid circular import at runtime
+    from .tavily import TavilyClient
 
 log = logging.getLogger(__name__)
+
+# Crypto tickers need the "<SYM>/USD" form for Alpaca's news API: the bare ticker
+# ("BTC") returns a trickle while "BTC/USD" returns the full feed (≈10-30x more). The
+# stored/grouped ticker stays the bare symbol so the email + movers grouping are
+# unchanged. Extend as the crypto watchlist grows.
+_CRYPTO_NEWS_SYMBOLS: dict[str, str] = {
+    "BTC": "BTC/USD",
+    "ETH": "ETH/USD",
+}
+
+# Augment with a Tavily web search only when the structured feeds returned fewer than
+# this many articles — fills gaps (e.g. NFLX, which Alpaca has zero coverage for) without
+# burning the Tavily monthly cap on tickers that already have rich coverage.
+_TAVILY_GAPFILL_THRESHOLD = 3
 
 
 @dataclass(frozen=True)
@@ -29,7 +47,14 @@ class NewsRaw:
     url: str
     url_hash: str  # sha256(normalised_url)[:16]
     published_at: datetime
-    source: Literal["alpaca", "finnhub"]
+    # "tavily" items are shown in the movers email but NEVER persisted to news_event
+    # (they must not reach the suggestion engine — ADR-0020). See _build_news_events.
+    source: Literal["alpaca", "finnhub", "tavily"]
+
+
+def _alpaca_news_symbol(ticker: str) -> str:
+    """Map a crypto ticker to its Alpaca news symbol ('BTC' -> 'BTC/USD'); else passthrough."""
+    return _CRYPTO_NEWS_SYMBOLS.get(ticker, ticker)
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +97,10 @@ def fetch_alpaca_news(
     from alpaca.data.requests import NewsRequest
 
     client: Any = NewsClient(api_key=api_key, secret_key=secret_key)
-    # symbols is Optional[str] (comma-separated) in this version of alpaca-py
-    request = NewsRequest(symbols=ticker, start=since)
+    # symbols is Optional[str] (comma-separated) in this version of alpaca-py.
+    # Crypto tickers are queried under their "<SYM>/USD" news symbol (see
+    # _CRYPTO_NEWS_SYMBOLS) but stored under the bare ticker.
+    request = NewsRequest(symbols=_alpaca_news_symbol(ticker), start=since)
     result: Any = client.get_news(request)
 
     # NewsSet.data is keyed by "news" (flat list, not per-ticker) in this SDK version
@@ -154,6 +181,59 @@ def fetch_finnhub_news(
 
 
 # ---------------------------------------------------------------------------
+# Tavily web-search news (movers email only — never persisted; see ADR-0020)
+# ---------------------------------------------------------------------------
+
+
+def fetch_tavily_news(
+    ticker: str,
+    since: datetime,
+    *,
+    tavily: TavilyClient,
+    is_crypto: bool = False,
+    max_results: int = 5,
+) -> list[NewsRaw]:
+    """Web-search news for *ticker* via Tavily, source-tagged ``"tavily"``.
+
+    Used to fill gaps the structured feeds miss (e.g. NFLX). These items are shown in the
+    movers email but MUST NOT be persisted to news_event — that table feeds the suggestion
+    engine and ADR-0020 forbids Tavily reaching it. The ``"tavily"`` source tag lets
+    ``_build_news_events`` skip them. Never raises (the Tavily client returns [] on error
+    or monthly-cap).
+    """
+    now = datetime.now(UTC)
+    days = max(1, ceil((now - since).total_seconds() / 86400))
+    query = f"{ticker} cryptocurrency news" if is_crypto else f"{ticker} stock news"
+    results = tavily.search_news(query, days=days, max_results=max_results)
+
+    seen: dict[str, NewsRaw] = {}
+    for r in results:
+        if not r.url:
+            continue
+        url_hash = _hash_url(r.url)
+        if url_hash in seen:
+            continue
+        published_at = (
+            datetime(
+                r.published_date.year, r.published_date.month, r.published_date.day,
+                tzinfo=UTC,
+            )
+            if r.published_date is not None
+            else now
+        )
+        seen[url_hash] = NewsRaw(
+            ticker=ticker,
+            headline=r.title,
+            snippet=(r.content or "")[:400],
+            url=r.url,
+            url_hash=url_hash,
+            published_at=published_at,
+            source="tavily",
+        )
+    return list(seen.values())
+
+
+# ---------------------------------------------------------------------------
 # Aggregated entry-point
 # ---------------------------------------------------------------------------
 
@@ -165,11 +245,14 @@ def get_news_for_movers(
     alpaca_api_key: str,
     alpaca_secret_key: str,
     finnhub_api_key: str,
+    tavily: TavilyClient | None = None,
 ) -> dict[str, list[NewsRaw]]:
-    """Return news for each ticker: Alpaca primary, Finnhub fallback.
+    """Return news for each ticker: Alpaca primary, Finnhub fallback, Tavily gap-fill.
 
     Never raises — returns an empty list for a ticker on total failure.
-    Deduplicates across sources by url_hash.
+    Deduplicates across sources by url_hash. When ``tavily`` is supplied and the structured
+    feeds returned fewer than ``_TAVILY_GAPFILL_THRESHOLD`` articles, augments with a Tavily
+    web search (source-tagged ``"tavily"``, never persisted — see ``fetch_tavily_news``).
     """
     out: dict[str, list[NewsRaw]] = {}
 
@@ -196,7 +279,20 @@ def get_news_for_movers(
             except Exception as e:  # noqa: BLE001
                 log.warning("finnhub news failed for %s: %s", ticker, e)
 
-        # Final dedup by url_hash across sources (in case both returned same article)
+        # Tavily gap-fill: only when the structured feeds are sparse, to conserve the
+        # monthly cap and to target real gaps (e.g. NFLX) rather than already-rich tickers.
+        if tavily is not None and len(items) < _TAVILY_GAPFILL_THRESHOLD:
+            try:
+                items = items + fetch_tavily_news(
+                    ticker,
+                    since,
+                    tavily=tavily,
+                    is_crypto=ticker in _CRYPTO_NEWS_SYMBOLS,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("tavily news failed for %s: %s", ticker, e)
+
+        # Final dedup by url_hash across sources (in case two returned the same article)
         seen: dict[str, NewsRaw] = {}
         for item in items:
             if item.url_hash not in seen:
@@ -215,7 +311,7 @@ def get_news_for_movers(
 def load_recent_material_news(
     session: Session,
     days: int = 7,
-) -> "dict[str, list[NewsTriageItem]]":
+) -> dict[str, list[NewsTriageItem]]:
     """Return material news from the last *days* days, grouped by ticker.
 
     Each entry is a NewsTriageItem (Pydantic BaseModel). All conversion

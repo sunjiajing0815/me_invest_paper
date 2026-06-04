@@ -13,8 +13,36 @@ from investor.services.news import (
     _normalise_url,
     fetch_alpaca_news,
     fetch_finnhub_news,
+    fetch_tavily_news,
     get_news_for_movers,
 )
+from investor.services.tavily import NewsResult
+
+
+class _FakeTavily:
+    """Records search_news calls and returns a fixed NewsResult list."""
+
+    def __init__(self, results: list[NewsResult] | None = None) -> None:
+        self._results = results or []
+        self.calls: list[tuple[str, int, int]] = []
+
+    def search_news(self, query: str, *, days: int = 7, max_results: int = 5):
+        self.calls.append((query, days, max_results))
+        return self._results
+
+    def search_finance(self, query: str, *, days: int = 7, max_results: int = 5):
+        return []
+
+
+def _news_result(url: str = "https://web.example.com/a", title: str = "Web headline") -> NewsResult:
+    return NewsResult(
+        title=title,
+        url=url,
+        content="web content",
+        published_date=None,
+        source_domain="example.com",
+        score=0.9,
+    )
 
 # ---------------------------------------------------------------------------
 # URL utilities
@@ -162,6 +190,45 @@ class TestFetchAlpacaNews:
             )
 
         assert results == []
+
+    def test_crypto_ticker_queried_under_usd_pair_but_stored_bare(self) -> None:
+        """BTC is queried as 'BTC/USD' (Alpaca's crypto news symbol) but the NewsRaw keeps
+        the bare 'BTC' ticker so movers grouping + the email are unchanged."""
+        article = self._make_article()
+        cls = MagicMock()
+        inst = MagicMock()
+        cls.return_value = inst
+        res = MagicMock()
+        res.data = {"news": [article]}
+        inst.get_news.return_value = res
+        news_request = MagicMock()
+        with (
+            patch("alpaca.data.historical.NewsClient", cls),
+            patch("alpaca.data.requests.NewsRequest", news_request),
+        ):
+            results = fetch_alpaca_news(
+                "BTC", datetime(2024, 1, 9, tzinfo=UTC), api_key="k", secret_key="s"
+            )
+        assert news_request.call_args.kwargs["symbols"] == "BTC/USD"
+        assert results[0].ticker == "BTC"
+
+    def test_equity_ticker_symbol_unchanged(self) -> None:
+        article = self._make_article()
+        cls = MagicMock()
+        inst = MagicMock()
+        cls.return_value = inst
+        res = MagicMock()
+        res.data = {"news": [article]}
+        inst.get_news.return_value = res
+        news_request = MagicMock()
+        with (
+            patch("alpaca.data.historical.NewsClient", cls),
+            patch("alpaca.data.requests.NewsRequest", news_request),
+        ):
+            fetch_alpaca_news(
+                "NFLX", datetime(2024, 1, 9, tzinfo=UTC), api_key="k", secret_key="s"
+            )
+        assert news_request.call_args.kwargs["symbols"] == "NFLX"
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +407,69 @@ class TestGetNewsForMovers:
 
         # Both have same url_hash → deduped to 1
         assert len(result["AAPL"]) == 1
+
+    def test_tavily_gapfill_when_structured_sparse(self) -> None:
+        """< threshold(3) structured articles → Tavily augments; merged + tagged tavily."""
+        alpaca_raw = self._make_raw(ticker="NFLX", url="https://alpaca.com/one")
+        tav = _FakeTavily([_news_result(url="https://web.com/x")])
+        with patch("investor.services.news.fetch_alpaca_news", return_value=[alpaca_raw]):
+            result = get_news_for_movers(
+                ["NFLX"], datetime(2024, 1, 9, tzinfo=UTC),
+                alpaca_api_key="k", alpaca_secret_key="s", finnhub_api_key="fk", tavily=tav,
+            )
+        assert tav.calls, "Tavily should be queried when structured news is sparse"
+        assert {r.source for r in result["NFLX"]} == {"alpaca", "tavily"}
+
+    def test_no_tavily_when_structured_rich(self) -> None:
+        """>= threshold structured articles → Tavily NOT queried (conserve the cap)."""
+        raws = [self._make_raw(ticker="MSFT", url=f"https://alpaca.com/{i}") for i in range(3)]
+        tav = _FakeTavily([_news_result()])
+        with patch("investor.services.news.fetch_alpaca_news", return_value=raws):
+            result = get_news_for_movers(
+                ["MSFT"], datetime(2024, 1, 9, tzinfo=UTC),
+                alpaca_api_key="k", alpaca_secret_key="s", finnhub_api_key="fk", tavily=tav,
+            )
+        assert tav.calls == []
+        assert len(result["MSFT"]) == 3
+
+    def test_no_tavily_when_client_absent(self) -> None:
+        """Default tavily=None → unchanged behaviour, no augmentation."""
+        with (
+            patch("investor.services.news.fetch_alpaca_news", return_value=[]),
+            patch("investor.services.news.fetch_finnhub_news", return_value=[]),
+        ):
+            result = get_news_for_movers(
+                ["NFLX"], datetime(2024, 1, 9, tzinfo=UTC),
+                alpaca_api_key="k", alpaca_secret_key="s", finnhub_api_key="fk",
+            )
+        assert result == {"NFLX": []}
+
+
+class TestFetchTavilyNews:
+    def test_maps_result_to_newsraw_tagged_tavily(self) -> None:
+        tav = _FakeTavily([_news_result(url="https://web.com/a", title="Big move")])
+        out = fetch_tavily_news("NFLX", datetime.now(UTC), tavily=tav)
+        assert len(out) == 1
+        assert out[0].source == "tavily"
+        assert out[0].ticker == "NFLX"
+        assert out[0].headline == "Big move"
+
+    def test_equity_query_wording(self) -> None:
+        tav = _FakeTavily([])
+        fetch_tavily_news("NFLX", datetime.now(UTC), tavily=tav)
+        assert "stock news" in tav.calls[0][0]
+
+    def test_crypto_query_wording(self) -> None:
+        tav = _FakeTavily([])
+        fetch_tavily_news("BTC", datetime.now(UTC), tavily=tav, is_crypto=True)
+        assert "cryptocurrency" in tav.calls[0][0]
+
+    def test_dedup_same_url(self) -> None:
+        tav = _FakeTavily(
+            [_news_result(url="https://w.com/x"), _news_result(url="https://w.com/x", title="dup")]
+        )
+        out = fetch_tavily_news("NFLX", datetime.now(UTC), tavily=tav)
+        assert len(out) == 1
 
 
 # ---------------------------------------------------------------------------

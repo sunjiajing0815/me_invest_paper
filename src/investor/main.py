@@ -244,7 +244,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     weekly_fn = partial(
         run_weekly_suggestions_all_brokers, _settings, emailer, llm, earnings, adapters
     )
-    movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm)
+    movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm, tavily)
     expiry_fn = partial(sweep_expired_suggestions_all_brokers, adapters)
     recon_fn = partial(run_daily_reconciliation_all_brokers, _settings, adapters)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
@@ -1006,6 +1006,7 @@ def admin_run_movers(request: Request) -> dict[str, str]:
         request.app.state.adapter,
         request.app.state.emailer,
         request.app.state.llm,
+        request.app.state.tavily,
     )
     return {"status": "ok"}
 
