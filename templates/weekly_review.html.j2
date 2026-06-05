@@ -306,10 +306,10 @@
       <td align="right" style="padding:3px 8px;">{{ "%.1f"|format(r.target_pct) }}</td>
       <td align="right" style="padding:3px 8px;">{{ "%.1f"|format(r.current_pct_mon) }}</td>
       <td align="right" style="padding:3px 8px;">{{ "%.1f"|format(r.current_pct_fri) }}</td>
-      <td align="right" style="padding:3px 8px; color:{{ '#2a8840' if r.moved_toward_target else '#a44' }}; font-weight:bold;">
+      <td align="right" style="padding:3px 8px; color:{{ '#888' if (r.drift_pp|abs) < 0.005 else ('#2a8840' if r.moved_toward_target else '#a44') }}; font-weight:bold;">
         {{ "%+.2f"|format(r.drift_pp) }}</td>
-      <td style="padding:3px 8px; color:{{ '#2a8840' if r.moved_toward_target else '#a44' }};">
-        {{ "→ closer" if r.moved_toward_target else "→ farther" }}</td>
+      <td style="padding:3px 8px; color:{{ '#888' if (r.drift_pp|abs) < 0.005 else ('#2a8840' if r.moved_toward_target else '#a44') }};">
+        {{ "→ unchanged" if (r.drift_pp|abs) < 0.005 else ("→ closer" if r.moved_toward_target else "→ farther") }}</td>
     </tr>
     {% endfor %}
   </tbody>

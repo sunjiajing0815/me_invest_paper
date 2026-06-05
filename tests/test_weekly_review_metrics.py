@@ -229,12 +229,9 @@ def test_drift_sign_under_target_moved_closer(session: Session) -> None:
     mon_ts = datetime(_MON.year, _MON.month, _MON.day, 16, 0, tzinfo=UTC)
     fri_ts = datetime(_FRI.year, _FRI.month, _FRI.day, 16, 0, tzinfo=UTC)
 
-    # Monday: VOO 200 of 1000 total → 20%
-    _snap(session, ts=mon_ts, ticker="VOO", market_value=200.0)
-    _snap(session, ts=mon_ts, ticker="CASH", market_value=800.0)
-    # Friday: VOO 250 of 1000 total → 25%
-    _snap(session, ts=fri_ts, ticker="VOO", market_value=250.0)
-    _snap(session, ts=fri_ts, ticker="CASH", market_value=750.0)
+    # weight_pct is already a % of TOTAL equity (incl. cash); the drift table uses it directly.
+    _snap(session, ts=mon_ts, ticker="VOO", market_value=200.0, weight_pct=20.0)
+    _snap(session, ts=fri_ts, ticker="VOO", market_value=250.0, weight_pct=25.0)
 
     drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     voo = next(r for r in drift if r.ticker == "VOO")
@@ -255,11 +252,9 @@ def test_drift_over_correction(session: Session) -> None:
     mon_ts = datetime(_MON.year, _MON.month, _MON.day, 16, 0, tzinfo=UTC)
     fri_ts = datetime(_FRI.year, _FRI.month, _FRI.day, 16, 0, tzinfo=UTC)
 
-    # Monday: 28% (gap=-2pp). Friday: 31% (gap=+1pp)
-    _snap(session, ts=mon_ts, ticker="VOO", market_value=280.0)
-    _snap(session, ts=mon_ts, ticker="CASH", market_value=720.0)
-    _snap(session, ts=fri_ts, ticker="VOO", market_value=310.0)
-    _snap(session, ts=fri_ts, ticker="CASH", market_value=690.0)
+    # Monday 28% (gap -2pp), Friday 31% (gap +1pp) — |1| < |2| → moved closer
+    _snap(session, ts=mon_ts, ticker="VOO", market_value=280.0, weight_pct=28.0)
+    _snap(session, ts=fri_ts, ticker="VOO", market_value=310.0, weight_pct=31.0)
 
     drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     voo = next(r for r in drift if r.ticker == "VOO")
@@ -395,16 +390,17 @@ def test_allocation_drift_scoped_to_one_account_no_duplicates(session: Session) 
     # QQQ targeted in both accounts, with DIFFERENT target %
     _target(session, ticker="QQQ", target_pct=25.0, broker_account_id=1)
     _target(session, ticker="QQQ", target_pct=30.0, broker_account_id=2)
-    for acct, mv_mon, mv_fri in ((1, 1000.0, 1100.0), (2, 5000.0, 5500.0)):
-        _snap(session, ts=mon_ts, ticker="QQQ", market_value=mv_mon, broker_account_id=acct)
-        _snap(session, ts=fri_ts, ticker="QQQ", market_value=mv_fri, broker_account_id=acct)
+    for acct, wt_mon, wt_fri in ((1, 15.0, 16.0), (2, 40.0, 42.0)):
+        _snap(session, ts=mon_ts, ticker="QQQ", market_value=1000.0, weight_pct=wt_mon,
+              broker_account_id=acct)
+        _snap(session, ts=fri_ts, ticker="QQQ", market_value=1100.0, weight_pct=wt_fri,
+              broker_account_id=acct)
 
     drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     qqq = [d for d in drift if d.ticker == "QQQ"]
     assert len(qqq) == 1                     # ONE row, not two (the bug produced two)
     assert qqq[0].target_pct == 25.0         # account 1's target, not account 2's 30.0
-    # current% is computed against account 1's equity only (1000 of 1000 = 100%)
-    assert qqq[0].current_pct_mon == pytest.approx(100.0)
+    assert qqq[0].current_pct_mon == pytest.approx(15.0)  # account 1's weight, not account 2's 40
 
 
 def test_funnel_scoped_to_one_account(session: Session) -> None:

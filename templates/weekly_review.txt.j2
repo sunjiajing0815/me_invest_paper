@@ -101,7 +101,7 @@ ALLOCATION DRIFT (Mon -> Fri)
 {{ "Ticker" | ljust(7) }}  {{ "Target%" | rjust(8) }}  {{ "Mon%" | rjust(7) }}  {{ "Fri%" | rjust(7) }}  {{ "Drift(pp)" | rjust(10) }}  Direction
 {{ "-" * 60 }}
 {% for r in review.drift_rows %}
-{{ r.ticker | ljust(7) }}  {{ "{:.1f}%".format(r.target_pct) | rjust(8) }}  {{ "{:.1f}%".format(r.current_pct_mon) | rjust(7) }}  {{ "{:.1f}%".format(r.current_pct_fri) | rjust(7) }}  {{ "{:+.2f}pp".format(r.drift_pp) | rjust(10) }}  {{ "-> closer" if r.moved_toward_target else "-> farther" }}{% if r.monday_is_fallback %} *{% endif %}
+{{ r.ticker | ljust(7) }}  {{ "{:.1f}%".format(r.target_pct) | rjust(8) }}  {{ "{:.1f}%".format(r.current_pct_mon) | rjust(7) }}  {{ "{:.1f}%".format(r.current_pct_fri) | rjust(7) }}  {{ "{:+.2f}pp".format(r.drift_pp) | rjust(10) }}  {{ "-> unchanged" if (r.drift_pp|abs) < 0.005 else ("-> closer" if r.moved_toward_target else "-> farther") }}{% if r.monday_is_fallback %} *{% endif %}
 
 {% endfor %}
 {% if review.drift_rows[0].targets_changed_midweek %}

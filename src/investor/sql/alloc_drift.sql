@@ -1,11 +1,14 @@
 -- params mon, fri: dates (as strings 'YYYY-MM-DD'); broker_account_id: int
--- All snapshot + target reads are scoped to one broker account so a ticker targeted in
--- multiple accounts doesn't produce duplicate drift rows or a mixed-equity denominator.
+-- Scoped to one broker account. Uses positions_snapshot.weight_pct, which is stored as a
+-- pct of TOTAL account equity (incl. cash) — the SAME basis target_pct is defined against
+-- (see gap_allocation.sql). Do NOT recompute market_value / SUM(market_value): that excludes
+-- cash, so with a large cash balance every weight is inflated ~1/(1-cash%) and an
+-- under-target holding looks over-target.
 WITH mon_snap AS (
   -- The single latest snapshot batch (one ts = one sync = one row per ticker). Using the
-  -- latest *ts*, not all rows on the latest DATE, avoids fan-out when a day has multiple
-  -- syncs (daily report + weekly review + manual all write a full snapshot the same day).
-  SELECT ticker, market_value
+  -- latest *ts*, not all rows on the latest DATE, avoids fan-out when a day has multiple syncs
+  -- (daily report + weekly review + manual all write a full snapshot the same day).
+  SELECT ticker, weight_pct
     FROM positions_snapshot
    WHERE broker_account_id = :broker_account_id
      AND ts = (
@@ -14,7 +17,7 @@ WITH mon_snap AS (
      )
 ),
 fri_snap AS (
-  SELECT ticker, market_value
+  SELECT ticker, weight_pct
     FROM positions_snapshot
    WHERE broker_account_id = :broker_account_id
      AND ts = (
@@ -22,8 +25,6 @@ fri_snap AS (
         WHERE broker_account_id = :broker_account_id AND DATE(ts) <= :fri
      )
 ),
-mon_equity AS (SELECT COALESCE(SUM(market_value), 0) AS total FROM mon_snap),
-fri_equity AS (SELECT COALESCE(SUM(market_value), 0) AS total FROM fri_snap),
 targets AS (
   SELECT ticker, target_pct
     FROM target_allocation
@@ -34,12 +35,8 @@ targets AS (
 SELECT
   t.ticker,
   t.target_pct,
-  CASE WHEN (SELECT total FROM mon_equity) > 0
-       THEN COALESCE(ms.market_value, 0) / (SELECT total FROM mon_equity) * 100
-       ELSE 0 END                              AS current_pct_mon,
-  CASE WHEN (SELECT total FROM fri_equity) > 0
-       THEN COALESCE(fs.market_value, 0) / (SELECT total FROM fri_equity) * 100
-       ELSE 0 END                              AS current_pct_fri,
+  COALESCE(ms.weight_pct, 0)                   AS current_pct_mon,
+  COALESCE(fs.weight_pct, 0)                   AS current_pct_fri,
   (SELECT MAX(DATE(ts)) FROM positions_snapshot
     WHERE broker_account_id = :broker_account_id AND DATE(ts) <= :mon) AS actual_mon_date
 FROM targets t
