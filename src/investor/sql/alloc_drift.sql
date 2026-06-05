@@ -2,11 +2,14 @@
 -- All snapshot + target reads are scoped to one broker account so a ticker targeted in
 -- multiple accounts doesn't produce duplicate drift rows or a mixed-equity denominator.
 WITH mon_snap AS (
+  -- The single latest snapshot batch (one ts = one sync = one row per ticker). Using the
+  -- latest *ts*, not all rows on the latest DATE, avoids fan-out when a day has multiple
+  -- syncs (daily report + weekly review + manual all write a full snapshot the same day).
   SELECT ticker, market_value
     FROM positions_snapshot
    WHERE broker_account_id = :broker_account_id
-     AND DATE(ts) = (
-       SELECT MAX(DATE(ts)) FROM positions_snapshot
+     AND ts = (
+       SELECT MAX(ts) FROM positions_snapshot
         WHERE broker_account_id = :broker_account_id AND DATE(ts) <= :mon
      )
 ),
@@ -14,8 +17,8 @@ fri_snap AS (
   SELECT ticker, market_value
     FROM positions_snapshot
    WHERE broker_account_id = :broker_account_id
-     AND DATE(ts) = (
-       SELECT MAX(DATE(ts)) FROM positions_snapshot
+     AND ts = (
+       SELECT MAX(ts) FROM positions_snapshot
         WHERE broker_account_id = :broker_account_id AND DATE(ts) <= :fri
      )
 ),

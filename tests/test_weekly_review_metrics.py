@@ -416,3 +416,22 @@ def test_funnel_scoped_to_one_account(session: Session) -> None:
     funnel = compute_order_funnel(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert funnel.suggested == 1   # only account 1's, not the 2 from account 2
     assert funnel.accepted == 1
+
+
+def test_allocation_drift_dedups_multiple_same_day_snapshots(session: Session) -> None:
+    """Multiple syncs on the same day (3 distinct ts) must NOT fan out the drift rows —
+    the query uses the latest snapshot batch (one ts), so each ticker appears once, not
+    once per (mon_snap x fri_snap) same-day row (the remaining duplicate-entries bug)."""
+    _target(session, ticker="QQQ", target_pct=25.0)
+    _target(session, ticker="VOO", target_pct=40.0)
+    # 3 syncs on Monday and 3 on Friday, each a full snapshot of both tickers
+    for h in (9, 13, 16):
+        for tk, mv_mon, mv_fri in (("QQQ", 1000.0, 1100.0), ("VOO", 2000.0, 2200.0)):
+            _snap(session, ts=datetime(2026, 5, 25, h, tzinfo=UTC), ticker=tk, market_value=mv_mon)
+            _snap(session, ts=datetime(2026, 5, 29, h, tzinfo=UTC), ticker=tk, market_value=mv_fri)
+
+    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
+    from collections import Counter
+    counts = Counter(d.ticker for d in drift)
+    assert counts["QQQ"] == 1, f"QQQ duplicated: {counts['QQQ']}"  # was 3x3=9 before the fix
+    assert counts["VOO"] == 1, f"VOO duplicated: {counts['VOO']}"
