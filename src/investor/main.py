@@ -55,7 +55,7 @@ from .jobs.suggestion_expiry import (
     sweep_expired_suggestions_all_brokers,
 )
 from .jobs.sync import run_sync_for_account
-from .jobs.weekly_review import run_weekly_review
+from .jobs.weekly_review import run_weekly_review, run_weekly_review_all_brokers
 from .jobs.weekly_suggestions import (
     run_weekly_suggestions_all_brokers,
     run_weekly_suggestions_for_account,
@@ -249,7 +249,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     recon_fn = partial(run_daily_reconciliation_all_brokers, _settings, adapters)
     moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
     weekly_review_fn = partial(
-        run_weekly_review, _settings, adapter, emailer, llm, tavily, sentiment
+        run_weekly_review_all_brokers, _settings, emailer, llm, tavily, adapters, sentiment
     )
     auto_trade_fn = partial(run_auto_trade_job_all_brokers, _settings, emailer, adapters)
     scheduler = make_scheduler(
@@ -976,22 +976,36 @@ def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
     summary="Manual weekly review trigger",
     dependencies=[Depends(admin_auth)],
 )
-def admin_run_weekly_review(request: Request) -> dict[str, str]:
-    """Trigger the weekly review job — builds review data and emails it."""
+def admin_run_weekly_review(
+    request: Request, broker_account_id: int | None = None
+) -> dict[str, str]:
+    """Trigger the weekly review — all active brokers, or one via ?broker_account_id."""
     settings = _get_settings()
-    adapter = request.app.state.adapter
     emailer = request.app.state.emailer
+    llm = request.app.state.llm
+    tavily = request.app.state.tavily
+    sentiment = request.app.state.sentiment
+    adapters = request.app.state.adapters
     logger.info("Weekly review triggered via POST /admin/run-weekly-review")
     try:
-        run_weekly_review(
-            settings, adapter, emailer,
-            request.app.state.llm, request.app.state.tavily,
-            request.app.state.sentiment,
-        )
+        if broker_account_id is None:
+            run_weekly_review_all_brokers(settings, emailer, llm, tavily, adapters, sentiment)
+            msg = "Weekly review sent for all active brokers"
+        else:
+            acct = _require_account(broker_account_id)
+            adapter = adapters.get(acct.account_ref)
+            if adapter is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No adapter for account {broker_account_id}"
+                )
+            run_weekly_review(settings, adapter, emailer, llm, tavily, sentiment, account=acct)
+            msg = f"Weekly review sent for {acct.nickname}"
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Weekly review failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Weekly review failed: {exc}") from exc
-    return {"status": "ok", "message": "Weekly review email sent"}
+    return {"status": "ok", "message": msg}
 
 
 @app.post(

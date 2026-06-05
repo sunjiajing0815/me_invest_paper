@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,9 +12,19 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Account
+from investor.config import Settings
 from investor.db import override_engine_for_testing
-from investor.jobs.weekly_review import SuggestionAudit, WeeklyReview, _build_review, _week_start
-from investor.models import AutoTradeState, Base, OrderSuggestion
+from investor.jobs.weekly_review import (
+    SuggestionAudit,
+    WeeklyReview,
+    _build_review,
+    _week_start,
+    run_weekly_review_all_brokers,
+    run_weekly_review_for_account,
+)
+from investor.models import AutoTradeState, Base, BrokerAccount, OrderSuggestion
+from investor.services.accounts import AccountInfo
+from investor.services.email import FakeEmailer
 
 # ── _week_start ────────────────────────────────────────────────────────────────
 
@@ -188,3 +198,85 @@ def test_auto_trade_mode_sourced_from_auto_trade_state_not_meta(_db_session: Ses
     )
 
     assert review.auto_trade_mode == "LIVE"
+
+
+# ── Per-broker weekly review (Phase 4.9b: Moomoo gets its own review) ──────────
+
+def _settings(tmp_path: Any) -> Settings:
+    return Settings(
+        broker="alpaca_paper", alpaca_api_key="k", alpaca_secret_key="s",
+        sqlite_path=":memory:", targets_path="config/targets.yaml",
+        bars_dir=str(tmp_path), email_to="t@t.com",
+    )
+
+
+def test_run_weekly_review_for_account_uses_nickname_subject(
+    _db_session: Session, tmp_path: Any
+) -> None:
+    """Each account's review email is prefixed with that account's nickname."""
+    emailer = FakeEmailer()
+    run_weekly_review_for_account(
+        _settings(tmp_path),
+        _mock_adapter(),
+        emailer,
+        account=AccountInfo(account_ref=2, nickname="Moomoo", broker="moomoo"),
+        primary_ref=1,                 # account 2 is NOT primary → no config/targets fallback
+        week_of=date(2026, 5, 25),
+        market_context=None,
+    )
+    assert len(emailer.sent) == 1
+    assert emailer.sent[0]["subject"].startswith("[Moomoo] Weekly review:")
+
+
+def test_all_brokers_one_email_per_account_with_shared_context(_db_session: Session) -> None:
+    """run_weekly_review_all_brokers builds the user-level context ONCE and runs a per-account
+    review for every active broker (so Moomoo gets its own email, not just Alpaca)."""
+    for ref, nick, brk in ((1, "Alpaca paper", "alpaca"), (2, "Moomoo", "moomoo")):
+        _db_session.add(BrokerAccount(
+            account_ref=ref, account_id=f"a{ref}", broker=brk, mode="paper",
+            nickname=nick, is_active=True, cash_usd=0.0, equity_usd=0.0,
+            last_sync=datetime(2026, 5, 29, tzinfo=UTC),
+            effective_from=datetime(2026, 5, 1, tzinfo=UTC),
+        ))
+    _db_session.commit()
+
+    sentinel_ctx = object()
+    adapters = {1: _mock_adapter(), 2: _mock_adapter()}
+    with (
+        patch("investor.jobs.weekly_review.datetime") as mdt,
+        patch(
+            "investor.jobs.weekly_review._build_and_persist_context",
+            return_value=sentinel_ctx,
+        ) as mctx,
+        patch("investor.jobs.weekly_review.run_weekly_review_for_account") as mfor,
+    ):
+        mdt.now.return_value.date.return_value.weekday.return_value = 4  # Friday → guard passes
+        run_weekly_review_all_brokers(
+            Settings(
+                broker="alpaca_paper", alpaca_api_key="k", alpaca_secret_key="s",
+                sqlite_path=":memory:", targets_path="config/targets.yaml", email_to="t@t.com",
+            ),
+            FakeEmailer(), MagicMock(), MagicMock(), adapters, None,
+        )
+
+    assert mctx.call_count == 1                      # context built exactly once (shared)
+    assert mfor.call_count == 2                      # one review per active account
+    reviewed = {c.kwargs["account"].account_ref for c in mfor.call_args_list}
+    assert reviewed == {1, 2}                        # both Alpaca AND Moomoo
+    assert all(c.kwargs["market_context"] is sentinel_ctx for c in mfor.call_args_list)
+
+
+def test_all_brokers_weekday_guard(_db_session: Session) -> None:
+    """Guard: refuses to run before the week is over (Mon–Thu)."""
+    with patch("investor.jobs.weekly_review.datetime") as mdt:
+        mdt.now.return_value.date.return_value.weekday.return_value = 1  # Tuesday
+        mdt.now.return_value.date.return_value.strftime.return_value = "Tuesday"
+        with pytest.raises(RuntimeError, match="week isn't over"):
+            run_weekly_review_all_brokers(
+                Settings(
+                    broker="alpaca_paper", alpaca_api_key="k", alpaca_secret_key="s",
+                    sqlite_path=":memory:", targets_path="config/targets.yaml",
+                    email_to="t@t.com",
+                ),
+                FakeEmailer(), MagicMock(), MagicMock(), {}, None,
+            )
