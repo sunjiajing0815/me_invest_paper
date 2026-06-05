@@ -49,10 +49,11 @@ def _sug(
     limit_price: float = 500.0,
     status: str = "pending",
     week_of: date = _MON,
+    broker_account_id: int = 1,
 ) -> int:
     """Insert an OrderSuggestion and return its id."""
     row = OrderSuggestion(
-        broker_account_id=1,
+        broker_account_id=broker_account_id,
         week_of=week_of,
         ticker=ticker,
         side=side,
@@ -79,10 +80,11 @@ def _exec(
     filled_price: float = 500.0,
     limit_price: float = 500.0,
     dry_run: bool = False,
+    broker_account_id: int = 1,
 ) -> OrderExecution:
     """Insert an OrderExecution."""
     row = OrderExecution(
-        broker_account_id=1,
+        broker_account_id=broker_account_id,
         suggestion_id=suggestion_id,
         ticker=ticker,
         side=side,
@@ -109,10 +111,11 @@ def _snap(
     ticker: str,
     market_value: float,
     weight_pct: float = 10.0,
+    broker_account_id: int = 1,
 ) -> PositionsSnapshot:
     """Insert a PositionsSnapshot row."""
     row = PositionsSnapshot(
-        broker_account_id=1,
+        broker_account_id=broker_account_id,
         ts=ts,
         ticker=ticker,
         market_value=market_value,
@@ -135,12 +138,13 @@ def _target(
     effective_to: datetime | None = None,
     band_low_pct: float | None = None,
     band_high_pct: float | None = None,
+    broker_account_id: int = 1,
 ) -> TargetAllocation:
     """Insert a TargetAllocation row."""
     if effective_from is None:
         effective_from = datetime(2026, 1, 1, tzinfo=UTC)
     row = TargetAllocation(
-        broker_account_id=1,
+        broker_account_id=broker_account_id,
         ticker=ticker,
         target_pct=target_pct,
         band_low_pct=band_low_pct if band_low_pct is not None else (target_pct - 5),
@@ -159,7 +163,7 @@ def _target(
 
 def test_funnel_empty_week(session: Session) -> None:
     """No rows at all → OrderFunnel with all zeros, no crash."""
-    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI)
+    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert funnel.suggested == 0
     assert funnel.accepted == 0
     assert funnel.routed_live == 0
@@ -177,7 +181,7 @@ def test_funnel_typical_week(session: Session) -> None:
     _sug(session, ticker="QQQ", status="expired")
     _exec(session, suggestion_id=sug1, status="filled", dry_run=False)
 
-    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI)
+    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert funnel.suggested == 3
     assert funnel.accepted == 1
     assert funnel.routed_live == 1
@@ -196,7 +200,7 @@ def test_funnel_dry_run_only(session: Session) -> None:
     sug = _sug(session, status="accepted")
     _exec(session, suggestion_id=sug, status="filled", dry_run=True)
 
-    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI)
+    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert funnel.routed_live == 0
     assert funnel.filled_live == 0
     assert funnel.dry_run_count == 1
@@ -210,7 +214,7 @@ def test_funnel_accepted_not_routed(session: Session) -> None:
     """1 suggestion accepted but no execution row → accepted_not_routed=1."""
     _sug(session, status="accepted")
 
-    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI)
+    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert funnel.accepted_not_routed == 1
     assert funnel.routed_live == 0
 
@@ -232,7 +236,7 @@ def test_drift_sign_under_target_moved_closer(session: Session) -> None:
     _snap(session, ts=fri_ts, ticker="VOO", market_value=250.0)
     _snap(session, ts=fri_ts, ticker="CASH", market_value=750.0)
 
-    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI)
+    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     voo = next(r for r in drift if r.ticker == "VOO")
 
     assert voo.current_pct_mon == pytest.approx(20.0, abs=0.1)
@@ -257,7 +261,7 @@ def test_drift_over_correction(session: Session) -> None:
     _snap(session, ts=fri_ts, ticker="VOO", market_value=310.0)
     _snap(session, ts=fri_ts, ticker="CASH", market_value=690.0)
 
-    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI)
+    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     voo = next(r for r in drift if r.ticker == "VOO")
 
     assert abs(voo.gap_pct_fri) < abs(voo.gap_pct_mon)
@@ -278,7 +282,7 @@ def test_drift_monday_fallback(session: Session) -> None:
     _snap(session, ts=prior_fri_ts, ticker="VOO", market_value=300.0)
     _snap(session, ts=fri_ts, ticker="VOO", market_value=310.0)
 
-    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI)
+    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert len(drift) > 0
     assert drift[0].monday_is_fallback is True
 
@@ -298,7 +302,7 @@ def test_drift_targets_changed_midweek(session: Session) -> None:
     _snap(session, ts=mon_ts, ticker="VOO", market_value=300.0)
     _snap(session, ts=fri_ts, ticker="VOO", market_value=300.0)
 
-    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI)
+    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert all(r.targets_changed_midweek for r in drift)
 
 
@@ -337,7 +341,7 @@ def test_weekday_guard_raises_on_wednesday() -> None:
 
 def test_order_flow_zeros_when_no_executions(session: Session) -> None:
     """No execution rows → OrderFlow with all float zeros, no crash."""
-    flow = compute_order_flow(session, mon=_MON, fri=_FRI)
+    flow = compute_order_flow(session, mon=_MON, fri=_FRI, broker_account_id=1)
     assert flow.buy_routed_usd == 0.0
     assert flow.sell_routed_usd == 0.0
     assert flow.buy_filled_usd == 0.0
@@ -373,6 +377,42 @@ def test_trend_filled_live_includes_partial_fills(session: Session) -> None:
     session.add(row)
     session.flush()
 
-    trend_rows = compute_4_week_trend(session, current_fri=current_fri)
+    trend_rows = compute_4_week_trend(session, current_fri=current_fri, broker_account_id=1)
     assert len(trend_rows) >= 1
     assert trend_rows[-1].filled_live == 1
+
+
+# ---------------------------------------------------------------------------
+# Multi-broker scoping (regression: duplicate drift rows for shared tickers)
+# ---------------------------------------------------------------------------
+
+def test_allocation_drift_scoped_to_one_account_no_duplicates(session: Session) -> None:
+    """A ticker targeted in TWO accounts must yield exactly ONE drift row for the scoped
+    account — not one per account. This is the duplicate-entries bug: alloc_drift.sql had
+    no broker_account_id filter, so the targets CTE returned the ticker once per account."""
+    mon_ts = datetime(2026, 5, 25, 16, 0, tzinfo=UTC)
+    fri_ts = datetime(2026, 5, 29, 16, 0, tzinfo=UTC)
+    # QQQ targeted in both accounts, with DIFFERENT target %
+    _target(session, ticker="QQQ", target_pct=25.0, broker_account_id=1)
+    _target(session, ticker="QQQ", target_pct=30.0, broker_account_id=2)
+    for acct, mv_mon, mv_fri in ((1, 1000.0, 1100.0), (2, 5000.0, 5500.0)):
+        _snap(session, ts=mon_ts, ticker="QQQ", market_value=mv_mon, broker_account_id=acct)
+        _snap(session, ts=fri_ts, ticker="QQQ", market_value=mv_fri, broker_account_id=acct)
+
+    drift = compute_allocation_drift(session, mon=_MON, fri=_FRI, broker_account_id=1)
+    qqq = [d for d in drift if d.ticker == "QQQ"]
+    assert len(qqq) == 1                     # ONE row, not two (the bug produced two)
+    assert qqq[0].target_pct == 25.0         # account 1's target, not account 2's 30.0
+    # current% is computed against account 1's equity only (1000 of 1000 = 100%)
+    assert qqq[0].current_pct_mon == pytest.approx(100.0)
+
+
+def test_funnel_scoped_to_one_account(session: Session) -> None:
+    """Account 2's suggestions must not count toward account 1's funnel."""
+    _sug(session, status="accepted", broker_account_id=1)
+    _sug(session, ticker="AAPL", status="accepted", broker_account_id=2)
+    _sug(session, ticker="MSFT", status="accepted", broker_account_id=2)
+
+    funnel = compute_order_funnel(session, mon=_MON, fri=_FRI, broker_account_id=1)
+    assert funnel.suggested == 1   # only account 1's, not the 2 from account 2
+    assert funnel.accepted == 1

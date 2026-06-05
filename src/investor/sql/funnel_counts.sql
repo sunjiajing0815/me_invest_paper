@@ -1,8 +1,9 @@
--- param mon: date (Monday of operations week)
+-- params mon: date (Monday of operations week); broker_account_id: int
 WITH suggestions AS (
   SELECT id, status
     FROM order_suggestion
    WHERE week_of = :mon
+     AND broker_account_id = :broker_account_id
 ),
 live_exec AS (
   SELECT oe.suggestion_id, oe.status

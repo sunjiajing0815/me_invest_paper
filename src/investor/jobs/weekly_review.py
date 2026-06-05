@@ -224,18 +224,26 @@ def _build_review(
     breakdown_rows: list[PerTickerWeekRow] | None = None
     trend_rows: list[WeekTrendRow] | None = None
     try:
-        order_funnel = compute_order_funnel(session, mon=week_of, fri=fri)
-        order_flow = compute_order_flow(session, mon=week_of, fri=fri)
-        drift_rows = compute_allocation_drift(session, mon=week_of, fri=fri)
+        order_funnel = compute_order_funnel(
+            session, mon=week_of, fri=fri, broker_account_id=broker_account_id
+        )
+        order_flow = compute_order_flow(
+            session, mon=week_of, fri=fri, broker_account_id=broker_account_id
+        )
+        drift_rows = compute_allocation_drift(
+            session, mon=week_of, fri=fri, broker_account_id=broker_account_id
+        )
         breakdown_rows = compute_per_ticker_breakdown(
             session,
             mon=week_of,
             fri=fri,
+            broker_account_id=broker_account_id,
             top_n=settings.weekly_review_breakdown_top_n,
         )
         trend_rows = compute_4_week_trend(
             session,
             current_fri=fri,
+            broker_account_id=broker_account_id,
             trend_weeks=settings.weekly_review_trend_weeks,
         )
     except Exception as exc:

@@ -77,9 +77,13 @@ class WeekTrendRow:
     abs_drift_pp_sum: float
 
 
-def compute_order_funnel(s: Session, *, mon: date, fri: date) -> OrderFunnel:
-    """Count suggestion funnel states for the operations week."""
-    row = s.execute(q.funnel_counts, {"mon": mon}).mappings().one()
+def compute_order_funnel(
+    s: Session, *, mon: date, fri: date, broker_account_id: int
+) -> OrderFunnel:
+    """Count suggestion funnel states for the operations week (one broker account)."""
+    row = s.execute(
+        q.funnel_counts, {"mon": mon, "broker_account_id": broker_account_id}
+    ).mappings().one()
     return OrderFunnel(
         week_of=mon,
         suggested=int(row["suggested"] or 0),
@@ -94,9 +98,13 @@ def compute_order_funnel(s: Session, *, mon: date, fri: date) -> OrderFunnel:
     )
 
 
-def compute_order_flow(s: Session, *, mon: date, fri: date) -> OrderFlow:
-    """Dollar notional of routed and filled orders."""
-    row = s.execute(q.order_flow, {"mon": mon}).mappings().one()
+def compute_order_flow(
+    s: Session, *, mon: date, fri: date, broker_account_id: int
+) -> OrderFlow:
+    """Dollar notional of routed and filled orders (one broker account)."""
+    row = s.execute(
+        q.order_flow, {"mon": mon, "broker_account_id": broker_account_id}
+    ).mappings().one()
     return OrderFlow(
         week_of=mon,
         buy_routed_usd=float(row["buy_routed_usd"] or 0),
@@ -110,10 +118,17 @@ def compute_order_flow(s: Session, *, mon: date, fri: date) -> OrderFlow:
 
 
 def compute_allocation_drift(
-    s: Session, *, mon: date, fri: date
+    s: Session, *, mon: date, fri: date, broker_account_id: int
 ) -> list[AllocationDriftRow]:
-    """Per-ticker allocation drift Mon->Fri using positions_snapshot."""
-    rows = s.execute(q.alloc_drift, {"mon": str(mon), "fri": str(fri)}).mappings().all()
+    """Per-ticker allocation drift Mon->Fri using positions_snapshot (one broker account).
+
+    Scoped to broker_account_id so a ticker targeted in multiple accounts produces one
+    drift row, not one per account.
+    """
+    rows = s.execute(
+        q.alloc_drift,
+        {"mon": str(mon), "fri": str(fri), "broker_account_id": broker_account_id},
+    ).mappings().all()
     if not rows:
         return []
 
@@ -122,9 +137,10 @@ def compute_allocation_drift(
     midweek_count = s.execute(
         _text(
             "SELECT COUNT(*) FROM target_allocation "
-            "WHERE effective_from > :mon AND effective_from <= :fri"
+            "WHERE effective_from > :mon AND effective_from <= :fri "
+            "AND broker_account_id = :broker_account_id"
         ),
-        {"mon": str(mon), "fri": str(fri)},
+        {"mon": str(mon), "fri": str(fri), "broker_account_id": broker_account_id},
     ).scalar() or 0
     targets_changed_midweek = midweek_count > 0
 
@@ -166,17 +182,21 @@ def compute_allocation_drift(
 
 
 def compute_per_ticker_breakdown(
-    s: Session, *, mon: date, fri: date, top_n: int = 20
+    s: Session, *, mon: date, fri: date, broker_account_id: int, top_n: int = 20
 ) -> list[PerTickerWeekRow]:
-    """Per-ticker suggested/routed/filled breakdown, enriched with drift data."""
-    rows = s.execute(q.per_ticker_breakdown, {"mon": mon}).mappings().all()
+    """Per-ticker suggested/routed/filled breakdown (one broker account), enriched with drift."""
+    rows = s.execute(
+        q.per_ticker_breakdown, {"mon": mon, "broker_account_id": broker_account_id}
+    ).mappings().all()
     if not rows:
         return []
 
     # Build drift lookup for drift_pp and moved_toward_target
     drift_map: dict[str, tuple[float, bool]] = {
         r.ticker: (r.drift_pp, r.moved_toward_target)
-        for r in compute_allocation_drift(s, mon=mon, fri=fri)
+        for r in compute_allocation_drift(
+            s, mon=mon, fri=fri, broker_account_id=broker_account_id
+        )
     }
 
     result = []
@@ -200,9 +220,9 @@ def compute_per_ticker_breakdown(
 
 
 def compute_4_week_trend(
-    s: Session, *, current_fri: date, trend_weeks: int = 4
+    s: Session, *, current_fri: date, broker_account_id: int, trend_weeks: int = 4
 ) -> list[WeekTrendRow]:
-    """4-week trend strip: one WeekTrendRow per week, oldest first."""
+    """4-week trend strip: one WeekTrendRow per week, oldest first (one broker account)."""
     # current_fri is a Friday; derive its Monday
     current_mon = current_fri - timedelta(days=current_fri.weekday())  # Monday of current week
     trend: list[WeekTrendRow] = []
@@ -210,9 +230,11 @@ def compute_4_week_trend(
         mon = current_mon - timedelta(weeks=weeks_back)
         fri = mon + timedelta(days=4)
         try:
-            funnel = compute_order_funnel(s, mon=mon, fri=fri)
-            flow = compute_order_flow(s, mon=mon, fri=fri)
-            drift = compute_allocation_drift(s, mon=mon, fri=fri)
+            funnel = compute_order_funnel(s, mon=mon, fri=fri, broker_account_id=broker_account_id)
+            flow = compute_order_flow(s, mon=mon, fri=fri, broker_account_id=broker_account_id)
+            drift = compute_allocation_drift(
+                s, mon=mon, fri=fri, broker_account_id=broker_account_id
+            )
             abs_drift_sum = sum(abs(r.drift_pp) for r in drift)
         except Exception as exc:
             logger.warning("compute_4_week_trend: failed for week %s: %s", mon, exc)
