@@ -258,7 +258,10 @@ curl -H "X-Admin-Token: $ADMIN_TOKEN" -X POST localhost:8000/admin/run-movers
 
 ### `POST /admin/run-weekly-review` *(requires X-Admin-Token)*
 
-Manually triggers the Friday weekly review email.
+Manually triggers the Friday weekly review email. Per broker account: omit `?broker_account_id`
+to send one review per active broker (subjects prefixed `[nickname]`), or pass
+`?broker_account_id=<id>` to send just that account's. The user-level market context is built
+once and shared across the per-account emails.
 
 ### `POST /admin/reconcile/{execution_id}` *(requires X-Admin-Token)*
 

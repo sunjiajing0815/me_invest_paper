@@ -44,7 +44,9 @@ Phase 4.9a lets one user hold positions across multiple broker accounts at once 
 
 ### 6. Back-compat single-broker entrypoints alongside `*_all_brokers` loops
 
-**Decision:** Each job keeps a single-broker entrypoint (resolves the primary account) and gains an `*_all_brokers` loop that fans out over `app.state.adapters`, isolating per-broker failures (`try/except … continue`). The scheduler and the default job-trigger endpoints use the loops; endpoints accept `?broker_account_id` to target one. Movers stays global (watchlist price moves are user-level); the Friday weekly review stays primary-scoped in 4.9a (household view is 4.9b).
+**Decision:** Each job keeps a single-broker entrypoint (resolves the primary account) and gains an `*_all_brokers` loop that fans out over `app.state.adapters`, isolating per-broker failures (`try/except … continue`). The scheduler and the default job-trigger endpoints use the loops; endpoints accept `?broker_account_id` to target one. Movers stays global (watchlist price moves are user-level).
+
+> **Update (2026-06, 4.9b pulled forward):** the Friday weekly review now fans out per broker too — `run_weekly_review_all_brokers` sends one email per active account (subjects prefixed `[nickname]`), and `POST /admin/run-weekly-review` accepts `?broker_account_id` like the other triggers. The **user-level** weekly market context (Tavily/Sonnet synthesis) is built **once** over the union of active watchlists and shared across every account's review — it must not be rebuilt per account (it's the producer the suggestion engine consumes; see ADR-0020). Originally this was deferred to 4.9b as "primary-scoped in 4.9a"; it shipped early because Moomoo (auto-trade OFF, acted on manually) genuinely needs its own suggested-vs-acted review.
 
 **Rationale:** The loops are the multi-broker path; the single entrypoints keep the call sites and tests that target one account simple, and give endpoints a clean "one account" mode. One broker's outage (e.g. IB Gateway down) must not abort the others' emails.
 
@@ -52,4 +54,4 @@ Phase 4.9a lets one user hold positions across multiple broker accounts at once 
 
 - Connecting a broker is adding rows (a `broker_account` identity row + an OFF `auto_trade_state` row via `POST /admin/broker-accounts`), not a schema change. Removing one is a soft-delete (`is_active=False`) — history is never destroyed.
 - Phase 5a's "user_id on every row" migration is simpler because `broker_account_id` already partitions the per-account tables.
-- Deferred to 4.9b: household target allocation, the consolidated summary email, and per-broker weekly review. Deferred to Phase 6: tax-lot / cross-broker wash-sale. Deferred (own sub-phases): IBKR and Tiger adapters (ADR-0025/0026).
+- Deferred to 4.9b: household target allocation and the consolidated summary email. (Per-broker weekly review was pulled forward — see the Update above.) Deferred to Phase 6: tax-lot / cross-broker wash-sale. Deferred (own sub-phases): IBKR and Tiger adapters (ADR-0025/0026).
