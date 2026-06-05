@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
+
 from ..brokers.base import BrokerAdapter
 from ..config import Settings
 from ..db import session_scope
-from ..models import Meta
+from ..models import Meta, OrderExecution
 from ..services.accounts import (
     AccountInfo,
     list_active_accounts,
@@ -40,6 +42,24 @@ def run_daily_reconciliation_for_account(
             since = datetime.fromisoformat(meta.value) - timedelta(hours=1)
         else:
             since = datetime.now(UTC) - timedelta(days=7)
+
+        # Extend the window back to the oldest still-open (accepted_for_routing) execution.
+        # get_activities filters by submitted_at, so a GTC order that fills days after it was
+        # submitted is missed once `since` advances past its submission — leaving it stuck at
+        # accepted_for_routing forever (the BTC case). Reaching back to the oldest open order
+        # guarantees its eventual fill is reconciled; the window self-narrows once it clears.
+        oldest_open = session.scalars(
+            select(OrderExecution.created_at)
+            .where(
+                OrderExecution.broker_account_id == account.account_ref,
+                OrderExecution.status == "accepted_for_routing",
+                OrderExecution.dry_run.is_(False),
+            )
+            .order_by(OrderExecution.created_at.asc())
+            .limit(1)
+        ).first()
+        if oldest_open is not None:
+            since = min(since, oldest_open - timedelta(hours=1))
 
     with session_scope() as session:
         results = reconcile_activities(

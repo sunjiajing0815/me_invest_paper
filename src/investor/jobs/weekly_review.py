@@ -210,6 +210,7 @@ def _build_review(
     ]
 
     executions_this_week = session.query(OrderExecution).filter(
+        OrderExecution.broker_account_id == broker_account_id,
         OrderExecution.dry_run.is_(False),
         OrderExecution.filled_at >= week_start,
     ).count()

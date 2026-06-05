@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -12,7 +12,9 @@ from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Activity, OrderConfirmation
 from investor.db import override_engine_for_testing
-from investor.models import Base, OrderExecution, OrderSuggestion
+from investor.jobs.reconciliation import _meta_key, run_daily_reconciliation_for_account
+from investor.models import Base, Meta, OrderExecution, OrderSuggestion
+from investor.services.accounts import AccountInfo
 from investor.services.reconciliation import (
     compute_realized_pnl,
     persist_reconciliation,
@@ -580,3 +582,60 @@ def test_sync_uses_batch_list_orders(db_session: Session) -> None:
     assert exe1.status == "broker_cancelled"
     assert exe2.status == "broker_cancelled"
     assert result == 2
+
+
+# ── Reconciliation window extends back to oldest open order (late GTC fills) ───
+
+def _open_exec(session: Session, *, created_at: datetime, broker_order_id: str) -> None:
+    """An accepted_for_routing (unfilled) execution submitted at `created_at`."""
+    session.add(OrderExecution(
+        broker_account_id=_ACCT, ticker="BTC", side="buy", filled_qty=0.0,
+        broker_order_id=broker_order_id, broker="alpaca", dry_run=False,
+        status="accepted_for_routing", match_method="auto_trade_placed",
+        match_confidence=1.0, created_at=created_at,
+    ))
+    session.commit()
+
+
+def _run_recon_capturing_since(account_ref: int) -> datetime:
+    """Run the reconciliation job with the broker calls stubbed; return the `since` used."""
+    captured: dict[str, datetime] = {}
+
+    def _cap(*, session, adapter, since, broker_account_id):  # noqa: ANN001, ARG001
+        captured["since"] = since
+        return []
+
+    with (
+        patch("investor.jobs.reconciliation.reconcile_activities", side_effect=_cap),
+        patch("investor.jobs.reconciliation.persist_reconciliation"),
+        patch("investor.jobs.reconciliation.sync_open_order_statuses", return_value=0),
+    ):
+        run_daily_reconciliation_for_account(
+            MagicMock(), MagicMock(),
+            AccountInfo(account_ref=account_ref, nickname="Alpaca", broker="alpaca"),
+        )
+    return captured["since"]
+
+
+def test_window_extends_back_to_oldest_open_execution(db_session: Session) -> None:
+    """A GTC order submitted 10 days ago but not yet filled must keep the reconciliation
+    window reaching back to it — otherwise its eventual fill (after `since` advances past
+    submission) is missed forever (the BTC case)."""
+    old = _NOW - timedelta(days=10)
+    _open_exec(db_session, created_at=old, broker_order_id="b-open-btc")
+    # last_run is recent (1 day ago) — without the fix, since would start ~1 day ago.
+    db_session.add(Meta(key=_meta_key(_ACCT), value=(_NOW - timedelta(days=1)).isoformat()))
+    db_session.commit()
+
+    since = _run_recon_capturing_since(_ACCT)
+    assert since <= old  # reached back to the 10-day-old open order, not just last_run-1h
+
+
+def test_window_not_extended_when_no_open_executions(db_session: Session) -> None:
+    """With nothing open, the window stays at last_run - 1h (no needless re-scan)."""
+    last_run = _NOW - timedelta(days=1)
+    db_session.add(Meta(key=_meta_key(_ACCT), value=last_run.isoformat()))
+    db_session.commit()
+
+    since = _run_recon_capturing_since(_ACCT)
+    assert since == last_run - timedelta(hours=1)
