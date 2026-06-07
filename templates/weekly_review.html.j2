@@ -30,6 +30,20 @@
   </tr>
 </table>
 
+{% if review.market_context and (review.market_context.vix is not none or review.market_context.fear_greed_score is not none) %}
+<!-- Market Sentiment (VIX + CNN Fear & Greed) -->
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f7f7fb; border:1px solid #e3e3ef; border-radius:6px; margin-bottom:20px;">
+  <tr><td style="padding:10px 16px;">
+    <span style="font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.5px;">Market Sentiment</span>
+    <span style="font-size:14px; color:#333; margin-left:10px;">
+      {% if review.market_context.vix is not none %}VIX <strong>{{ "%.1f"|format(review.market_context.vix) }}</strong>{% endif %}
+      {% if review.market_context.vix is not none and review.market_context.fear_greed_score is not none %} &nbsp;&middot;&nbsp; {% endif %}
+      {% if review.market_context.fear_greed_score is not none %}Fear &amp; Greed <strong>{{ review.market_context.fear_greed_score }}</strong>{% if review.market_context.fear_greed_label %} ({{ review.market_context.fear_greed_label }}){% endif %}{% endif %}
+    </span>
+  </td></tr>
+</table>
+{% endif %}
+
 <!-- Section 2: Suggestions vs fills -->
 <h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Suggestions vs Fills</h2>
 {% if review.suggestion_audits %}
@@ -320,6 +334,31 @@
 {% if review.drift_rows | selectattr("monday_is_fallback") | list %}
 <p style="font-size:11px; color:#888; margin:0 0 8px 0;">* Monday was a market holiday; the most recent prior snapshot was used as the baseline.</p>
 {% endif %}
+{% endif %}
+
+{% if review.etf_trend %}
+<h3 style="font-size:13px; color:#444; margin:0 0 4px 0;">ETF trend (vs 200-day MA)</h3>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:20px;">
+  <thead>
+    <tr style="background:#f0f0f0; border-bottom:1px solid #ccc;">
+      <th align="left"  style="padding:3px 8px;">ETF</th>
+      <th align="right" style="padding:3px 8px;">Price</th>
+      <th align="right" style="padding:3px 8px;">200-day MA</th>
+      <th align="right" style="padding:3px 8px;">% vs MA200</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in review.etf_trend %}
+    <tr style="border-bottom:1px solid #eee;">
+      <td style="padding:3px 8px;">{{ e.ticker }}</td>
+      <td align="right" style="padding:3px 8px;">{{ "${:.2f}".format(e.close) }}</td>
+      <td align="right" style="padding:3px 8px;">{{ "${:.2f}".format(e.sma_200) if e.sma_200 is not none else "—" }}</td>
+      <td align="right" style="padding:3px 8px; color:{{ '#2a8840' if (e.pct_from_sma_200 is not none and e.pct_from_sma_200 >= 0) else '#a44' }};">
+        {{ "%+.1f%%"|format(e.pct_from_sma_200) if e.pct_from_sma_200 is not none else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% endif %}
 
 {% if review.trend_rows %}

@@ -72,6 +72,16 @@ class SuggestionAudit:
 
 
 @dataclass(frozen=True)
+class EtfTrendRow:
+    """200-day MA trend for one ETF holding — display only (weekly review email)."""
+
+    ticker: str
+    close: float
+    sma_200: float | None
+    pct_from_sma_200: float | None
+
+
+@dataclass(frozen=True)
 class WeeklyReview:
     """All data for the Friday weekly review email. Plain types only — no ORM objects."""
 
@@ -93,6 +103,7 @@ class WeeklyReview:
     drift_rows: list[AllocationDriftRow] | None = None
     breakdown_rows: list[PerTickerWeekRow] | None = None
     trend_rows: list[WeekTrendRow] | None = None
+    etf_trend: list[EtfTrendRow] | None = None         # 200-day MA for ETF holdings (display)
 
 
 def _week_start(ref: date | None = None) -> datetime:
@@ -339,7 +350,13 @@ def run_weekly_review_for_account(
     """
     bid = account.account_ref
     targets_path = targets_path_for_account(settings, bid, is_primary=(bid == primary_ref))
-    tickers = load_targets(targets_path).watchlist if targets_path else []
+    targets_cfg = load_targets(targets_path) if targets_path else None
+    tickers = targets_cfg.watchlist if targets_cfg else []
+    etf_tickers = (
+        {t.ticker for t in targets_cfg.targets
+         if t.asset_class in ("index_etf", "leveraged_etf")}
+        if targets_cfg else set()
+    )
 
     with session_scope() as session:
         review = _build_review(
@@ -351,8 +368,18 @@ def run_weekly_review_for_account(
         )
 
     # Next-Sunday preview — pure function, no DB writes; outside the review session scope.
+    etf_trend: list[EtfTrendRow] = []
     try:
         indicators = compute_indicators(tickers, settings.bars_dir)
+        # 200-day MA trend for ETF holdings only (display — weekly review email).
+        etf_trend = [
+            EtfTrendRow(
+                ticker=ind.ticker, close=ind.close,
+                sma_200=ind.sma_200, pct_from_sma_200=ind.pct_from_sma_200,
+            )
+            for ind in indicators
+            if ind.ticker in etf_tickers
+        ]
         sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
         with session_scope() as session:
             gap_rows_fresh = compute_gap(session, bid)
@@ -417,6 +444,7 @@ def run_weekly_review_for_account(
         drift_rows=review.drift_rows,
         breakdown_rows=review.breakdown_rows,
         trend_rows=review.trend_rows,
+        etf_trend=etf_trend,
     )
 
     subject = f"[{account.nickname}] Weekly review: {week_of:%b %d, %Y}"

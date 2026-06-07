@@ -44,6 +44,7 @@ from ..services.suggest import (
     generate_suggestions,
 )
 from ..services.targets import targets_path_for_account
+from ..services.weekly_context import load_latest_weekly_context
 
 logger = logging.getLogger(__name__)
 
@@ -322,9 +323,17 @@ def run_weekly_suggestions_for_account(
             "reject_token": reject_token,
         })
 
-    # Untracked positions for email (re-query so we don't hold session across graph)
+    # Untracked positions + the user-level market context (VIX/F&G) for the email.
     with session_scope() as session:
         untracked = get_untracked_positions(session, bid)
+        market_context = load_latest_weekly_context(
+            session, week_of=week_of, max_age_days=settings.context_max_age_days
+        )
+    # MA200 in the email is shown for ETFs only.
+    etf_tickers = {
+        t.ticker for t in targets.targets
+        if t.asset_class in ("index_etf", "leveraged_etf")
+    }
 
     # Email outside session scope — session safety rule
     subject = f"[{acct.nickname}] Orders for the week of {week_of:%b %d}"
@@ -341,6 +350,8 @@ def run_weekly_suggestions_for_account(
         untracked=untracked,
         skipped=skipped,
         scoring_failures=scoring_failures,
+        market_context=market_context,
+        etf_tickers=etf_tickers,
     )
     text = render_template(
         "weekly_suggestions.txt.j2",
@@ -354,6 +365,8 @@ def run_weekly_suggestions_for_account(
         untracked=untracked,
         skipped=skipped,
         scoring_failures=scoring_failures,
+        market_context=market_context,
+        etf_tickers=etf_tickers,
     )
     emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
     logger.info(

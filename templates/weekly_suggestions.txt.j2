@@ -1,6 +1,9 @@
 Orders for the week of {{ week_of.strftime('%b %-d, %Y') }}
 {% if account_nickname %}Account: {{ account_nickname }} · {{ account_broker }}
 {% endif %}{% if account %}Equity: ${{ "{:,.0f}".format(account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(account.cash_usd) }}  ({{ account.currency }} · {{ account.broker }} · {{ account.mode }}){% else %}No account data{% endif %}
+{% if market_context is defined and market_context and (market_context.vix is not none or market_context.fear_greed_score is not none) %}
+Market sentiment: {% if market_context.vix is not none %}VIX {{ "%.1f"|format(market_context.vix) }}{% endif %}{% if market_context.vix is not none and market_context.fear_greed_score is not none %}  ·  {% endif %}{% if market_context.fear_greed_score is not none %}Fear & Greed {{ market_context.fear_greed_score }}{% if market_context.fear_greed_label %} ({{ market_context.fear_greed_label }}){% endif %}{% endif %}
+{% endif %}
 
 {% if untracked %}
 === UNTRACKED POSITIONS — NO TARGET ALLOCATION ===
@@ -44,7 +47,7 @@ No suggestions this week — all positions within band, or no nearby S/R level.
 {% set lvl = nearby.get(ind.ticker) %}
 {% set sup = lvl.supports[0] if lvl and lvl.supports else None %}
 {% set res = lvl.resistances[0] if lvl and lvl.resistances else None %}
-{{ ind.ticker | ljust(6) }}  {{ "${:,.2f}".format(ind.close) | rjust(9) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else "—") | rjust(8) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else "—") | rjust(9) }}  {{ ("{:.0f}".format(ind.rsi_14) if ind.rsi_14 else "—") | rjust(6) }}  {{ (("$" + "{:,.2f}".format(sup.price) + " (" + sup.method + ")") if sup else "—") | ljust(20) }}  {{ ("$" + "{:,.2f}".format(res.price) + " (" + res.method + ")") if res else "—" }}
+{{ ind.ticker | ljust(6) }}  {{ "${:,.2f}".format(ind.close) | rjust(9) }}  {{ ("{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else "—") | rjust(8) }}  {{ (("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else "—") if (etf_tickers is defined and ind.ticker in etf_tickers) else "—") | rjust(9) }}  {{ ("{:.0f}".format(ind.rsi_14) if ind.rsi_14 else "—") | rjust(6) }}  {{ (("$" + "{:,.2f}".format(sup.price) + " (" + sup.method + ")") if sup else "—") | ljust(20) }}  {{ ("$" + "{:,.2f}".format(res.price) + " (" + res.method + ")") if res else "—" }}
 {% endfor %}
 {% if scoring_failures %}
 {% for f in scoring_failures %}

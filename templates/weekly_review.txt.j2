@@ -2,6 +2,9 @@ Weekly Review: {{ review.week_of.strftime('%b %-d, %Y') }}
 {% if review.account %}Equity: ${{ "{:,.0f}".format(review.account.equity_usd) }}  Cash: ${{ "{:,.0f}".format(review.account.cash_usd) }}  ({{ review.account.broker }} · {{ review.account.mode }}){% else %}No account data{% endif %}
 
 Realized PnL this week: {{ "+" if review.realized_pnl_usd >= 0 else "" }}${{ "{:,.2f}".format(review.realized_pnl_usd) }}
+{% if review.market_context and (review.market_context.vix is not none or review.market_context.fear_greed_score is not none) %}
+Market sentiment: {% if review.market_context.vix is not none %}VIX {{ "%.1f"|format(review.market_context.vix) }}{% endif %}{% if review.market_context.vix is not none and review.market_context.fear_greed_score is not none %}  ·  {% endif %}{% if review.market_context.fear_greed_score is not none %}Fear & Greed {{ review.market_context.fear_greed_score }}{% if review.market_context.fear_greed_label %} ({{ review.market_context.fear_greed_label }}){% endif %}{% endif %}
+{% endif %}
 
 === SUGGESTIONS VS FILLS ===
 {% if review.suggestion_audits %}
@@ -110,6 +113,15 @@ ALLOCATION DRIFT (Mon -> Fri)
 {% if review.drift_rows | selectattr("monday_is_fallback") | list %}
   * Monday was a holiday; prior snapshot used as baseline.
 {% endif %}
+{% endif %}
+
+{% if review.etf_trend %}
+ETF TREND (vs 200-day MA)
+{{ "ETF" | ljust(7) }}  {{ "Price" | rjust(10) }}  {{ "MA200" | rjust(10) }}  {{ "% vs MA200" | rjust(10) }}
+{{ "-" * 42 }}
+{% for e in review.etf_trend %}
+{{ e.ticker | ljust(7) }}  {{ "${:.2f}".format(e.close) | rjust(10) }}  {{ ("${:.2f}".format(e.sma_200) if e.sma_200 is not none else "—") | rjust(10) }}  {{ ("{:+.1f}%".format(e.pct_from_sma_200) if e.pct_from_sma_200 is not none else "—") | rjust(10) }}
+{% endfor %}
 {% endif %}
 
 {% if review.trend_rows %}
