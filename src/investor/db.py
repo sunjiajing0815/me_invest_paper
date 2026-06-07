@@ -20,7 +20,7 @@ from .models import Base
 logger = logging.getLogger(__name__)
 
 _engine: Engine | None = None
-_SessionLocal: sessionmaker[Session] | None = None  # type: ignore[type-arg]
+_SessionLocal: sessionmaker[Session] | None = None
 
 
 def init_db(sqlite_path: str) -> Engine:
@@ -56,7 +56,7 @@ def get_engine() -> Engine:
     return _engine
 
 
-def get_session_factory() -> sessionmaker[Session]:  # type: ignore[type-arg]
+def get_session_factory() -> sessionmaker[Session]:
     if _SessionLocal is None:
         raise RuntimeError("Database not initialised. Call init_db() first.")
     return _SessionLocal

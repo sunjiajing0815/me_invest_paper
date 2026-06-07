@@ -113,10 +113,10 @@ class LLMClient(Protocol):
         system: str,
         user: str,
         max_tokens: int = 4096,
-        response_schema: type[BaseModel] | None = None,
+        response_schema: type[T] | None = None,
         temperature: float = 0.0,
         cache_system: bool = True,
-    ) -> tuple[LLMResponse, BaseModel | None]: ...
+    ) -> tuple[LLMResponse, T | None]: ...
 
     @property
     def daily_spent_usd(self) -> float: ...

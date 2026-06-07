@@ -137,15 +137,17 @@ def _fetch_accepted_unexecuted(
         return []
 
     sug_ids = [sug.id for sug in accepted]
-    already_executed: set[int] = set(
-        session.scalars(
+    already_executed: set[int] = {
+        sid
+        for sid in session.scalars(
             select(OrderExecution.suggestion_id).where(
                 OrderExecution.suggestion_id.in_(sug_ids),
                 OrderExecution.dry_run.is_(False),
                 OrderExecution.status != "broker_cancelled",
             )
         ).all()
-    )
+        if sid is not None
+    }
     return [sug for sug in accepted if sug.id not in already_executed]
 
 

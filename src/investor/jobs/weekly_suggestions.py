@@ -14,6 +14,7 @@ from sqlalchemy import select
 from ..brokers.base import BrokerAdapter
 from ..config import Settings, load_targets
 from ..db import session_scope
+from ..graphs.news_triage import NewsTriageItem
 from ..graphs.suggestion_review import build_suggestion_review_graph
 from ..models import BrokerAccount, OrderSuggestion
 from ..services.accounts import (
@@ -27,6 +28,7 @@ from ..services.email import EmailSender
 from ..services.gap import compute_gap, get_untracked_positions
 from ..services.indicators import compute_indicators
 from ..services.levels import (
+    SRLevelRow,
     build_nearby_levels,
     compute_levels,
     get_active_targets_id,
@@ -59,10 +61,10 @@ class ScoringFailure:
 def score_all_tickers_parallel(
     *,
     tickers: list[str],
-    sr_rows: list,  # list[SRLevelRow]
+    sr_rows: list[SRLevelRow],
     llm: LLMClient,
     bars_dir: str,
-    recent_news_by_ticker: dict,
+    recent_news_by_ticker: dict[str, list[NewsTriageItem]],
     prompt_version: str,
     max_workers: int = 4,
 ) -> tuple[dict[str, list[ScoredLevel]], list[ScoringFailure]]:
@@ -292,7 +294,7 @@ def run_weekly_suggestions_for_account(
             if (row := _s.get(OrderSuggestion, sid)) is not None
         }
         # Extract plain values before session closes (ORM safety rule)
-        db_values: dict[int, dict] = {
+        db_values: dict[int, dict[str, Any]] = {
             sid: {
                 "ticker": r.ticker,
                 "side": r.side,

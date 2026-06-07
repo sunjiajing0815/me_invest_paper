@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,9 @@ def update_bars(
     needed start date, then filtered per-ticker before writing.
     """
     import pandas as pd
+    from alpaca.data.enums import DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.models import BarSet
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
@@ -61,11 +64,13 @@ def update_bars(
     request = StockBarsRequest(
         symbol_or_symbols=tickers,
         timeframe=TimeFrame.Day,
-        start=overall_start,
-        end=today,
-        feed="iex",
+        # SDK wants datetime; pydantic already coerced these dates to midnight — make it explicit.
+        start=datetime.combine(overall_start, time.min),
+        end=datetime.combine(today, time.min),
+        feed=DataFeed.IEX,
     )
-    bars = client.get_stock_bars(request)
+    # get_stock_bars returns BarSet (dict only with raw_data=True, which we never pass).
+    bars = cast(BarSet, client.get_stock_bars(request))
     new_df = bars.df
     if new_df.empty:
         logger.info("update_bars: no bars returned — market may be closed")

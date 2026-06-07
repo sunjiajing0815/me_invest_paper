@@ -306,7 +306,7 @@ def build_weekly_market_context(
             fear_greed_label=fear_greed_label,
         )
 
-    synthesis: _WeeklyContextSynthesis = parsed  # type: ignore[assignment]
+    synthesis: _WeeklyContextSynthesis = parsed
     return WeeklyMarketContext(
         week_of=week_of,
         macro_summary=synthesis.macro_summary,

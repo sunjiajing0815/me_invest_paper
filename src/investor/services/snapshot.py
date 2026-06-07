@@ -120,6 +120,7 @@ def _write_broker_account(
     )
 
     if same_values:
+        assert latest is not None  # guaranteed by same_values (which includes latest is not None)
         latest.last_sync = account.as_of
         logger.info("BrokerAccount unchanged — updated last_sync only")
     else:

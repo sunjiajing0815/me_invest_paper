@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -174,7 +175,7 @@ def promotion_auth(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # type: ignore[type-arg]
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup: init DB, load targets, build adapter+emailer, start scheduler."""
     global _settings
 
@@ -918,7 +919,7 @@ def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
 
     suggestion_items = []
     for row in suggestion_rows:
-        sid = row["id"]
+        sid = cast(int, row["id"])  # suggestion PK — always int at runtime
         sug_obj = SimpleNamespace(**{k: v for k, v in row.items() if k != "id"})
         suggestion_items.append({
             "suggestion": sug_obj,

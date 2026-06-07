@@ -15,6 +15,8 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.models import Order as AlpacaOrder
+from alpaca.trading.models import Position as AlpacaPosition
+from alpaca.trading.models import TradeAccount
 from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest
 
 from ..services.suggest import _ceil2dp, _floor2dp
@@ -36,25 +38,27 @@ class AlpacaAdapter:
         logger.info("AlpacaAdapter initialised in %s mode", "paper" if paper else "live")
 
     def get_account(self) -> Account:
-        raw = self._client.get_account()
+        # alpaca-py types this as TradeAccount | dict (dict only with raw_data=True,
+        # which we never pass); numerics are Optional[str] — coerce at the boundary.
+        raw = cast(TradeAccount, self._client.get_account())
         return Account(
             account_id=str(raw.id),
-            cash_usd=float(raw.cash),
-            equity_usd=float(raw.equity),
-            buying_power_usd=float(raw.buying_power),
+            cash_usd=float(cast(str, raw.cash)),
+            equity_usd=float(cast(str, raw.equity)),
+            buying_power_usd=float(cast(str, raw.buying_power)),
             as_of=datetime.now(UTC),
             currency="USD",
         )
 
     def get_positions(self) -> list[Position]:
         now = datetime.now(UTC)
-        raw_positions = self._client.get_all_positions()
+        raw_positions = cast(list[AlpacaPosition], self._client.get_all_positions())
         positions = [
             Position(
                 ticker=p.symbol,
                 qty=float(p.qty),
                 avg_cost=float(p.avg_entry_price),
-                market_value=float(p.market_value),
+                market_value=float(cast(str, p.market_value)),
                 as_of=now,
                 currency="USD",
             )
