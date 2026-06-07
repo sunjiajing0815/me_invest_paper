@@ -1,0 +1,79 @@
+{#
+  Market Sentiment widget — VIX + CNN Fear & Greed.
+  Email-safe: table layout + inline styles, system font stack (Arial, consistent with the
+  rest of the email), no web fonts / no animation (Gmail + Outlook + Apple Mail). Color is
+  semantic — derived from the value — so a "fear" reading never looks like a "greed" one.
+#}
+{%- macro sentiment_box(mc) -%}
+{%- if mc and (mc.vix is not none or mc.fear_greed_score is not none) -%}
+  {%- set FONT = "Arial, Helvetica, sans-serif" -%}
+  {%- set NAVY = "#1a1a2e" -%}
+  {%- set MUTE = "#586073" -%}
+  {%- set INACTIVE = "#e7e8ef" -%}
+  {%- set has_vix = mc.vix is not none -%}
+  {%- set has_fg = mc.fear_greed_score is not none -%}
+  {%- set card_w = "50%" if (has_vix and has_fg) else "100%" -%}
+  {#- VIX level -> accent (border/strip) + AA-safe text color + word -#}
+  {%- set vix = mc.vix -%}
+  {%- if not has_vix -%}{% set vix_color = MUTE %}{% set vix_text = MUTE %}{% set vix_word = "—" %}
+  {%- elif vix < 15 -%}{% set vix_color = "#1f9d57" %}{% set vix_text = "#177245" %}{% set vix_word = "Calm" %}
+  {%- elif vix < 20 -%}{% set vix_color = "#3f8f4f" %}{% set vix_text = "#177245" %}{% set vix_word = "Normal" %}
+  {%- elif vix < 30 -%}{% set vix_color = "#c8851b" %}{% set vix_text = "#8a5a00" %}{% set vix_word = "Elevated" %}
+  {%- else -%}{% set vix_color = "#c0392b" %}{% set vix_text = "#b42318" %}{% set vix_word = "High stress" %}
+  {%- endif -%}
+  {#- Fear & Greed band (CNN scale): 0 ExtremeFear .. 4 ExtremeGreed -#}
+  {%- set fg = mc.fear_greed_score -%}
+  {%- set fg_bands = ["#b3261e", "#d35400", "#9a9a9a", "#2a8840", "#1f7a3d"] -%}
+  {%- set fg_text_bands = ["#b42318", "#a8460f", "#586073", "#177245", "#14532d"] -%}
+  {%- if not has_fg -%}{% set fg_active = -1 %}
+  {%- elif fg < 25 -%}{% set fg_active = 0 %}
+  {%- elif fg < 45 -%}{% set fg_active = 1 %}
+  {%- elif fg < 56 -%}{% set fg_active = 2 %}
+  {%- elif fg < 75 -%}{% set fg_active = 3 %}
+  {%- else -%}{% set fg_active = 4 %}{%- endif -%}
+  {%- set fg_color = fg_bands[fg_active] if fg_active >= 0 else MUTE -%}
+  {%- set fg_text = fg_text_bands[fg_active] if fg_active >= 0 else MUTE -%}
+  {%- set fg_label = (mc.fear_greed_label | title) if mc.fear_greed_label else "—" -%}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px 0;">
+  <tr>
+    <td style="padding:0 2px 7px 2px; font-family:{{ FONT }}; font-size:11px; font-weight:bold; letter-spacing:1.5px; text-transform:uppercase; color:{{ MUTE }};">
+      Market Sentiment
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          {%- if has_vix %}
+          <td width="{{ card_w }}" valign="top" style="background:#ffffff; border:1px solid #e7e8ef; border-left:4px solid {{ vix_color }}; border-radius:8px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding:13px 16px 14px 16px;">
+              <div style="font-family:{{ FONT }}; font-size:10px; font-weight:bold; letter-spacing:1px; text-transform:uppercase; color:{{ MUTE }};">VIX&nbsp;&middot;&nbsp;Volatility</div>
+              <div style="font-family:{{ FONT }}; font-size:32px; font-weight:bold; line-height:1.15; color:{{ NAVY }}; padding-top:5px;">{{ "%.1f"|format(vix) }}</div>
+              <div style="font-family:{{ FONT }}; font-size:12px; font-weight:bold; color:{{ vix_text }}; padding-top:3px;">{{ vix_word }}</div>
+            </td></tr></table>
+          </td>
+          {%- endif %}
+          {%- if has_vix and has_fg %}<td width="14" style="font-size:0; line-height:0;">&nbsp;</td>{% endif %}
+          {%- if has_fg %}
+          <td width="{{ card_w }}" valign="top" style="background:#ffffff; border:1px solid #e7e8ef; border-left:4px solid {{ fg_color }}; border-radius:8px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding:13px 16px 14px 16px;">
+              <div style="font-family:{{ FONT }}; font-size:10px; font-weight:bold; letter-spacing:1px; text-transform:uppercase; color:{{ MUTE }};">Fear &amp; Greed</div>
+              <div style="font-family:{{ FONT }}; line-height:1.15; padding-top:5px;"><span style="font-size:32px; font-weight:bold; color:{{ NAVY }};">{{ fg }}</span><span style="font-size:14px; color:{{ MUTE }};">&nbsp;/&nbsp;100</span></div>
+              <div style="font-family:{{ FONT }}; font-size:12px; font-weight:bold; color:{{ fg_text }}; padding-top:3px;">{{ fg_label }}</div>
+              {#- 5-band position strip -#}
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:9px;"><tr>
+                {%- for i in range(5) %}
+                <td style="height:6px; line-height:6px; font-size:0; background:{{ fg_bands[i] if i == fg_active else INACTIVE }};{% if i == 0 %} border-radius:3px 0 0 3px;{% elif i == 4 %} border-radius:0 3px 3px 0;{% endif %}">&nbsp;</td>
+                {%- if i < 4 %}<td width="2" style="font-size:0; line-height:0;">&nbsp;</td>{% endif %}
+                {%- endfor %}
+              </tr></table>
+            </td></tr></table>
+          </td>
+          {%- endif %}
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+{%- endif -%}
+{%- endmacro -%}

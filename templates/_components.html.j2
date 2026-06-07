@@ -1,0 +1,180 @@
+{#
+  Shared email components — single source of truth for the email design system.
+  Import in a template head with:  {%- import '_components.html.j2' as ui -%}
+  Then reference palette tokens as ui.NAVY etc. and call macros as ui.header(...).
+
+  Design rules baked in here so every email inherits them:
+   - One color palette (semantic tokens). Text colors meet WCAG AA (>=4.5:1 on white).
+   - One type scale (h1 20 / h2 15 / h3 13 / body 13 / caption 11).
+   - role="presentation" on every layout table.
+   - System font stack only (Arial) — email-safe, consistent across clients.
+   - Responsive class hooks (.hdr-cell, .sscroll, .eb-body) driven by responsive_style().
+#}
+{%- set FONT = "Arial, Helvetica, sans-serif" -%}
+{#- structural -#}
+{%- set NAVY = "#1a1a2e" -%}
+{%- set INK = "#22252e" -%}{#- headings -#}
+{%- set BODY = "#2f333d" -%}{#- body text -#}
+{%- set MUTED = "#586073" -%}{#- labels / captions — AA on white -#}
+{%- set LINE = "#e5e7ee" -%}
+{%- set LINE2 = "#d4d7e0" -%}
+{%- set ROWALT = "#fafbfc" -%}
+{%- set HEADBG = "#f0f1f4" -%}
+{%- set OUTBG = "#eceef2" -%}{#- page background behind the email -#}
+{#- on-navy text (light on dark) -#}
+{%- set ON_NAVY = "#c7cad8" -%}
+{%- set ON_NAVY_DIM = "#9498ac" -%}
+{#- semantic TEXT colors (AA on white) -#}
+{%- set POS = "#177245" -%}
+{%- set NEG = "#b42318" -%}
+{%- set WARN = "#8a5a00" -%}
+{#- semantic ACCENT colors (borders / strips / pills — not small text) -#}
+{%- set POS_A = "#1f9d57" -%}
+{%- set NEG_A = "#c0392b" -%}
+{%- set WARN_A = "#c8851b" -%}
+{#- warning surfaces -#}
+{%- set WARN_BG = "#fff8e6" -%}
+{%- set WARN_BORDER = "#e8c156" -%}
+{%- set ALERT_BG = "#fdecea" -%}
+{%- set ALERT_BORDER = "#e0b4ae" -%}
+{%- set ALERT_INK = "#922b21" -%}
+
+{# ---- hidden inbox-preview text (preheader) ---- #}
+{%- macro preheader(text) -%}
+<div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:{{ OUTBG }};">{{ text }}</div>
+{%- endmacro -%}
+
+{# ---- responsive <style> for the <head> (Gmail/Apple Mail honor it; Outlook ignores) ---- #}
+{%- macro responsive_style() -%}
+<style>
+  @media only screen and (max-width:600px) {
+    .eb-body { padding:10px !important; }
+    .hdr-cell { display:block !important; width:100% !important; text-align:left !important; padding:6px 18px !important; }
+    .hdr-cell--right { text-align:left !important; padding-top:0 !important; padding-bottom:16px !important; }
+    .sscroll { display:block !important; width:100% !important; overflow-x:auto !important; -webkit-overflow-scrolling:touch !important; }
+    .card-col { display:block !important; width:100% !important; }
+  }
+</style>
+{%- endmacro -%}
+
+{# ---- navy header card ---- #}
+{%- macro header(title, subtitle=None, nickname=None, broker=None, account=None) -%}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ NAVY }}; border-radius:8px; margin:0 0 22px 0;">
+  <tr>
+    <td class="hdr-cell" style="padding:20px 22px; vertical-align:top;">
+      <h1 style="margin:0 0 5px 0; font-family:{{ FONT }}; font-size:20px; line-height:1.25; color:#ffffff;">{{ title }}</h1>
+      {%- if subtitle %}
+      <p style="margin:0; font-family:{{ FONT }}; font-size:13px; line-height:1.4; color:{{ ON_NAVY }};">{{ subtitle }}</p>
+      {%- endif %}
+      {%- if nickname %}
+      <p style="margin:5px 0 0 0; font-family:{{ FONT }}; font-size:12px; color:{{ ON_NAVY_DIM }};">{{ nickname }}{% if broker %} &middot; {{ broker }}{% endif %}</p>
+      {%- endif %}
+    </td>
+    {%- if account %}
+    <td class="hdr-cell hdr-cell--right" style="padding:20px 22px; text-align:right; vertical-align:top; white-space:nowrap;">
+      <div style="font-family:{{ FONT }}; font-size:22px; font-weight:bold; color:#ffffff;">${{ "{:,.0f}".format(account.equity_usd) }} <span style="font-size:13px; font-weight:normal; color:{{ ON_NAVY_DIM }};">{{ account.currency }}</span></div>
+      <div style="font-family:{{ FONT }}; font-size:13px; color:{{ ON_NAVY }}; padding-top:3px;">Equity &nbsp;&middot;&nbsp; Cash ${{ "{:,.0f}".format(account.cash_usd) }}</div>
+      <div style="font-family:{{ FONT }}; font-size:11px; color:{{ ON_NAVY_DIM }}; padding-top:3px;">{{ account.broker }} &middot; {{ account.mode }}</div>
+    </td>
+    {%- endif %}
+  </tr>
+</table>
+{%- endmacro -%}
+
+{# ---- section heading (h2) ---- #}
+{%- macro section(title) -%}
+<h2 style="font-family:{{ FONT }}; font-size:15px; color:{{ INK }}; margin:0 0 8px 0;">{{ title }}</h2>
+{%- endmacro -%}
+
+{# ---- subsection heading (h3) ---- #}
+{%- macro subsection(title) -%}
+<h3 style="font-family:{{ FONT }}; font-size:13px; color:{{ INK }}; margin:0 0 4px 0;">{{ title }}</h3>
+{%- endmacro -%}
+
+{# ---- footer ---- #}
+{%- macro footer(note, date_str=None) -%}
+<p style="font-family:{{ FONT }}; font-size:11px; color:{{ MUTED }}; border-top:1px solid {{ LINE }}; padding-top:12px; margin:24px 0 0 0; line-height:1.5;">
+  {{ note }}{% if date_str %}<br>Generated by Investor Assistant &middot; {{ date_str }}{% endif %}
+</p>
+{%- endmacro -%}
+
+{# ---- red "untracked positions" box ---- #}
+{%- macro untracked_box(positions) -%}
+{%- if positions %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ ALERT_BG }}; border:1px solid {{ ALERT_BORDER }}; border-radius:8px; margin:0 0 20px 0;">
+  <tr><td style="padding:12px 16px;">
+    <strong style="font-family:{{ FONT }}; font-size:13px; color:{{ ALERT_INK }};">&#9888; Untracked position{{ 's' if positions|length > 1 else '' }} &mdash; {{ positions|length }} ticker(s) with no target allocation</strong>
+    <div class="sscroll">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px; font-family:{{ FONT }}; font-size:12px; border-collapse:collapse;">
+      <tr style="color:{{ ALERT_INK }};">
+        <th style="text-align:left; padding:3px 8px;">Ticker</th>
+        <th style="text-align:right; padding:3px 8px;">Qty</th>
+        <th style="text-align:right; padding:3px 8px;">Market Value</th>
+        <th style="text-align:right; padding:3px 8px;">Portfolio %</th>
+      </tr>
+      {%- for p in positions %}
+      <tr style="color:{{ ALERT_INK }};">
+        <td style="padding:3px 8px; font-weight:bold;">{{ p.ticker }}</td>
+        <td style="padding:3px 8px; text-align:right;">{{ "{:.2f}".format(p.qty) }}</td>
+        <td style="padding:3px 8px; text-align:right;">${{ "{:,.0f}".format(p.market_value) }} {{ p.currency }}</td>
+        <td style="padding:3px 8px; text-align:right;">{{ "{:.1f}".format(p.weight_pct) }}%</td>
+      </tr>
+      {%- endfor %}
+    </table>
+    </div>
+    <p style="margin:8px 0 0 0; font-family:{{ FONT }}; font-size:11px; color:{{ ALERT_INK }};">
+      Add {{ positions | map(attribute='ticker') | join(', ') }} to <code>targets.yaml</code> with a target allocation, or trim the position in your broker.
+    </p>
+  </td></tr>
+</table>
+{%- endif %}
+{%- endmacro -%}
+
+{# ---- "Levels at a glance" table (shared by daily report + weekly suggestions).
+        etf_tickers: optional set; when given, SMA200 / %Δ200 show for ETFs only. ---- #}
+{%- macro levels_table(indicators, nearby, etf_tickers=None) -%}
+{%- if indicators %}
+<div class="sscroll">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:{{ FONT }}; font-size:12px; margin:0 0 8px 0;">
+  <thead>
+    <tr style="background:{{ HEADBG }}; color:{{ MUTED }};">
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ LINE2 }};">Ticker</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ LINE2 }};">Last</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ LINE2 }};">SMA50</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ LINE2 }};">%&Delta;50</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ LINE2 }};">SMA200</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ LINE2 }};">%&Delta;200</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ LINE2 }};">RSI14</th>
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ LINE2 }};">Nearest Support</th>
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ LINE2 }};">Nearest Resist.</th>
+    </tr>
+  </thead>
+  <tbody>
+    {%- for ind in indicators %}
+    {%- set lvl = nearby.get(ind.ticker) %}
+    {%- set sup = lvl.supports[0] if lvl and lvl.supports else None %}
+    {%- set res = lvl.resistances[0] if lvl and lvl.resistances else None %}
+    {%- set is_etf = (etf_tickers is none) or (ind.ticker in etf_tickers) %}
+    {%- set rsi_color = NEG if ind.rsi_14 and ind.rsi_14 > 70 else (POS if ind.rsi_14 and ind.rsi_14 < 30 else BODY) %}
+    <tr style="border-bottom:1px solid {{ LINE }}; color:{{ BODY }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ ind.ticker }}</td>
+      <td style="padding:6px 10px; text-align:right;">${{ "{:,.2f}".format(ind.close) }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "${:,.2f}".format(ind.sma_50) if ind.sma_50 else '—' }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ POS if (ind.pct_from_sma_50 or 0) > 0 else NEG }};">{{ "{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else '—' }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ ("${:,.2f}".format(ind.sma_200) if ind.sma_200 else '—') if is_etf else '—' }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ (POS if (ind.pct_from_sma_200 or 0) > 0 else NEG) if is_etf else MUTED }};">{{ ("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else '—') if is_etf else '—' }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ rsi_color }};">{{ "{:.0f}".format(ind.rsi_14) if ind.rsi_14 else '—' }}</td>
+      <td style="padding:6px 10px; font-size:11px; color:{{ MUTED }};">{% if sup %}${{ "{:,.2f}".format(sup.price) }} ({{ sup.method }}){% else %}&mdash;{% endif %}</td>
+      <td style="padding:6px 10px; font-size:11px; color:{{ MUTED }};">{% if res %}${{ "{:,.2f}".format(res.price) }} ({{ res.method }}){% else %}&mdash;{% endif %}</td>
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+</div>
+{%- if etf_tickers is not none %}
+<p style="font-family:{{ FONT }}; font-size:11px; color:{{ MUTED }}; margin:0 0 24px 0;">200-day MA (SMA200 / %&Delta;200) is shown for ETFs only.</p>
+{%- else %}
+<div style="margin-bottom:24px;"></div>
+{%- endif %}
+{%- endif %}
+{%- endmacro -%}

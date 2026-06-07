@@ -1,93 +1,68 @@
+{%- import '_components.html.j2' as ui -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Movers — {{ today }}</title>
+{{ ui.responsive_style() }}
 </head>
-<body style="font-family: Arial, sans-serif; color: #222; max-width: 700px; margin: 0 auto; padding: 16px;">
+<body class="eb-body" style="font-family:Arial,Helvetica,sans-serif; color:{{ ui.BODY }}; background:#ffffff; max-width:700px; margin:0 auto; padding:16px; -webkit-text-size-adjust:100%;">
+{{ ui.preheader((movers|length|string) ~ " ticker(s) crossed a new threshold today.") }}
 
-<!-- Header -->
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1a2e; color:#fff; border-radius:6px; margin-bottom:20px;">
-  <tr>
-    <td style="padding:20px;">
-      <h1 style="margin:0 0 6px 0; font-size:20px;">Movers — {{ today }}</h1>
-      <p style="margin:0; font-size:13px; opacity:0.7;">{{ movers | length }} ticker{{ 's' if movers | length != 1 else '' }} crossed a new threshold today.</p>
-    </td>
-  </tr>
-</table>
+{{ ui.header("Movers — " ~ today,
+             subtitle=(movers|length|string) ~ " ticker" ~ ("s" if movers|length != 1 else "") ~ " crossed a new threshold today.") }}
 
-<!-- One card per mover -->
 {% for t in movers %}
 {% set pct = t.pct_change %}
-{% set pct_color = '#27ae60' if pct >= 0 else '#c0392b' %}
+{% set pct_accent = ui.POS_A if pct >= 0 else ui.NEG_A %}
+{% set pct_text = ui.POS if pct >= 0 else ui.NEG %}
 {% set pct_sign = '+' if pct >= 0 else '' %}
 {% set material_news = (final_by_ticker.get(t.ticker) or []) | selectattr('is_material') | list %}
-
-<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e0e0e0; border-radius:6px; margin-bottom:16px; border-left: 4px solid {{ pct_color }};">
-  <!-- Ticker header row -->
-  <tr style="background:#f9f9f9;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {{ ui.LINE }}; border-left:4px solid {{ pct_accent }}; border-radius:8px; margin:0 0 16px 0;">
+  <tr style="background:{{ ui.ROWALT }};">
     <td style="padding:12px 16px;">
-      <table width="100%" cellpadding="0" cellspacing="0">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
         <tr>
-          <td>
-            <span style="font-size:18px; font-weight:bold; color:#1a1a2e;">{{ t.ticker }}</span>
-            <span style="font-size:22px; font-weight:bold; color:{{ pct_color }}; margin-left:12px;">{{ pct_sign }}{{ "{:.1f}".format(pct) }}%</span>
+          <td class="card-col" style="vertical-align:baseline;">
+            <span style="font-family:Arial,Helvetica,sans-serif; font-size:18px; font-weight:bold; color:{{ ui.NAVY }};">{{ t.ticker }}</span>
+            <span style="font-family:Arial,Helvetica,sans-serif; font-size:22px; font-weight:bold; color:{{ pct_text }}; margin-left:12px;">{{ pct_sign }}{{ "{:.1f}".format(pct) }}%</span>
           </td>
-          <td style="text-align:right; font-size:12px; color:#666;">
-            <span>Today: <strong>${{ "{:,.2f}".format(t.today_close) }}</strong></span>
-            &nbsp;|&nbsp;
-            <span>7d ago: <strong>${{ "{:,.2f}".format(t.last_week_close) }}</strong></span>
-            &nbsp;|&nbsp;
-            <span>Threshold: <strong>{{ "{:.0f}".format(t.threshold_hit) }}%</strong></span>
+          <td class="card-col" style="text-align:right; font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }};">
+            Today <strong style="color:{{ ui.BODY }};">${{ "{:,.2f}".format(t.today_close) }}</strong>
+            &nbsp;&middot;&nbsp; 7d ago <strong style="color:{{ ui.BODY }};">${{ "{:,.2f}".format(t.last_week_close) }}</strong>
+            &nbsp;&middot;&nbsp; Threshold <strong style="color:{{ ui.BODY }};">{{ "{:.0f}".format(t.threshold_hit) }}%</strong>
           </td>
         </tr>
       </table>
     </td>
   </tr>
-
-  <!-- News section -->
   <tr>
     <td style="padding:12px 16px;">
-      <p style="margin:0 0 8px 0; font-size:12px; font-weight:bold; color:#555; text-transform:uppercase; letter-spacing:0.5px;">Material news (last 24 h)</p>
+      <p style="margin:0 0 8px 0; font-family:Arial,Helvetica,sans-serif; font-size:11px; font-weight:bold; color:{{ ui.MUTED }}; text-transform:uppercase; letter-spacing:0.5px;">Material news (last 24 h)</p>
       {% if material_news %}
       {% for item in material_news[:3] %}
-      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px; background:#fff; border:1px solid #e8e8e8; border-radius:4px;">
+      {% if item.sentiment == 'bullish' %}{% set pill_bg = ui.POS %}{% set pill_txt = 'BULLISH' %}
+      {% elif item.sentiment == 'bearish' %}{% set pill_bg = ui.NEG %}{% set pill_txt = 'BEARISH' %}
+      {% else %}{% set pill_bg = ui.MUTED %}{% set pill_txt = 'NEUTRAL' %}{% endif %}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px; background:#ffffff; border:1px solid {{ ui.LINE }}; border-radius:6px;">
         <tr>
-          <td style="padding:10px 12px;">
-            <table width="100%" cellpadding="0" cellspacing="0">
-              <tr>
-                <td style="vertical-align:top;">
-                  <p style="margin:0 0 4px 0; font-size:13px; color:#222;">{{ item.summary or '' }}</p>
-                </td>
-                <td style="width:80px; text-align:right; vertical-align:top; padding-left:8px; white-space:nowrap;">
-                  {% if item.sentiment == 'bullish' %}
-                  <span style="background:#27ae60; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">BULLISH</span>
-                  {% elif item.sentiment == 'bearish' %}
-                  <span style="background:#c0392b; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">BEARISH</span>
-                  {% else %}
-                  <span style="background:#95a5a6; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">NEUTRAL</span>
-                  {% endif %}
-                </td>
-              </tr>
-            </table>
+          <td style="padding:10px 12px; vertical-align:top; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.BODY }}; line-height:1.4;">{{ item.summary or '' }}</td>
+          <td style="width:84px; text-align:right; vertical-align:top; padding:10px 12px 10px 4px; white-space:nowrap;">
+            <span style="background:{{ pill_bg }}; color:#ffffff; padding:3px 8px; border-radius:4px; font-family:Arial,Helvetica,sans-serif; font-size:10px; font-weight:bold; letter-spacing:0.5px;">{{ pill_txt }}</span>
           </td>
         </tr>
       </table>
       {% endfor %}
       {% else %}
-      <p style="margin:0; font-size:13px; color:#888; font-style:italic;">No material news in the last 24 hours.</p>
+      <p style="margin:0; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.MUTED }}; font-style:italic;">No material news in the last 24 hours.</p>
       {% endif %}
     </td>
   </tr>
 </table>
 {% endfor %}
 
-<!-- Footer -->
-<p style="font-size:11px; color:#999; border-top:1px solid #eee; padding-top:12px; margin-top:24px;">
-  No orders are placed automatically. Log into your broker to act on any alert.<br>
-  Generated by Investor Assistant · {{ today }}
-</p>
+{{ ui.footer("No orders are placed automatically. Log into your broker to act on any alert.", today) }}
 
 </body>
 </html>

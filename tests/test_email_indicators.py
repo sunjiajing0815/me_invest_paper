@@ -136,7 +136,8 @@ def test_suggestions_html_market_sentiment_box() -> None:
     assert "Market Sentiment" in html
     assert "18.3" in html
     assert "Fear &amp; Greed" in html
-    assert "(Greed)" in html
+    assert "Greed" in html          # F&G semantic descriptor
+    assert "Normal" in html         # VIX 18.3 -> "Normal" band descriptor
 
 
 def test_suggestions_sentiment_box_absent_without_context() -> None:
@@ -170,7 +171,8 @@ def test_review_html_etf_trend_and_sentiment() -> None:
     assert "+1.1%" in html            # pct_from_sma_200
     assert "Market Sentiment" in html
     assert "18.3" in html
-    assert "(Greed)" in html
+    assert "Greed" in html          # F&G semantic descriptor
+    assert "Normal" in html         # VIX 18.3 -> "Normal" band descriptor
 
 
 def test_review_txt_etf_trend_and_sentiment() -> None:

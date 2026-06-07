@@ -1,93 +1,42 @@
+{%- import '_components.html.j2' as ui -%}
+{%- import '_sentiment.html.j2' as sentiment -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Orders for the week of {{ week_of.strftime('%b %-d') }}</title>
+{{ ui.responsive_style() }}
 </head>
-<body style="font-family: Arial, sans-serif; color: #222; max-width: 700px; margin: 0 auto; padding: 16px;">
+<body class="eb-body" style="font-family:Arial,Helvetica,sans-serif; color:{{ ui.BODY }}; background:#ffffff; max-width:700px; margin:0 auto; padding:16px; -webkit-text-size-adjust:100%;">
+{{ ui.preheader("Suggested orders for the week of " ~ week_of.strftime('%b %-d') ~ " — review and act manually.") }}
 
-<!-- Header -->
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1a2e; color:#fff; border-radius:6px; margin-bottom:20px;">
-  <tr>
-    <td style="padding:20px;">
-      <h1 style="margin:0 0 6px 0; font-size:20px;">Orders for the week of {{ week_of.strftime('%b %-d') }}</h1>
-      {% if account_nickname %}<p style="margin:0 0 4px 0; font-size:13px; opacity:0.75;">{{ account_nickname }} · {{ account_broker }}</p>{% endif %}
-      <p style="margin:0; font-size:13px; opacity:0.7;">Suggestions expire Friday at close. Log into {{ account_broker | capitalize }} to act.</p>
-    </td>
-    <td style="padding:20px; text-align:right;">
-      {% if account %}
-      <p style="margin:0 0 4px 0; font-size:22px; font-weight:bold;">${{ "{:,.0f}".format(account.equity_usd) }} <span style="font-size:13px; font-weight:normal; opacity:0.7;">{{ account.currency }}</span></p>
-      <p style="margin:0; font-size:13px; opacity:0.8;">Equity &nbsp;|&nbsp; Cash ${{ "{:,.0f}".format(account.cash_usd) }}</p>
-      <p style="margin:4px 0 0 0; font-size:11px; opacity:0.6;">{{ account.broker }} · {{ account.mode }}</p>
-      {% else %}
-      <p style="margin:0; font-size:14px; opacity:0.7;">No account data</p>
-      {% endif %}
-    </td>
-  </tr>
-</table>
+{{ ui.header("Orders for the week of " ~ week_of.strftime('%b %-d'),
+             subtitle="Suggestions expire Friday at close. Log into " ~ (account_broker | capitalize) ~ " to act.",
+             nickname=account_nickname, broker=account_broker, account=account) }}
 
-{% if market_context is defined and market_context and (market_context.vix is not none or market_context.fear_greed_score is not none) %}
-<!-- Market Sentiment (VIX + CNN Fear & Greed) -->
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f7f7fb; border:1px solid #e3e3ef; border-radius:6px; margin-bottom:20px;">
-  <tr><td style="padding:10px 16px;">
-    <span style="font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.5px;">Market Sentiment</span>
-    <span style="font-size:14px; color:#333; margin-left:10px;">
-      {% if market_context.vix is not none %}VIX <strong>{{ "%.1f"|format(market_context.vix) }}</strong>{% endif %}
-      {% if market_context.vix is not none and market_context.fear_greed_score is not none %} &nbsp;&middot;&nbsp; {% endif %}
-      {% if market_context.fear_greed_score is not none %}Fear &amp; Greed <strong>{{ market_context.fear_greed_score }}</strong>{% if market_context.fear_greed_label %} ({{ market_context.fear_greed_label }}){% endif %}{% endif %}
-    </span>
-  </td></tr>
-</table>
-{% endif %}
+{{ sentiment.sentiment_box(market_context if market_context is defined else None) }}
 
-<!-- Untracked positions -->
-{% if untracked %}
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#fde8e8; border:1px solid #e74c3c; border-radius:6px; margin-bottom:20px;">
-  <tr>
-    <td style="padding:12px 16px;">
-      <strong style="color:#922b21;">⚠ Untracked Position{{ 's' if untracked|length > 1 else '' }} — {{ untracked|length }} ticker(s) with no target allocation</strong>
-      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px; font-size:12px; border-collapse:collapse;">
-        <tr style="color:#922b21; opacity:0.8;">
-          <th style="text-align:left; padding:2px 8px;">Ticker</th>
-          <th style="text-align:right; padding:2px 8px;">Qty</th>
-          <th style="text-align:right; padding:2px 8px;">Market Value</th>
-          <th style="text-align:right; padding:2px 8px;">Portfolio %</th>
-        </tr>
-        {% for p in untracked %}
-        <tr style="color:#922b21;">
-          <td style="padding:2px 8px; font-weight:bold;">{{ p.ticker }}</td>
-          <td style="padding:2px 8px; text-align:right;">{{ "{:.2f}".format(p.qty) }}</td>
-          <td style="padding:2px 8px; text-align:right;">${{ "{:,.0f}".format(p.market_value) }} {{ p.currency }}</td>
-          <td style="padding:2px 8px; text-align:right;">{{ "{:.1f}".format(p.weight_pct) }}%</td>
-        </tr>
-        {% endfor %}
-      </table>
-      <p style="margin:8px 0 0 0; font-size:11px; color:#922b21;">
-        Add {{ untracked | map(attribute='ticker') | join(', ') }} to <code>targets.yaml</code> with a target allocation, or trim the position in your broker.
-      </p>
-    </td>
-  </tr>
-</table>
-{% endif %}
+{{ ui.untracked_box(untracked) }}
 
-<!-- Suggestions table -->
-<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Suggested Orders</h2>
+{# ---- Suggested orders ---- #}
+{{ ui.section("Suggested Orders") }}
 {% if suggestion_items %}
 {% set total_buy_usd = namespace(v=0) %}
 {% set total_sell_usd = namespace(v=0) %}
 {% set buy_count = namespace(n=0) %}
 {% set sell_count = namespace(n=0) %}
-<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; margin-bottom:16px;">
+<div class="sscroll">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 16px 0;">
   <thead>
-    <tr style="background:#f0f0f0; color:#555;">
-      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
-      <th style="padding:8px 10px; text-align:center; border-bottom:2px solid #ddd;">Side</th>
-      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Qty</th>
-      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Limit</th>
-      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">Current</th>
-      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid #ddd;">~$</th>
-      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid #ddd;">Actions</th>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:8px 10px; text-align:center; border-bottom:2px solid {{ ui.LINE2 }};">Side</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Qty</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Limit</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Current</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">~$</th>
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Actions</th>
     </tr>
   </thead>
   <tbody>
@@ -95,159 +44,97 @@
     {% set s = item.suggestion %}
     {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
     {% set current = ind.close if ind else 0 %}
-    {% set dist_pct = ((s.limit_price / current - 1) * 100) if current else 0 %}
     {% set cost = s.qty * s.limit_price %}
     {% if s.side == 'buy' %}{% set total_buy_usd.v = total_buy_usd.v + cost %}{% set buy_count.n = buy_count.n + 1 %}{% endif %}
     {% if s.side == 'sell' %}{% set total_sell_usd.v = total_sell_usd.v + cost %}{% set sell_count.n = sell_count.n + 1 %}{% endif %}
-    {% set row_bg = '#f0fff4' if s.side == 'buy' else '#fff8f8' %}
-    <tr style="background:{{ row_bg }};">
+    {% set row_bg = '#f1faf3' if s.side == 'buy' else '#fdf5f4' %}
+    <tr style="background:{{ row_bg }}; color:{{ ui.BODY }};">
       <td style="padding:8px 10px 3px 10px; font-weight:bold;">{{ s.ticker }}</td>
       <td style="padding:8px 10px 3px 10px; text-align:center;">
-        {% if s.side == 'buy' %}
-        <span style="background:#27ae60; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">BUY</span>
-        {% else %}
-        <span style="background:#c0392b; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">TRIM</span>
-        {% endif %}
+        {% if s.side == 'buy' %}<span style="background:{{ ui.POS }}; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold;">BUY</span>
+        {% else %}<span style="background:{{ ui.NEG }}; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold;">TRIM</span>{% endif %}
       </td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">
         {{ "{:.0f}".format(s.qty) }}
         {% if s.size_factor is defined and s.size_factor != 1.0 and s.base_qty is defined and s.base_qty is not none %}
-        <span style="color:#888; font-size:11px;">(base&nbsp;{{ "{:.0f}".format(s.base_qty) }}&nbsp;·&nbsp;×{{ "%.2f"|format(s.size_factor) }})</span>
+        <span style="color:{{ ui.MUTED }}; font-size:11px;">(base&nbsp;{{ "{:.0f}".format(s.base_qty) }}&nbsp;&middot;&nbsp;&times;{{ "%.2f"|format(s.size_factor) }})</span>
         {% endif %}
       </td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(s.limit_price) }}</td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
       <td style="padding:8px 10px 3px 10px; white-space:nowrap;">
-        <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}"
-           style="background:#28a745;color:white;padding:4px 10px;text-decoration:none;border-radius:3px;font-size:11px;margin-right:4px;">Accept</a>
-        <a href="{{ base_url }}/suggestions/{{ item.sid }}/reject?token={{ item.reject_token }}"
-           style="background:#6c757d;color:white;padding:4px 10px;text-decoration:none;border-radius:3px;font-size:11px;">Reject</a>
+        <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}" style="background:{{ ui.POS }}; color:#ffffff; padding:5px 11px; text-decoration:none; border-radius:4px; font-size:11px; font-weight:bold; margin-right:4px;">Accept</a>
+        <a href="{{ base_url }}/suggestions/{{ item.sid }}/reject?token={{ item.reject_token }}" style="background:{{ ui.MUTED }}; color:#ffffff; padding:5px 11px; text-decoration:none; border-radius:4px; font-size:11px;">Reject</a>
       </td>
     </tr>
-    <tr style="background:{{ row_bg }}; border-bottom:2px solid #ddd;">
-      <td colspan="7" style="padding:2px 10px 8px 10px; font-size:12px; color:#555;">
+    <tr style="background:{{ row_bg }}; border-bottom:2px solid {{ ui.LINE2 }};">
+      <td colspan="7" style="padding:2px 10px 8px 10px; font-size:12px; color:{{ ui.MUTED }};">
         {{ item.rationale if item.rationale else s.reason }}
-        {% if s.context_note is defined and s.context_note %}
-        <span style="color:#888;"> · {{ s.context_note }}</span>
-        {% endif %}
+        {% if s.context_note is defined and s.context_note %}<span style="color:{{ ui.MUTED }};"> &middot; {{ s.context_note }}</span>{% endif %}
       </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+</div>
 
-<!-- Top-line summary -->
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f9f9f9; border:1px solid #e0e0e0; border-radius:6px; margin-bottom:20px;">
-  <tr>
-    <td style="padding:12px 16px; font-size:13px;">
-      <strong>{{ buy_count.n }} buy{{ 's' if buy_count.n != 1 else '' }}</strong> — deploy ${{ "{:,.0f}".format(total_buy_usd.v) }}
-      &nbsp;&nbsp;|&nbsp;&nbsp;
-      <strong>{{ sell_count.n }} trim{{ 's' if sell_count.n != 1 else '' }}</strong> — raise ${{ "{:,.0f}".format(total_sell_usd.v) }}
-    </td>
-  </tr>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ ui.ROWALT }}; border:1px solid {{ ui.LINE }}; border-radius:8px; margin:0 0 20px 0;">
+  <tr><td style="padding:12px 16px; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.BODY }};">
+    <strong style="color:{{ ui.POS }};">{{ buy_count.n }} buy{{ 's' if buy_count.n != 1 else '' }}</strong> &mdash; deploy ${{ "{:,.0f}".format(total_buy_usd.v) }}
+    &nbsp;&nbsp;|&nbsp;&nbsp;
+    <strong style="color:{{ ui.NEG }};">{{ sell_count.n }} trim{{ 's' if sell_count.n != 1 else '' }}</strong> &mdash; raise ${{ "{:,.0f}".format(total_sell_usd.v) }}
+  </td></tr>
 </table>
 {% else %}
-<p style="padding:16px; background:#f9f9f9; border-radius:6px; color:#666; font-size:13px;">
+<p style="padding:16px; background:{{ ui.ROWALT }}; border:1px solid {{ ui.LINE }}; border-radius:8px; color:{{ ui.MUTED }}; font-size:13px;">
   No suggestions this week — all positions are within their rebalance bands, or no S/R level is close enough to act on.
 </p>
 {% endif %}
 
-<!-- Not suggested this week -->
+{# ---- Not suggested ---- #}
 {% if skipped %}
-<h2 style="font-size:15px; color:#333; margin:16px 0 8px 0;">Not Suggested This Week</h2>
-<p style="font-size:12px; color:#666; margin:0 0 8px 0;">Out-of-band tickers considered but no actionable level found:</p>
-<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:20px;">
+{{ ui.section("Not Suggested This Week") }}
+<p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 8px 0;">Out-of-band tickers considered but no actionable level found:</p>
+<div class="sscroll">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 20px 0;">
   <thead>
-    <tr style="background:#f0f0f0; color:#555;">
-      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
-      <th style="padding:6px 10px; text-align:center; border-bottom:2px solid #ddd;">Side</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">Gap</th>
-      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Why skipped</th>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:6px 10px; text-align:center; border-bottom:2px solid {{ ui.LINE2 }};">Side</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Gap</th>
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Why skipped</th>
     </tr>
   </thead>
   <tbody>
     {% for sk in skipped %}
-    <tr style="border-bottom:1px solid #eee;">
+    <tr style="border-bottom:1px solid {{ ui.LINE }}; color:{{ ui.BODY }};">
       <td style="padding:6px 10px; font-weight:bold;">{{ sk.ticker }}</td>
-      <td style="padding:6px 10px; text-align:center; color:#777;">{{ 'buy' if sk.side == 'buy' else 'trim' }}</td>
-      <td style="padding:6px 10px; text-align:right; color:{{ '#27ae60' if sk.gap_pct > 0 else '#c0392b' }};">
-        {{ "{:+.1f}%".format(sk.gap_pct) }}
-      </td>
-      <td style="padding:6px 10px; color:#555; font-size:11px;">{{ sk.reason }}</td>
+      <td style="padding:6px 10px; text-align:center; color:{{ ui.MUTED }};">{{ 'buy' if sk.side == 'buy' else 'trim' }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ ui.POS if sk.gap_pct > 0 else ui.NEG }};">{{ "{:+.1f}%".format(sk.gap_pct) }}</td>
+      <td style="padding:6px 10px; color:{{ ui.MUTED }}; font-size:11px;">{{ sk.reason }}</td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
-<!-- Indicators snapshot -->
+{# ---- Levels at a glance ---- #}
 {% if indicators %}
-<h2 style="font-size:15px; color:#333; margin:0 0 8px 0;">Levels at a Glance</h2>
-<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:12px; margin-bottom:24px;">
-  <thead>
-    <tr style="background:#f0f0f0; color:#555;">
-      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Ticker</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">Last</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">SMA50</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">%Δ50</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">SMA200</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">%Δ200</th>
-      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid #ddd;">RSI14</th>
-      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Nearest Support</th>
-      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid #ddd;">Nearest Resist.</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for ind in indicators %}
-    {% set lvl = nearby.get(ind.ticker) %}
-    {% set sup = lvl.supports[0] if lvl and lvl.supports else None %}
-    {% set res = lvl.resistances[0] if lvl and lvl.resistances else None %}
-    {% set rsi_color = '#c0392b' if ind.rsi_14 and ind.rsi_14 > 70 else ('#27ae60' if ind.rsi_14 and ind.rsi_14 < 30 else '#333') %}
-    {% set is_etf = (etf_tickers is defined and ind.ticker in etf_tickers) %}
-    <tr style="border-bottom:1px solid #eee;">
-      <td style="padding:6px 10px; font-weight:bold;">{{ ind.ticker }}</td>
-      <td style="padding:6px 10px; text-align:right;">${{ "{:,.2f}".format(ind.close) }}</td>
-      <td style="padding:6px 10px; text-align:right;">{{ "${:,.2f}".format(ind.sma_50) if ind.sma_50 else '—' }}</td>
-      <td style="padding:6px 10px; text-align:right; color:{{ '#27ae60' if ind.pct_from_sma_50 and ind.pct_from_sma_50 > 0 else '#c0392b' }};">
-        {{ "{:+.1f}%".format(ind.pct_from_sma_50) if ind.pct_from_sma_50 is not none else '—' }}
-      </td>
-      <td style="padding:6px 10px; text-align:right;">{{ ("${:,.2f}".format(ind.sma_200) if ind.sma_200 else '—') if is_etf else '—' }}</td>
-      <td style="padding:6px 10px; text-align:right; color:{{ ('#27ae60' if ind.pct_from_sma_200 and ind.pct_from_sma_200 > 0 else '#c0392b') if is_etf else '#999' }};">
-        {{ ("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else '—') if is_etf else '—' }}
-      </td>
-      <td style="padding:6px 10px; text-align:right; color:{{ rsi_color }};">
-        {{ "{:.0f}".format(ind.rsi_14) if ind.rsi_14 else '—' }}
-      </td>
-      <td style="padding:6px 10px; font-size:11px; color:#555;">
-        {% if sup %}${{ "{:,.2f}".format(sup.price) }} <span style="opacity:0.6;">({{ sup.method }})</span>{% else %}—{% endif %}
-      </td>
-      <td style="padding:6px 10px; font-size:11px; color:#555;">
-        {% if res %}${{ "{:,.2f}".format(res.price) }} <span style="opacity:0.6;">({{ res.method }})</span>{% else %}—{% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-<p style="font-size:11px; color:#888; margin:0 0 24px 0;">200-day MA (SMA200 / %&Delta;200) is shown for ETFs only.</p>
+{{ ui.section("Levels at a Glance") }}
+{{ ui.levels_table(indicators, nearby, etf_tickers if etf_tickers is defined else None) }}
 {% if scoring_failures %}
-<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:11px; margin-bottom:16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,Helvetica,sans-serif; font-size:11px; margin:0 0 16px 0;">
   {% for f in scoring_failures %}
-  <tr>
-    <td style="padding:3px 10px; color:#8a6d3b;">
-      {{ f.ticker }}: scoring failed ({{ f.exc_type }}) — using nearest-distance fallback.
-    </td>
-  </tr>
+  <tr><td style="padding:3px 10px; color:{{ ui.WARN }};">{{ f.ticker }}: scoring failed ({{ f.exc_type }}) — using nearest-distance fallback.</td></tr>
   {% endfor %}
 </table>
 {% endif %}
 {% endif %}
 
-<!-- Footer -->
-<p style="font-size:11px; color:#999; border-top:1px solid #eee; padding-top:12px; margin-top:24px;">
-  No orders are placed automatically. Log into {{ account_broker | capitalize }} to act on any suggestion.<br>
-  Suggestions expire Friday at close. Generated by Investor Assistant · {{ week_of.strftime('%Y-%m-%d') }}
-</p>
+{{ ui.footer("No orders are placed automatically. Log into " ~ (account_broker | capitalize) ~ " to act on any suggestion. Suggestions expire Friday at close.",
+             week_of.strftime('%Y-%m-%d')) }}
 
 </body>
 </html>

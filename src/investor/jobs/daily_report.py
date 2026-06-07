@@ -68,8 +68,13 @@ def run_daily_report_for_account(
             bars_dir=settings.bars_dir,
         )
 
+    # MA200 in the Levels table is shown for ETFs only (consistent with weekly suggestions).
+    etf_tickers = {
+        t.ticker for t in targets.targets
+        if t.asset_class in ("index_etf", "leveraged_etf")
+    }
     html = render_template(
-        "daily_report.html.j2", report=report,
+        "daily_report.html.j2", report=report, etf_tickers=etf_tickers,
         account_nickname=account.nickname, account_broker=account.broker,
     )
     text = render_template(
