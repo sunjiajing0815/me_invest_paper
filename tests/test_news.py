@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -502,6 +502,8 @@ def _run_movers_with_state(
     pct: float,
     last_triggered: float,
     has_db_state: bool = True,
+    last_pct: float | None = None,
+    last_at: datetime | None = None,
 ) -> list[str]:
     """
     Run run_movers_email with a single ticker at given pct and DB state.
@@ -521,11 +523,19 @@ def _run_movers_with_state(
         mock_state = MagicMock(spec=MoverState)
         mock_state.ticker = ticker
         mock_state.last_triggered_threshold = last_triggered
+        # Default: prior trigger same direction as current move, in the current week.
+        mock_state.last_pct_change = (
+            last_pct if last_pct is not None
+            else (last_triggered if pct >= 0 else -last_triggered)
+        )
+        mock_state.last_triggered_at = last_at if last_at is not None else datetime.now(UTC)
     elif has_db_state and last_triggered == 0.0:
         # State exists but last_triggered=0 means never triggered
         mock_state = MagicMock(spec=MoverState)
         mock_state.ticker = ticker
         mock_state.last_triggered_threshold = 0.0
+        mock_state.last_pct_change = None
+        mock_state.last_triggered_at = None
     else:
         mock_state = None
 
@@ -582,6 +592,8 @@ def _run_movers_check_resets(
     mock_state = MagicMock(spec=MoverState)
     mock_state.ticker = ticker
     mock_state.last_triggered_threshold = last_triggered
+    mock_state.last_pct_change = last_triggered  # same-direction, current week
+    mock_state.last_triggered_at = datetime.now(UTC)
 
     # First session: for loading state (step 2)
     # Second session: for resetting (step: tickers_to_reset)
@@ -660,4 +672,34 @@ class TestTieredThreshold:
     def test_tiered_threshold_below_5_no_state_not_included(self) -> None:
         """Ticker at 3%, no prior state → abs(pct) < 5.0 → not included, not reset."""
         result = _run_movers_with_state("AAPL", pct=3.0, last_triggered=0.0, has_db_state=False)
+        assert "AAPL" not in result
+
+    def test_tiered_threshold_direction_flip_realerts(self) -> None:
+        """A sign flip is a new directional move: prior -10% (tier 5 down), now +6% up → fires.
+
+        Previously suppressed because the tier was tracked on abs() only (direction bug).
+        """
+        result = _run_movers_with_state(
+            "AAPL", pct=6.0, last_triggered=5.0, has_db_state=True,
+            last_pct=-10.0, last_at=datetime.now(UTC),
+        )
+        assert "AAPL" in result
+
+    def test_tiered_threshold_resets_fresh_each_week(self) -> None:
+        """Last week's tier must not suppress this week: prior +8% (tier 5) last week,
+        now +6% this week → first crossing of the new week → fires."""
+        last_week = datetime.now(UTC) - timedelta(days=8)
+        result = _run_movers_with_state(
+            "AAPL", pct=6.0, last_triggered=5.0, has_db_state=True,
+            last_pct=8.0, last_at=last_week,
+        )
+        assert "AAPL" in result
+
+    def test_tiered_threshold_same_week_same_dir_still_suppressed(self) -> None:
+        """Anti-spam still holds within a week: same-direction move below the next tier
+        stays suppressed (prior +7% tier 5 this week, now +6% → no re-alert)."""
+        result = _run_movers_with_state(
+            "AAPL", pct=6.0, last_triggered=5.0, has_db_state=True,
+            last_pct=7.0, last_at=datetime.now(UTC),
+        )
         assert "AAPL" not in result

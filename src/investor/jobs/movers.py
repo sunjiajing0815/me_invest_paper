@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -27,6 +28,18 @@ from ..services.tavily import TavilyClient
 log = logging.getLogger(__name__)
 
 THRESHOLD_STEP = 5.0
+_ET = ZoneInfo("America/New_York")
+
+
+def _iso_week(dt: datetime) -> tuple[int, int]:
+    """(ISO year, ISO week) in market time — the movers' weekly measurement-window key.
+
+    The baseline (prior-Friday close) is constant across a Mon–Fri run-week, so the ISO
+    week uniquely identifies the measurement window. Tier state from a prior week must not
+    suppress this week's move, so the threshold filter resets when this key changes.
+    """
+    iso = dt.astimezone(_ET).isocalendar()
+    return (iso[0], iso[1])
 
 
 def _compute_movers(bars_dir: str) -> pd.DataFrame:
@@ -140,26 +153,44 @@ def run_movers_email(
         log.info("no price data; skipping movers email")
         return
 
-    # 2. Load MoverState for all known tickers — extract plain floats before session closes
+    # 2. Load prior MoverState — extract plain values before the session closes (ORM safety).
+    #    Need the tier magnitude, the signed pct (for direction), and when it last fired.
     with session_scope() as s:
-        states: dict[str, float] = {
-            ms.ticker: ms.last_triggered_threshold for ms in s.query(MoverState).all()
+        states: dict[str, tuple[float, float | None, datetime | None]] = {
+            ms.ticker: (ms.last_triggered_threshold, ms.last_pct_change, ms.last_triggered_at)
+            for ms in s.query(MoverState).all()
         }
 
-    # 3. Apply tiered threshold filter
+    # 3. Apply tiered threshold filter — direction-aware, and fresh each measurement week.
+    cur_week = _iso_week(datetime.now(UTC))
     tickers_to_process: list[dict[str, Any]] = []  # list of {ticker, pct_change, threshold_hit}
     tickers_to_reset: list[str] = []
 
     for row in movers_df.itertuples(index=False):
         ticker: str = row.ticker
         pct: float = float(row.pct_change)
-        last_triggered = states.get(ticker, 0.0)
+        last_mag, last_pct, last_at = states.get(ticker, (0.0, None, None))
+
+        # Weekly fresh start: a tier set in a prior measurement week (the last-week-close
+        # baseline has since rolled forward) must not suppress this week's move.
+        if last_at is not None and _iso_week(last_at) != cur_week:
+            last_mag, last_pct = 0.0, None
 
         if abs(pct) < 5.0:
-            if last_triggered > 0.0:
+            if last_mag > 0.0:
                 tickers_to_reset.append(ticker)
         else:
-            next_threshold = last_triggered + THRESHOLD_STEP
+            # Direction-aware: +5% and -5% are different moves. A sign flip starts a fresh
+            # tier in the new direction; same-direction moves escalate tier by tier.
+            if last_pct is not None and last_mag > 0.0:
+                last_sign = 1 if last_pct > 0 else -1
+            else:
+                last_sign = 0
+            cur_sign = 1 if pct >= 0 else -1
+            if last_sign != 0 and cur_sign != last_sign:
+                next_threshold = THRESHOLD_STEP
+            else:
+                next_threshold = last_mag + THRESHOLD_STEP
             if abs(pct) >= next_threshold:
                 tickers_to_process.append({
                     "ticker": ticker,
