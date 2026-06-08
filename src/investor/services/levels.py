@@ -249,8 +249,15 @@ def build_nearby_levels(
     sr_rows: list[SRLevelRow],
     indicators: list[IndicatorRow],
     n: int = 3,
+    max_distance_pct: float = 0.50,
 ) -> dict[str, NearbyLevels]:
-    """Return NearbyLevels for each ticker: up to n supports below, n resistances above."""
+    """Return NearbyLevels for each ticker: up to n supports below, n resistances above.
+
+    ``max_distance_pct`` drops levels further than that fraction of current price away
+    (default 50%). Defence-in-depth against bad bar data (e.g. an unadjusted corporate
+    action leaving a phantom swing low far below current price) surfacing a meaningless
+    "nearest" level — better to show no nearby level than a nonsense one.
+    """
     ind_map = {r.ticker: r for r in indicators}
     result: dict[str, NearbyLevels] = {}
 
@@ -261,15 +268,26 @@ def build_nearby_levels(
     for ticker in tickers:
         ind = ind_map.get(ticker)
         current_price = ind.close if ind else 0.0
+        max_dist = max_distance_pct * current_price
         levels = by_ticker.get(ticker, [])
 
         supports = sorted(
-            [lv for lv in levels if lv.type == "support" and lv.price < current_price],
+            [
+                lv for lv in levels
+                if lv.type == "support"
+                and lv.price < current_price
+                and (current_price - lv.price) <= max_dist
+            ],
             key=lambda lv: current_price - lv.price,
         )[:n]
 
         resistances = sorted(
-            [lv for lv in levels if lv.type == "resistance" and lv.price > current_price],
+            [
+                lv for lv in levels
+                if lv.type == "resistance"
+                and lv.price > current_price
+                and (lv.price - current_price) <= max_dist
+            ],
             key=lambda lv: lv.price - current_price,
         )[:n]
 

@@ -28,7 +28,7 @@ def update_bars(
     needed start date, then filtered per-ticker before writing.
     """
     import pandas as pd
-    from alpaca.data.enums import DataFeed
+    from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.models import BarSet
     from alpaca.data.requests import StockBarsRequest
@@ -68,6 +68,11 @@ def update_bars(
         start=datetime.combine(overall_start, time.min),
         end=datetime.combine(today, time.min),
         feed=DataFeed.IEX,
+        # Back-adjust stock splits so S/R levels + MAs use a continuous price series.
+        # A 5:1 reverse split (e.g. the BTC ETF, Nov 2024) otherwise leaves a phantom
+        # pre-split regime that surfaces nonsense swing lows. Splits only — NOT dividends:
+        # support/resistance should reflect prices the market actually traded at.
+        adjustment=Adjustment.SPLIT,
     )
     # get_stock_bars returns BarSet (dict only with raw_data=True, which we never pass).
     bars = cast(BarSet, client.get_stock_bars(request))

@@ -142,6 +142,27 @@ class TestBuildNearbyLevels:
         assert len(lvl.supports) <= 3
         assert len(lvl.resistances) <= 3
 
+    def test_excludes_levels_beyond_max_distance(self) -> None:
+        """Levels absurdly far from price (e.g. a phantom pre-split swing low) are dropped."""
+        today = date(2026, 5, 5)
+        sr_rows = [
+            SRLevelRow(ticker="VOO", type="support", price=95.0, method="near_sup", as_of=today),
+            SRLevelRow(ticker="VOO", type="support", price=20.0, method="phantom_sup", as_of=today),
+            SRLevelRow(
+                ticker="VOO", type="resistance", price=105.0, method="near_res", as_of=today
+            ),
+            SRLevelRow(
+                ticker="VOO", type="resistance", price=300.0, method="phantom_res", as_of=today
+            ),
+        ]
+        ind = _indicator("VOO", close=100.0)
+        result = build_nearby_levels(["VOO"], sr_rows, [ind], max_distance_pct=0.5)
+        lvl = result["VOO"]
+        sup_methods = {s.method for s in lvl.supports}
+        res_methods = {r.method for r in lvl.resistances}
+        assert sup_methods == {"near_sup"}      # 20.0 is 80% away -> dropped
+        assert res_methods == {"near_res"}      # 300.0 is 200% away -> dropped
+
     def test_supports_sorted_nearest_first(self) -> None:
         today = date(2026, 5, 5)
         sr_rows = [
