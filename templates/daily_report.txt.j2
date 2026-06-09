@@ -17,6 +17,13 @@ Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
   Action: add {{ report.untracked_positions | map(attribute='ticker') | join(', ') }} to targets.yaml or trim the position.
 
 {% endif %}
+{% if report.committed_orders %}
+=== OPEN & COMMITTED ORDERS ===
+{% for r in report.committed_orders %}
+  {{ r.ticker }}: {{ r.side | upper }} {{ "{:.0f}".format(r.qty) }} @ ${{ "{:,.2f}".format(r.limit_price) }}  — {{ r.status_label }}{% if r.cancellable %}  (un-accept via the daily email link){% endif %}
+{% endfor %}
+
+{% endif %}
 === ALLOCATION ===
 {% set col_w = [6, 8, 10, 14, 10, 9, 8, 8] %}
 {{ "Ticker" | ljust(6) }}  {{ "Qty" | rjust(8) }}  {{ "AvgCost" | rjust(10) }}  {{ "MktVal" | rjust(14) }}  {{ "Curr%" | rjust(8) }}  {{ "Tgt%" | rjust(6) }}  {{ "Gap%" | rjust(7) }}  Band

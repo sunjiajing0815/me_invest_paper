@@ -17,6 +17,7 @@ from ..services.accounts import AccountInfo, list_active_accounts, resolve_prima
 from ..services.bars import update_bars
 from ..services.daily_report import compose_daily_report
 from ..services.email import EmailSender
+from ..services.magic_link import sign_action
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.targets import targets_path_for_account
@@ -73,9 +74,15 @@ def run_daily_report_for_account(
         t.ticker for t in targets.targets
         if t.asset_class in ("index_etf", "leveraged_etf")
     }
+    # Signed un-accept links for cancellable committed orders (prefetch-safe confirm page).
+    unaccept_tokens = {
+        r.sid: sign_action(r.sid, "unaccept", settings.magic_link_secret)
+        for r in report.committed_orders if r.cancellable
+    }
     html = render_template(
         "daily_report.html.j2", report=report, etf_tickers=etf_tickers,
         account_nickname=account.nickname, account_broker=account.broker,
+        base_url=settings.app_base_url, unaccept_tokens=unaccept_tokens,
     )
     text = render_template(
         "daily_report.txt.j2", report=report,

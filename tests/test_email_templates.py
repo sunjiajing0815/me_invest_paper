@@ -30,7 +30,7 @@ def _pos(t, q, ac, mv, w):  # type: ignore[no-untyped-def]
     return _ns(ticker=t, qty=q, avg_cost=ac, market_value=mv, currency="USD", weight_pct=w)
 
 
-def _render_daily() -> str:
+def _render_daily(committed: list | None = None) -> str:
     lvl = _ns(supports=[_ns(price=440.0, method="sma_50")],
               resistances=[_ns(price=470.0, method="pivot_r1")])
     inds = [_ind("VOO", 455, 448, 450, 1.5, 1.1, 58),
@@ -46,9 +46,12 @@ def _render_daily() -> str:
         positions=[_pos("VOO", 60, 420, 28000, 22.4), _pos("MSFT", 30, 410, 12900, 10.3)],
         indicators=inds,
         nearby_levels={"VOO": lvl, "MSFT": lvl},
+        committed_orders=committed or [],
     )
+    tokens = {r.sid: f"tok{r.sid}" for r in (committed or []) if r.cancellable}
     return render_template("daily_report.html.j2", report=report, etf_tickers={"VOO"},
-                           account_nickname="Alpaca paper", account_broker="alpaca")
+                           account_nickname="Alpaca paper", account_broker="alpaca",
+                           base_url="https://x", unaccept_tokens=tokens)
 
 
 def _render_movers() -> str:
@@ -68,6 +71,19 @@ def test_daily_report_renders() -> None:
     assert "Portfolio Report" in html
     assert "Levels at a Glance" in html
     assert "Gap Summary" in html
+
+
+def test_daily_committed_orders_section_renders_unaccept_link() -> None:
+    from investor.services.daily_report import CommittedOrderRow
+    html = _render_daily(committed=[
+        CommittedOrderRow(sid=7, ticker="VOO", side="buy", qty=5, limit_price=400.0,
+                          status_label="Working", filled_price=None, cancellable=True),
+        CommittedOrderRow(sid=8, ticker="QQQ", side="buy", qty=2, limit_price=650.0,
+                          status_label="Filled", filled_price=651.0, cancellable=False),
+    ])
+    assert "Committed" in html                              # the section heading
+    assert "/suggestions/7/unaccept?token=tok7" in html     # cancellable -> link
+    assert "/suggestions/8/unaccept" not in html            # filled -> no link
 
 
 def test_daily_report_ma200_etf_only() -> None:

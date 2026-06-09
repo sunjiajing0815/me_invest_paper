@@ -35,6 +35,38 @@
 {# ---- Untracked positions ---- #}
 {{ ui.untracked_box(report.untracked_positions) }}
 
+{# ---- Open & committed orders ---- #}
+{% if report.committed_orders %}
+{{ ui.section("Open & Committed Orders") }}
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 8px 0;">
+  <thead>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:7px 10px; text-align:center; border-bottom:2px solid {{ ui.LINE2 }};">Side</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Qty</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Limit</th>
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Status</th>
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in report.committed_orders %}
+    <tr style="border-bottom:1px solid {{ ui.LINE }}; color:{{ ui.BODY }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ r.ticker }}</td>
+      <td style="padding:6px 10px; text-align:center;">{{ r.side | upper }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "{:.0f}".format(r.qty) }}</td>
+      <td style="padding:6px 10px; text-align:right;">${{ "{:,.2f}".format(r.limit_price) }}</td>
+      <td style="padding:6px 10px;">{{ r.status_label }}{% if r.filled_price %} @ ${{ "{:,.2f}".format(r.filled_price) }}{% endif %}</td>
+      <td style="padding:6px 10px;">{% if r.cancellable and base_url is defined and unaccept_tokens is defined and r.sid in unaccept_tokens %}<a href="{{ base_url }}/suggestions/{{ r.sid }}/unaccept?token={{ unaccept_tokens[r.sid] }}" style="color:{{ ui.NEG }};">Un-accept</a>{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p style="font-family:Arial,Helvetica,sans-serif; font-size:11px; color:{{ ui.MUTED }}; margin:0 0 24px 0;">Un-accept opens a confirmation page; it cancels any working broker order and reverts the suggestion.</p>
+{% endif %}
+
 {# ---- Allocation ---- #}
 {{ ui.section("Allocation") }}
 <div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
