@@ -23,7 +23,7 @@
 {# ---- Suggestions vs fills ---- #}
 {{ ui.section("Suggestions vs Fills") }}
 {% if review.suggestion_audits %}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
@@ -69,7 +69,7 @@
 {# ---- Drift state ---- #}
 {{ ui.section("Drift State") }}
 {% if review.gap_rows %}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
@@ -127,7 +127,7 @@
 {# ---- Preview: next week's suggestions ---- #}
 {{ ui.section("Preview: Next Week's Suggestions") }}
 {% if review.preview_suggestions %}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
@@ -171,7 +171,7 @@
 </table>
 {% if review.promotions_this_week %}
 <p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 4px 0;"><strong>Mode changes:</strong></p>
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 12px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
@@ -198,7 +198,7 @@
 {% endif %}
 {% if review.kill_switches_this_week %}
 <p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.NEG }}; margin:0 0 4px 0;"><strong>Kill switches activated:</strong></p>
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.ALERT_BG }}; color:{{ ui.ALERT_INK }};">
@@ -265,7 +265,7 @@
 
 {% if review.drift_rows %}
 {{ ui.subsection("Allocation drift (Mon → Fri)") }}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 12px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }}; border-bottom:1px solid {{ ui.LINE2 }};">
@@ -302,7 +302,7 @@
 
 {% if review.etf_trend %}
 {{ ui.subsection("ETF trend (vs 200-day MA)") }}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }}; border-bottom:1px solid {{ ui.LINE2 }};">
@@ -328,7 +328,7 @@
 
 {% if review.trend_rows %}
 {{ ui.subsection("4-week trend") }}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }}; border-bottom:1px solid {{ ui.LINE2 }};">

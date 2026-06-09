@@ -44,39 +44,40 @@
 <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:{{ OUTBG }};">{{ text }}</div>
 {%- endmacro -%}
 
-{# ---- responsive <style> for the <head> (Gmail/Apple Mail honor it; Outlook ignores) ---- #}
+{# ---- responsive <style> for the <head> (Gmail/Apple Mail honor it; Outlook ignores).
+        NOTE: the header degrades correctly WITHOUT these rules (Gmail's mobile app strips
+        <style>), so the queries are progressive enhancement only — never load-bearing. ---- #}
 {%- macro responsive_style() -%}
 <style>
   @media only screen and (max-width:600px) {
     .eb-body { padding:10px !important; }
-    .hdr-cell { display:block !important; width:100% !important; text-align:left !important; padding:6px 18px !important; }
-    .hdr-cell--right { text-align:left !important; padding-top:0 !important; padding-bottom:16px !important; }
     .sscroll { display:block !important; width:100% !important; overflow-x:auto !important; -webkit-overflow-scrolling:touch !important; }
     .card-col { display:block !important; width:100% !important; }
   }
 </style>
 {%- endmacro -%}
 
-{# ---- navy header card ---- #}
+{# ---- navy header card — single column, so it never overflows on a phone even when the
+        client strips media queries. Title block, then (if an account) a divided stats
+        block: equity / cash / broker·mode. ---- #}
 {%- macro header(title, subtitle=None, nickname=None, broker=None, account=None) -%}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ NAVY }}; border-radius:8px; margin:0 0 22px 0;">
   <tr>
-    <td class="hdr-cell" style="padding:20px 22px; vertical-align:top;">
-      <h1 style="margin:0 0 5px 0; font-family:{{ FONT }}; font-size:20px; line-height:1.25; color:#ffffff;">{{ title }}</h1>
+    <td style="padding:20px 22px;">
+      <h1 style="margin:0; font-family:{{ FONT }}; font-size:21px; line-height:1.25; color:#ffffff;">{{ title }}</h1>
       {%- if subtitle %}
-      <p style="margin:0; font-family:{{ FONT }}; font-size:13px; line-height:1.4; color:{{ ON_NAVY }};">{{ subtitle }}</p>
+      <div style="margin:6px 0 0 0; font-family:{{ FONT }}; font-size:13px; line-height:1.45; color:{{ ON_NAVY }};">{{ subtitle }}</div>
       {%- endif %}
-      {%- if nickname %}
-      <p style="margin:5px 0 0 0; font-family:{{ FONT }}; font-size:12px; color:{{ ON_NAVY_DIM }};">{{ nickname }}{% if broker %} &middot; {{ broker }}{% endif %}</p>
+      {%- if account %}
+      <div style="margin:14px 0 0 0; border-top:1px solid #33344d; padding-top:14px;">
+        <div style="font-family:{{ FONT }}; font-size:24px; font-weight:bold; line-height:1.1; color:#ffffff;">${{ "{:,.0f}".format(account.equity_usd) }} <span style="font-size:13px; font-weight:normal; color:{{ ON_NAVY_DIM }};">{{ account.currency }}</span></div>
+        <div style="margin:5px 0 0 0; font-family:{{ FONT }}; font-size:13px; color:{{ ON_NAVY }};">Equity &middot; Cash ${{ "{:,.0f}".format(account.cash_usd) }}</div>
+        <div style="margin:5px 0 0 0; font-family:{{ FONT }}; font-size:12px; color:{{ ON_NAVY_DIM }};">{{ account.broker }} &middot; {{ account.mode }}</div>
+      </div>
+      {%- elif nickname or broker %}
+      <div style="margin:8px 0 0 0; font-family:{{ FONT }}; font-size:12px; color:{{ ON_NAVY_DIM }};">{% if nickname %}{{ nickname }}{% endif %}{% if nickname and broker %} &middot; {% endif %}{% if broker %}{{ broker }}{% endif %}</div>
       {%- endif %}
     </td>
-    {%- if account %}
-    <td class="hdr-cell hdr-cell--right" style="padding:20px 22px; text-align:right; vertical-align:top; white-space:nowrap;">
-      <div style="font-family:{{ FONT }}; font-size:22px; font-weight:bold; color:#ffffff;">${{ "{:,.0f}".format(account.equity_usd) }} <span style="font-size:13px; font-weight:normal; color:{{ ON_NAVY_DIM }};">{{ account.currency }}</span></div>
-      <div style="font-family:{{ FONT }}; font-size:13px; color:{{ ON_NAVY }}; padding-top:3px;">Equity &nbsp;&middot;&nbsp; Cash ${{ "{:,.0f}".format(account.cash_usd) }}</div>
-      <div style="font-family:{{ FONT }}; font-size:11px; color:{{ ON_NAVY_DIM }}; padding-top:3px;">{{ account.broker }} &middot; {{ account.mode }}</div>
-    </td>
-    {%- endif %}
   </tr>
 </table>
 {%- endmacro -%}
@@ -104,7 +105,7 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ ALERT_BG }}; border:1px solid {{ ALERT_BORDER }}; border-radius:8px; margin:0 0 20px 0;">
   <tr><td style="padding:12px 16px;">
     <strong style="font-family:{{ FONT }}; font-size:13px; color:{{ ALERT_INK }};">&#9888; Untracked position{{ 's' if positions|length > 1 else '' }} &mdash; {{ positions|length }} ticker(s) with no target allocation</strong>
-    <div class="sscroll">
+    <div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px; font-family:{{ FONT }}; font-size:12px; border-collapse:collapse;">
       <tr style="color:{{ ALERT_INK }};">
         <th style="text-align:left; padding:3px 8px;">Ticker</th>
@@ -134,7 +135,7 @@
         etf_tickers: optional set; when given, SMA200 / %Δ200 show for ETFs only. ---- #}
 {%- macro levels_table(indicators, nearby, etf_tickers=None) -%}
 {%- if indicators %}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:{{ FONT }}; font-size:12px; margin:0 0 8px 0;">
   <thead>
     <tr style="background:{{ HEADBG }}; color:{{ MUTED }};">

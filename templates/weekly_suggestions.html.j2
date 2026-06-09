@@ -26,7 +26,7 @@
 {% set total_sell_usd = namespace(v=0) %}
 {% set buy_count = namespace(n=0) %}
 {% set sell_count = namespace(n=0) %}
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 16px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
@@ -96,7 +96,7 @@
 {% if skipped %}
 {{ ui.section("Not Suggested This Week") }}
 <p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 8px 0;">Out-of-band tickers considered but no actionable level found:</p>
-<div class="sscroll">
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 20px 0;">
   <thead>
     <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
