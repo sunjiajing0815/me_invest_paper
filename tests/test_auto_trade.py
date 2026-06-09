@@ -688,3 +688,20 @@ def test_mode_is_per_broker_account(db_session: Session) -> None:
     )
     assert outcomes_b == []  # B is OFF
     adapter.submit_order.assert_not_called()
+
+
+def test_cancelled_suggestion_not_replaced(db_session: Session) -> None:
+    """An un-accepted (status='cancelled') suggestion is never returned for placement, even
+    with a prior broker_cancelled execution in the same week — closes the re-place footgun."""
+    from investor.services.auto_trade import _fetch_accepted_unexecuted
+
+    sug = _add_suggestion(db_session, ticker="VOO", status="cancelled")
+    db_session.add(OrderExecution(
+        broker_account_id=_ACCT, suggestion_id=sug.id, ticker="VOO", side="buy",
+        filled_qty=0.0, broker="alpaca", broker_order_id="bo-x", dry_run=False,
+        status="broker_cancelled", match_method="auto_trade_placed",
+    ))
+    db_session.commit()
+
+    result = _fetch_accepted_unexecuted(db_session, _ACCT, as_of=_NOW.date())
+    assert result == []

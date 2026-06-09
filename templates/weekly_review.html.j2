@@ -40,11 +40,11 @@
     {% for a in review.suggestion_audits %}
     {% if a.status == 'accepted' %}{% set row_bg = '#f1faf3' %}
     {% elif a.status == 'rejected' %}{% set row_bg = '#fdf5f4' %}
-    {% elif a.status == 'expired' %}{% set row_bg = ui.ROWALT %}
+    {% elif a.status in ('expired', 'cancelled') %}{% set row_bg = ui.ROWALT %}
     {% else %}{% set row_bg = '#fffdf0' %}{% endif %}
     {% if a.status in ('accepted', 'filled') %}{% set status_color = ui.POS %}
     {% elif a.status == 'rejected' %}{% set status_color = ui.NEG %}
-    {% elif a.status == 'expired' %}{% set status_color = ui.MUTED %}
+    {% elif a.status in ('expired', 'cancelled') %}{% set status_color = ui.MUTED %}
     {% else %}{% set status_color = ui.WARN %}{% endif %}
     <tr style="border-bottom:1px solid {{ ui.LINE }}; background:{{ row_bg }}; color:{{ ui.BODY }};">
       <td style="padding:7px 10px; font-weight:bold;">{{ a.ticker }}</td>
