@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import BrokerAccount
+from ..models import BrokerAccount, OrderExecution, OrderSuggestion
 from ..queries import positions_latest
 from .gap import GapRow, UntrackedPosition, compute_gap, get_untracked_positions
 from .indicators import IndicatorRow
@@ -36,6 +37,36 @@ def _account_currency(connection_config: str | None) -> str:
 
 
 @dataclass(frozen=True)
+class CommittedOrderRow:
+    """A this-week accepted suggestion + its broker order state (for the daily email)."""
+
+    sid: int
+    ticker: str
+    side: str
+    qty: float
+    limit_price: float
+    status_label: str          # Working | Partially filled | Filled | Awaiting placement
+    filled_price: float | None
+    cancellable: bool          # un-accept link shown only when True
+
+
+def _committed_status(exe: Any | None) -> tuple[str, bool]:
+    """Map the latest real execution to (status_label, cancellable)."""
+    if exe is None:
+        return "Awaiting placement", True
+    st = exe.status
+    if st == "accepted_for_routing":
+        return "Working", True
+    if st == "partially_filled":
+        return "Partially filled", True
+    if st == "filled":
+        return "Filled", False
+    if st == "broker_cancelled":
+        return "Order cancelled", True
+    return st, False
+
+
+@dataclass(frozen=True)
 class DailyReport:
     date: date
     account: AccountSnapshot | None
@@ -45,6 +76,7 @@ class DailyReport:
     indicators: list[IndicatorRow] = field(default_factory=list)
     nearby_levels: dict[str, NearbyLevels] = field(default_factory=dict)
     untracked_positions: list[UntrackedPosition] = field(default_factory=list)
+    committed_orders: list[CommittedOrderRow] = field(default_factory=list)
 
 
 def compose_daily_report(
@@ -88,6 +120,30 @@ def compose_daily_report(
     drift_alerts = [r for r in gap_rows if r.band_status != "in_band"]
     untracked = get_untracked_positions(session, broker_account_id)
 
+    # This-week accepted suggestions + their latest real execution = "committed orders".
+    week_monday = today - timedelta(days=today.weekday())
+    accepted_sugs = session.scalars(
+        select(OrderSuggestion).where(
+            OrderSuggestion.broker_account_id == broker_account_id,
+            OrderSuggestion.status == "accepted",
+            OrderSuggestion.week_of == week_monday,
+        ).order_by(OrderSuggestion.ticker)
+    ).all()
+    committed: list[CommittedOrderRow] = []
+    for sug in accepted_sugs:
+        exe = session.scalars(
+            select(OrderExecution).where(
+                OrderExecution.suggestion_id == sug.id,
+                OrderExecution.dry_run.is_(False),
+            ).order_by(OrderExecution.created_at.desc())
+        ).first()
+        label, cancellable = _committed_status(exe)
+        committed.append(CommittedOrderRow(
+            sid=sug.id, ticker=sug.ticker, side=sug.side, qty=sug.qty,
+            limit_price=sug.limit_price, status_label=label,
+            filled_price=(exe.filled_price if exe else None), cancellable=cancellable,
+        ))
+
     indicators: list[IndicatorRow] = []
     nearby_levels: dict[str, NearbyLevels] = {}
 
@@ -114,4 +170,5 @@ def compose_daily_report(
         indicators=indicators,
         nearby_levels=nearby_levels,
         untracked_positions=untracked,
+        committed_orders=committed,
     )
