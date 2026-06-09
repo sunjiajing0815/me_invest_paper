@@ -662,6 +662,113 @@ def suggestion_magic_link(
     )
 
 
+# Outcome → (heading, detail) for the un-accept result page. Keyed by UnacceptResult.value
+# strings (StrEnum members compare/hash equal to their string, so indexing with the enum works).
+_UNACCEPT_MESSAGES: dict[str, tuple[str, str]] = {
+    "cancelled": (
+        "Un-accepted.",
+        "Any working broker order was cancelled and the suggestion is now cancelled.",
+    ),
+    "partial": (
+        "Remainder cancelled.",
+        "The unfilled remainder was cancelled; the already-filled shares stand.",
+    ),
+    "filled": (
+        "Already filled.",
+        "The order had fully filled — nothing to un-accept. Sell manually to exit.",
+    ),
+    "not_actionable": ("Not un-acceptable.", "This suggestion is not in the accepted state."),
+    "not_found": ("Not found.", "No such suggestion."),
+}
+
+
+@app.get(
+    "/suggestions/{sid}/unaccept", response_class=HTMLResponse, summary="Un-accept confirm page"
+)
+def unaccept_confirm(sid: int, token: str, request: Request) -> HTMLResponse:
+    """Render the prefetch-safe confirmation page. No side effects — the cancel happens on POST."""
+    from .models import OrderExecution, OrderSuggestion
+    from .services.magic_link import verify_action
+
+    settings = request.app.state.settings
+    if not verify_action(sid, "unaccept", token, settings.magic_link_secret):
+        raise HTTPException(status_code=400, detail="invalid or expired token")
+    with session_scope() as s:
+        sug = s.get(OrderSuggestion, sid)
+        if sug is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        live_status = sug.status
+        if sug.status == "accepted":
+            exe = s.scalars(
+                select(OrderExecution).where(
+                    OrderExecution.suggestion_id == sid,
+                    OrderExecution.dry_run.is_(False),
+                    OrderExecution.broker_order_id.is_not(None),
+                ).order_by(OrderExecution.created_at.desc())
+            ).first()
+            if exe is None:
+                live_status = "awaiting placement"
+            else:
+                adapter = request.app.state.adapters.get(sug.broker_account_id)
+                if adapter is None:
+                    live_status = "no adapter for this account"
+                else:
+                    try:
+                        live_status = adapter.get_order(exe.broker_order_id).status
+                    except Exception:  # noqa: BLE001 — broker unreachable; show that, don't fail
+                        live_status = "unknown (broker unreachable)"
+        ctx = {
+            "sid": sid, "token": token, "ticker": sug.ticker, "side": sug.side,
+            "qty": sug.qty, "limit_price": sug.limit_price, "live_status": live_status,
+        }
+    return HTMLResponse(render_template("unaccept_confirm.html.j2", **ctx))
+
+
+@app.post(
+    "/suggestions/{sid}/unaccept", response_class=HTMLResponse, summary="Un-accept (confirm POST)"
+)
+def unaccept_act(sid: int, token: str, request: Request) -> HTMLResponse:
+    """Cancel any working order and mark the suggestion cancelled (the confirm-page POST)."""
+    from .models import OrderSuggestion
+    from .services.magic_link import verify_action
+    from .services.unaccept import unaccept_suggestion
+
+    settings = request.app.state.settings
+    if not verify_action(sid, "unaccept", token, settings.magic_link_secret):
+        raise HTTPException(status_code=400, detail="invalid or expired token")
+    with session_scope() as s:
+        sug = s.get(OrderSuggestion, sid)
+        if sug is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        adapter = request.app.state.adapters.get(sug.broker_account_id)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail="no adapter for this account")
+        res = unaccept_suggestion(s, adapter, sid, broker_account_id=sug.broker_account_id)
+    heading, detail = _UNACCEPT_MESSAGES[res]
+    return HTMLResponse(render_template("unaccept_result.html.j2", heading=heading, detail=detail))
+
+
+@app.post(
+    "/admin/suggestions/{sid}/unaccept",
+    dependencies=[Depends(admin_auth)],
+    summary="Admin un-accept",
+)
+def admin_unaccept(sid: int, request: Request) -> dict[str, str]:
+    """Un-accept via the admin API (ops path; same service as the email confirm)."""
+    from .models import OrderSuggestion
+    from .services.unaccept import unaccept_suggestion
+
+    with session_scope() as s:
+        sug = s.get(OrderSuggestion, sid)
+        if sug is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        adapter = request.app.state.adapters.get(sug.broker_account_id)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail="no adapter for this account")
+        res = unaccept_suggestion(s, adapter, sid, broker_account_id=sug.broker_account_id)
+    return {"status": "ok", "id": str(sid), "result": res.value}
+
+
 @app.post("/admin/run-sync", summary="Ad-hoc sync trigger", dependencies=[Depends(admin_auth)])
 def admin_run_sync(
     request: Request, broker_account_id: int | None = None
