@@ -202,13 +202,13 @@ Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
   markup; entities-in-`{{ }}` autoescape trap (§5).
 - **Movers tiers are direction-aware and reset per ISO week** (§2b).
 
-## Still open / parked (per user, "later this week")
+## Resolved (06-09) — un-accept path
 
-Suggestion-rejection / order-lifecycle items surfaced 06-09 (behavior confirmed, not yet
-fixed):
-1. **No "un-accept" path** — once a suggestion is `accepted`, the accept/reject endpoints
-   return 409; only expiry (Fri sweep) or a broker-side cancel changes it.
-2. **Auto-trade re-places a broker-cancelled order** within the same week — a `broker_cancelled`
-   execution doesn't count as executed, so an accepted current-week suggestion is re-placed on
-   the next LIVE pass. Candidate guard: don't re-place a suggestion whose last real execution
-   was `broker_cancelled` this week.
+The two order-lifecycle gaps below were fixed by the **un-accept feature** (design +
+plan in `plans/unaccept_path_*.md`; built on branch `feat/unaccept-path`):
+1. ~~No "un-accept" path~~ → daily email now lists working orders + accepted to-dos with an
+   **Un-accept** link (prefetch-safe confirm page); cancels any working broker order and
+   marks the suggestion a new terminal status **`cancelled`**.
+2. ~~Auto-trade re-places a broker-cancelled order~~ → closed for free: `cancelled`
+   suggestions are not `accepted`, so `_fetch_accepted_unexecuted` never re-places them
+   (regression-guarded by a test).
