@@ -34,9 +34,10 @@ def cancel_working_execution(adapter: BrokerAdapter, execution: Any) -> CancelOu
         conf = adapter.get_order(boid)
     except Exception as exc:  # noqa: BLE001 — broker unreachable: cancel conservatively
         log.warning("cancel_working_execution: get_order(%s) failed: %s", boid, exc)
-        _try_cancel(adapter, boid)
-        execution.status = "broker_cancelled"
-        return CancelOutcome.CANCELLED
+        if _try_cancel(adapter, boid):
+            execution.status = "broker_cancelled"
+            return CancelOutcome.CANCELLED
+        return CancelOutcome.NOOP  # couldn't verify or cancel — leave for reconciliation
 
     status = conf.status
     if status == "filled":
@@ -45,17 +46,23 @@ def cancel_working_execution(adapter: BrokerAdapter, execution: Any) -> CancelOu
         execution.status = "broker_cancelled"
         return CancelOutcome.NOOP
 
-    _try_cancel(adapter, boid)
+    cancelled_ok = _try_cancel(adapter, boid)
     if status == "partially_filled":
-        return CancelOutcome.PARTIAL  # leave status; reconciliation records the fill
-    execution.status = "broker_cancelled"
-    return CancelOutcome.CANCELLED
+        return CancelOutcome.PARTIAL  # remainder cancel attempted; reconciliation records fill
+    if cancelled_ok:
+        execution.status = "broker_cancelled"
+        return CancelOutcome.CANCELLED
+    return CancelOutcome.NOOP  # cancel failed; order may still be working — leave it
 
 
-def _try_cancel(adapter: BrokerAdapter, broker_order_id: str) -> None:
+def _try_cancel(adapter: BrokerAdapter, broker_order_id: str) -> bool:
+    """Attempt to cancel; return True on success. Already-terminal cancels can 422 — that's
+    logged and reported as failure so the caller doesn't falsely mark the order cancelled."""
     try:
         adapter.cancel_order(broker_order_id)
-    except Exception as exc:  # noqa: BLE001 — already-terminal cancels can 422; log + proceed
+        return True
+    except Exception as exc:  # noqa: BLE001
         log.warning(
             "cancel_working_execution: cancel_order(%s) failed: %s", broker_order_id, exc
         )
+        return False

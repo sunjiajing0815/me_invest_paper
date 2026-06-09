@@ -234,6 +234,26 @@ class TestSweepExpiredSuggestions:
         db_session.refresh(exec_row)
         assert exec_row.status == "accepted_for_routing"
 
+    def test_sweep_partial_fill_cancels_remainder(self, db_session: Session) -> None:
+        """Partially-filled order during the sweep: remainder cancelled, suggestion expired,
+        execution left as-is (reconciliation records the filled portion)."""
+        past = datetime.now(UTC) - timedelta(minutes=5)
+        sug = _seed_suggestion(db_session, status="accepted", expires_at=past)
+        exec_row = _seed_execution(db_session, suggestion_id=sug.id, broker_order_id="ord-part")
+        db_session.commit()
+
+        adapter = MagicMock()
+        adapter.get_order.return_value = MagicMock(status="partially_filled")
+        sweep_expired_suggestions(
+            adapter=adapter, session_factory=_make_session_factory(db_session)
+        )
+
+        adapter.cancel_order.assert_called_once_with("ord-part")
+        db_session.refresh(sug)
+        assert sug.status == "expired"
+        db_session.refresh(exec_row)
+        assert exec_row.status == "accepted_for_routing"  # left for reconciliation
+
     def test_sweep_does_not_set_broker_cancelled_when_order_already_filled(
         self, db_session: Session
     ) -> None:

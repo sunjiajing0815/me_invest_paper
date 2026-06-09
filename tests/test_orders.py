@@ -67,3 +67,14 @@ def test_get_order_raises_attempts_cancel_conservatively() -> None:
     assert out is CancelOutcome.CANCELLED
     adapter.cancel_order.assert_called_once_with("bo-1")
     assert exe.status == "broker_cancelled"
+
+
+def test_working_order_cancel_failure_leaves_status() -> None:
+    """If the cancel itself fails, the order may still be live — don't mark it cancelled."""
+    adapter = MagicMock()
+    adapter.get_order.return_value = _conf("new")
+    adapter.cancel_order.side_effect = RuntimeError("broker down")
+    exe = _exe()
+    out = cancel_working_execution(adapter, exe)
+    assert out is CancelOutcome.NOOP
+    assert exe.status == "accepted_for_routing"  # unchanged
