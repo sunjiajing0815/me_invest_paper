@@ -192,6 +192,40 @@ forward. Files: `services/llm.py`, `brokers/alpaca.py`, `services/bars.py`, `mai
 
 ---
 
+## 8. Un-accept path + daily order status — `72d0d5c`…`0b48307` (06-09)
+
+Once a suggestion was `accepted` there was no way to pull it back: a working LIVE order
+could only be stopped in the broker UI, and auto-trade then **re-placed** it the same week.
+This feature adds visibility + a safe un-accept. Design/plan: `plans/unaccept_path_*.md`.
+
+- **New terminal suggestion status `cancelled`** (`pending|accepted|rejected|expired|cancelled`;
+  no migration — free String column). Distinct from `rejected` (declined *before* acting).
+  Because `auto_trade._fetch_accepted_unexecuted` only selects `accepted`, marking a suggestion
+  `cancelled` also **closes the broker-cancelled re-place footgun** (regression-guarded).
+- **Shared cancel helper** `services/orders.py::cancel_working_execution` — re-queries the
+  broker, then: filled → refuse; partially filled → cancel remainder (filled shares stand,
+  recorded by reconciliation); working → cancel + `broker_cancelled`; terminal/cancel-failure →
+  leave for reconciliation. The expiry sweep was refactored onto it (gained partial handling).
+- **`services/unaccept.py::unaccept_suggestion`** — guard `accepted`, cancel any working order
+  via the helper, refuse if fully filled, else mark `cancelled`. Reused by the endpoint + admin.
+- **Endpoints** — prefetch-safe two-step: `GET /suggestions/{sid}/unaccept` renders a confirm
+  page (no side effect; shows live broker status); `POST …/unaccept` performs it; plus
+  `POST /admin/suggestions/{sid}/unaccept`. HMAC via `sign_action(sid,"unaccept",…)`.
+- **Daily email "Open & Committed Orders"** — `compose_daily_report` gathers this-week
+  `accepted` suggestions + their latest real execution (`CommittedOrderRow`, status label
+  Working/Partially filled/Filled/Awaiting placement); the daily template renders the table
+  with a signed **Un-accept** link on cancellable rows (the job passes `base_url` + tokens).
+- Weekly-review "Suggestions vs Fills" renders `cancelled` in the muted colour.
+
+Files: `services/orders.py`, `services/unaccept.py`, `jobs/suggestion_expiry.py`,
+`services/daily_report.py`, `jobs/daily_report.py`, `main.py`, templates
+(`daily_report.*`, `unaccept_confirm.html.j2`, `unaccept_result.html.j2`, `weekly_review.html.j2`).
+Tests: `test_orders.py`, `test_unaccept.py`, `test_daily_report_committed.py`,
+`test_api_unaccept.py`, plus expiry + auto-trade guard additions. 477 passed, ruff/mypy clean.
+Live on `main` (rebuilt + restarted 06-09); no migration, no bar re-backfill.
+
+---
+
 ## Candidate ADRs / gotchas (not yet written)
 
 Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
@@ -201,14 +235,9 @@ Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
 - **Emails share `_components.html.j2` + `_sentiment.html.j2`**; never reintroduce per-template
   markup; entities-in-`{{ }}` autoescape trap (§5).
 - **Movers tiers are direction-aware and reset per ISO week** (§2b).
+- **Suggestion status `cancelled` is terminal** (un-accept); auto-trade ignores it (§8).
 
-## Resolved (06-09) — un-accept path
+## Still open / parked
 
-The two order-lifecycle gaps below were fixed by the **un-accept feature** (design +
-plan in `plans/unaccept_path_*.md`; built on branch `feat/unaccept-path`):
-1. ~~No "un-accept" path~~ → daily email now lists working orders + accepted to-dos with an
-   **Un-accept** link (prefetch-safe confirm page); cancels any working broker order and
-   marks the suggestion a new terminal status **`cancelled`**.
-2. ~~Auto-trade re-places a broker-cancelled order~~ → closed for free: `cancelled`
-   suggestions are not `accepted`, so `_fetch_accepted_unexecuted` never re-places them
-   (regression-guarded by a test).
+Nothing. The 06-09 order-lifecycle gaps (no un-accept path; auto-trade re-placing a
+broker-cancelled order) are both resolved by §8.
