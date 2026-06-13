@@ -32,6 +32,10 @@ def take_snapshot(
     broker_name, _, mode_hint = settings.broker.partition("_")
     mode = mode_hint if mode_hint else "live"
 
+    # One sync = one snapshot batch = ONE ts (account.as_of) for every row. Do NOT use the
+    # per-position p.as_of: some adapters (Moomoo) call datetime.now() per position, giving
+    # each row a distinct microsecond ts, which breaks alloc_drift's `ts = MAX(ts)` batch
+    # selection (it then matches a single row → every other ticker reads 0).
     rows: list[PositionsSnapshot] = []
     for p in positions:
         weight_pct = (p.market_value / total_equity * 100.0) if total_equity else 0.0
@@ -39,7 +43,7 @@ def take_snapshot(
             PositionsSnapshot(
                 broker_account_id=broker_account_id,
                 account_id=account.account_id,
-                ts=p.as_of,
+                ts=account.as_of,
                 ticker=p.ticker,
                 qty=p.qty,
                 avg_cost=p.avg_cost,

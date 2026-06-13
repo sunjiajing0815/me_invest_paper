@@ -123,6 +123,7 @@ class MoomooAdapter:
         ret, data = self._trade_ctx.position_list_query(trd_env=self._trd_env)
         if ret != ft.RET_OK:
             raise RuntimeError(f"Moomoo position_list_query failed: {data}")
+        now = datetime.now(UTC)  # one timestamp for the whole batch (mirrors AlpacaAdapter)
         positions = []
         for _, row in data.iterrows():
             code = str(row["code"])
@@ -133,7 +134,7 @@ class MoomooAdapter:
                     qty=float(row["qty"]),
                     avg_cost=float(row["cost_price"]),
                     market_value=float(row["market_val"]),
-                    as_of=datetime.now(UTC),
+                    as_of=now,
                     currency=_currency_for_code(code, self._currency),
                 )
             )
