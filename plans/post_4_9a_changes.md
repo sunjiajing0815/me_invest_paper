@@ -226,6 +226,31 @@ Live on `main` (rebuilt + restarted 06-09); no migration, no bar re-backfill.
 
 ---
 
+## 9. Snapshot one-ts-per-batch — Moomoo drift-table all-zeros — `fffa6dc` (06-13)
+
+Moomoo's weekly-review "Allocation drift (Mon → Fri)" table showed **every Mon%/Fri%/Drift
+as 0.0** (Alpaca's was fine). Root cause: `alloc_drift.sql` selects a snapshot batch via
+`ts = MAX(ts)` (assuming one `ts` per sync), but the Moomoo adapter called
+`datetime.now(UTC)` **per position**, so its 30 snapshot rows had 30 distinct microsecond
+timestamps. `ts = MAX(ts)` then matched a **single row** — a non-target ticker (AAPL 0.07%) —
+so every target ticker LEFT-JOINed to NULL → 0. Alpaca captures `now()` once, so it was
+unaffected.
+
+Fix:
+- `services/snapshot.py`: `take_snapshot` tags **every** row in a sync with `account.as_of`
+  (one `ts` per batch), not the per-position `p.as_of` — a broker-agnostic guarantee of the
+  invariant the drift SQL relies on.
+- `brokers/moomoo.py`: `get_positions` captures `now()` once before the loop (mirrors
+  `AlpacaAdapter`).
+- One-time data backfill: collapsed each historical account-62 sync (each a clean 15-row,
+  single-second batch) to one `ts`, so past weeks re-render correctly. Verified: drift now
+  reads QQQ 28.9%, BTC 2.8%, etc. (TQQQ 0 is genuine — not held).
+
+Test: `test_snapshot.py` — positions with distinct per-row `as_of` → all written rows share
+one `ts`. 478 passed, ruff/mypy clean. Live on `main` (rebuilt + restarted 06-13).
+
+---
+
 ## Candidate ADRs / gotchas (not yet written)
 
 Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
@@ -235,6 +260,8 @@ Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
 - **Emails share `_components.html.j2` + `_sentiment.html.j2`**; never reintroduce per-template
   markup; entities-in-`{{ }}` autoescape trap (§5).
 - **Movers tiers are direction-aware and reset per ISO week** (§2b).
+- **One sync = one snapshot `ts`** (`take_snapshot` uses `account.as_of` for all rows);
+  `alloc_drift` and other batch logic rely on it — adapters must not set per-row `as_of` (§9).
 - **Suggestion status `cancelled` is terminal** (un-accept); auto-trade ignores it (§8).
 
 ## Still open / parked
