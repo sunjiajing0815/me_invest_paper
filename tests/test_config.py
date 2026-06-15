@@ -105,6 +105,21 @@ class TestLoadTargets:
         with pytest.raises(FileNotFoundError):
             load_targets(str(tmp_path / "nonexistent.yaml"))
 
+    def test_pct_outside_band_raises(self, tmp_path: Path) -> None:
+        """A target whose pct is outside its [band_low, band_high] is rejected
+        (e.g. QQQ pct 25 with band [26, 34] — target below the lower edge)."""
+        yaml_text = textwrap.dedent("""\
+            watchlist: [QQQ, VOO]
+            targets:
+              QQQ: { pct: 25, band: [26, 34] }
+              VOO: { pct: 70, band: [65, 75] }
+            cash_buffer_pct: 5
+        """)
+        f = tmp_path / "targets.yaml"
+        f.write_text(yaml_text)
+        with pytest.raises(ValueError, match="QQQ.*band"):
+            load_targets(str(f))
+
     def test_band_values_loaded(self, tmp_path: Path) -> None:
         yaml_text = textwrap.dedent("""\
             watchlist: [VOO]

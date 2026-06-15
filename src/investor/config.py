@@ -148,6 +148,12 @@ def load_targets(targets_path: str) -> TargetsConfig:
         pct = float(spec["pct"])
         band_low = float(spec["band"][0])
         band_high = float(spec["band"][1])
+        if not band_low <= pct <= band_high:
+            raise ValueError(
+                f"targets.yaml: {ticker} pct {pct} is outside its band "
+                f"[{band_low}, {band_high}] — the band must bracket the target "
+                f"(band_low <= pct <= band_high)"
+            )
         asset_class = str(spec.get("asset_class", "equity"))
         if asset_class not in _VALID_ASSET_CLASSES:
             logger.warning(
