@@ -14,3 +14,9 @@ data/
 .venv
 
 .env
+
+# macOS
+.DS_Store
+
+# Local Claude Code settings
+.claude/
