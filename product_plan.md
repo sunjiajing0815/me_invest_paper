@@ -1,6 +1,6 @@
 # Long-Term Investor Assistant — Product Plan (v1)
 
-**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-18) · **Stage:** Phase 4 code-complete — pending first Friday review email to tag `v0.4.0-phase-4-code-complete`. Moomoo primary-flip is a separate manual decision post-soak.
+**Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-20) · **Stage:** Building — Phases 0–4.5 code-complete; pre-tag observation window across Phases 3, 4, and 4.5 in progress (manual checklist in `pre_phase_5_manual_testing_checklist.md`); Phase 5 starts once Block A–E checklist items clear and tags `v0.3.0-phase-3`, `v0.4.0-phase-4-code-complete`, `v0.4.5.0` are pushed. Auto-trade promotion tags (`v0.4.1` → `v0.4.4`) run on a separate 14–16-week calendar timeline in parallel with Phase 5 development.
 
 ---
 
@@ -302,8 +302,6 @@ Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifyi
 
 **Phase 3 status ⚙️ All three sub-phases code-complete (2026-05-17). Composite tag `v0.3.0-phase-3` deferred until live observation closes the pending pre-tag checklists on 3a, 3b, and 3c — earliest 2026-05-24 (two Sunday cycles for critic-rate calibration).**
 
-**Phase 4 status ✅ Code-complete 2026-05-18.** All four workstreams shipped: reconciliation engine, MoomooAdapter, Friday weekly review email, opt-in auto-trade (mode=OFF). Tag `v0.4.0-phase-4-code-complete` pending first Friday review email. Subsequent promotion soak tags follow in calendar time per DoD table in `plans/phase_4_guide.md`. Moomoo primary-flip is a separate manual decision after ≥4 weeks of parallel-run soak.
-
 | Sub-phase | Code-complete | Tag | Tag-gated observations |
 |---|---|---|---|
 | 3a | 2026-05-12 | `v0.3a.0` (pending) | One Sunday email with `(conf X.XX)` and Sonnet rationale in `reason`; Accept click → `acted_at` populated |
@@ -318,125 +316,376 @@ Phase 2 shipped a mechanical suggestion engine that picks the *nearest* qualifyi
 
 **Phase 3 stats:** 189 unit tests + 1 integration (up from 28 at Phase 1 close). Five new ADRs (0011, 0012, 0013, 0016) plus two closures (0006, 0007). Three LangGraph workflows (news triage in 3b, suggestion review in 3c, and the placeholder-acknowledged-but-unbuilt level-scoring graph from 3c §6.5a). Phase 3 retrospective identifies `DetachedInstanceError` as the project's most-recurrent bug (Phase 1 `BrokerAccount` → Phase 3b `MoverState` → Phase 3c `gather_context`); the `gather_context_node` pattern is now a first-class architectural primitive captured in CLAUDE.md convention #9 + gotcha #12.
 
-### Phase 4 — Weekly review workflow + Moomoo adapter (1.5–2 weeks)
-- Friday EOD job: build the weekly review:
-  - Realized PnL for the week.
-  - **Orders suggested vs. filled reconciliation** — pull `account/activities` from the broker, match against `order_suggestion` rows by ticker + side + week, write to a new `order_execution` table. Did you actually place the suggested order? At what price? When?
-  - New gap vs. target after this week's moves.
-  - Big events flagged by the daily monitor.
-  - **Proposed orders for next week** (Phase 2 engine, refreshed with Phase 3 LLM-scored levels).
-- (Accept/reject endpoint already ships in Phase 3; Phase 4 only adds the weekly digest of which suggestions were accepted, rejected, expired, or filled.)
-- **Moomoo adapter** (`brokers/moomoo.py`): implements `BrokerAdapter` against OpenD on `host.docker.internal:11111`. Switchover via `BROKER` env var. Run for 2–4 weeks in parallel against Alpaca (read-only) before flipping primary. See ADR-0001.
-- Deliverable: Friday 5 PM ET weekly review email containing the suggested-vs-filled reconciliation, plus an honest audit trail of "what I suggested vs. what I accepted vs. what actually filled." Optional second deliverable: Moomoo running side-by-side with Alpaca, both reporting consistent positions before the switchover.
+### Phase 4 — Reconciliation, Moomoo adapter, weekly review, and opt-in auto-trade execution (~3–3.5 weeks code + 14–16 weeks staged soak)
 
-### Phase 4.5 — Target adjustment & rebalance reviews (3–5 days)
-The product needs to help you **evolve** the target allocation over time, not treat it as frozen.
+Phase 4 is the largest single phase of the project. It bundles four tightly-coupled workstreams that all touch `order_execution` — separating them artificially (as in earlier drafts that split Phase 4 from Phase 4.6) creates more friction than it removes. They share one schema, one data flow, and one soak progression.
 
-Triggers the system should detect / schedule automatically:
+**The four workstreams:**
 
-| Trigger | How it's detected | What the system does |
+1. **Reconciliation engine** — daily 16:45 ET cron pulls `account/activities` from the broker, matches against `order_suggestion` rows via four priority rules (exact `client_order_id` for auto-trade activities, heuristic match within 48h time + 0.5% price tolerance, ambiguous flagged for `manual_review`, untracked manual trades logged). Writes the `order_execution` table — the audit-trail data every other workstream depends on.
+
+2. **Moomoo adapter** (`brokers/moomoo.py`) — implements `BrokerAdapter` against OpenD on `host.docker.internal:11111`. Ships read-only first: a parallel-run cron polls Moomoo positions/account/activities and compares against Alpaca for 4+ weeks before any `BROKER=moomoo` flip. Switchover is a deliberate later step, not part of any Phase 4 tag.
+
+3. **Weekly review email** — Friday 17:00 ET cron. Six sections: realized PnL, suggested-vs-filled reconciliation, drift state after the week, material movers from the daily monitor, preview of next Sunday's suggestions, and (during soak) Moomoo parallel-status. Pure digest, not a generator.
+
+4. **Opt-in auto-trade execution** — three-state mode (`OFF` / `DRY_RUN` / `LIVE`), default `OFF`. Fires only on `order_suggestion.status='accepted'` rows. Hard caps (per-order, per-day, per-week-per-ticker, per-day count) flip mode to `OFF` automatically on breach. Wash-sale guard reads `order_execution` history; idempotent via `client_order_id = f"sug-{suggestion.id}"`; read-back reconciliation within 60s of every place; kill switch endpoint cancels open auto-trade orders in last 24h.
+
+**How auto-trade and reconciliation interact** (the key integration design):
+
+`order_execution` has two writers, one shared schema, one unique constraint `(broker_order_id, broker)` as the dedup boundary.
+
+- **Auto-trade writes first**, at 9:35 ET. After `adapter.submit_order()` + 60-second read-back, it `INSERT`s an `order_execution` row with `broker_order_id`, `client_order_id=f"sug-{N}"`, `status='accepted_for_routing'`, `filled_qty=0`. DRY_RUN writes the same shape with `dry_run=true`, `broker_order_id=NULL`.
+- **Reconciliation updates that row later**, at 16:45 ET. Same `broker_order_id` matched via unique constraint → `UPDATE` fill fields (`filled_qty`, `filled_price`, `filled_at`, `status` transitioning to `filled` / `partially_filled` / `expired`), computes `realized_pnl_usd` via FIFO for sells.
+
+Matching rule order from Phase 4's reconciliation is upsert-shaped:
+- Rule 1 (exact `client_order_id` match): find the row auto-trade already inserted; update fill fields.
+- Rule 2 (heuristic match within window): no existing row; insert one (manual trade or order placed without auto-trade tracking).
+- Rules 3 (ambiguous) and 4 (untracked) unchanged.
+
+**DRY_RUN is invisible to reconciliation** — filtered out at every matcher query and every wash-sale-guard query (`WHERE dry_run = false`). Simulated losses never block real buys.
+
+**Wash-sale guard's data dependency:** auto-trade at 9:35 ET reads reconciled history through close-of-yesterday. Reconciliation at 16:45 ET computes `realized_pnl_usd` for any sells from that day. Tomorrow's 9:35 guard sees yesterday's losses. The guard is meaningful from day one of DRY_RUN soak because reconciliation has been running independently for at least 1–2 weeks before auto-trade promotes to DRY_RUN.
+
+**Auto-trade mode states:**
+
+| Mode | Behaviour |
+|---|---|
+| `OFF` (default — fresh install, after restart, after any guard failure) | Suggest-only behaviour preserved. No broker order calls. |
+| `DRY_RUN` | Computes what *would* be placed for every `accepted` suggestion. Writes `order_execution` rows with `dry_run=true`. **Never calls the broker.** Daily summary email confirms what would have happened. |
+| `LIVE` | Calls `BrokerAdapter.submit_order` — the first and only code path outside `brokers/` permitted to do so. Writes `order_execution` rows with `dry_run=false`. Followed by read-back-within-60s; mismatch flips mode to `OFF` and cancels via kill switch. |
+
+**Tag-and-soak scheme** — one phase, multiple tags as soak windows close cleanly:
+
+| Tag | Milestone | Calendar gate |
 |---|---|---|
-| **Funds added / withdrawn** | Daily comparison of `broker_account.cash_usd + equity_usd` vs. previous snapshot, minus realized PnL. A delta > configurable threshold (e.g., $500) that isn't explained by market moves flags a funds event. Also cross-check Alpaca's `GET /v2/account/activities` (TRANS/JNLC). | Sends a "Funds detected (+$X). Review targets?" email with a link to edit. |
-| **Quarterly review** | Cron: first trading day of Jan / Apr / Jul / Oct. | Sends a "Quarterly review due" email with current drift, performance vs. benchmark, and a prompt to edit targets. |
-| **Annual review** | Cron: first trading day of the year (plus optional tax-year-end reminder in late December for US). | Deeper report + target review prompt. |
-| **Manual** | You hit the `/targets` endpoint or edit the YAML. | Version the change, log `target_change_event`, recompute gap on next job. |
+| `v0.4.0-phase-4-code-complete` | All four workstreams shipped; auto-trade `OFF` in production | Code-complete (3–3.5 weeks from start) |
+| `v0.4.1-paper-dry-run` | Auto-trade promoted to `DRY_RUN` on Alpaca paper, clean for 2 weeks | After ~2 weeks of reconciliation accumulating execution history + 2 weeks DRY_RUN |
+| `v0.4.2-paper-live` | Auto-trade `LIVE` on Alpaca paper for 4 weeks clean | After `v0.4.1` + 4 weeks |
+| `v0.4.3-alpaca-live` | Auto-trade `LIVE` on real Alpaca for 4 weeks clean (real money, small capital) | After `v0.4.2` + 4 weeks |
+| `v0.4.4-moomoo-live` | Auto-trade `LIVE` on Moomoo for 4 weeks clean | After `v0.4.3` + Moomoo parallel-run soak complete + `BROKER=moomoo` flip + 4 weeks |
 
-Implementation:
-- Targets are edited via **either** (a) committing to `targets.yaml` in a git repo the app watches, or (b) a simple FastAPI `/targets` form (later `/targets` page in Phase 5).
-- On any edit: **validate** (weights sum to 100 ± 0.5%, no target outside [0, 50]% unless explicitly overridden), **diff against previous**, **close the previous `target_allocation` row with `effective_to = now`**, insert new rows with `effective_from = now`, write `target_change_event`.
-- The weekly suggestion engine always reads the **currently-effective** targets. Older reports can recompute historical gap against the targets that were live at that time.
-- Guardrail: if a single edit would shift any ticker's weight by > 10 %, require a confirmation step (email magic-link click) before applying. Prevents fat-finger changes.
+End-to-end calendar time from `v0.4.0` to `v0.4.4` is roughly 14–16 weeks. Code-complete to first auto-trade tag (`v0.4.1`) is ~3–4 weeks total. Each promotion is a deliberate admin command via `POST /admin/auto-trade/promote` (separate `AUTO_TRADE_PROMOTION_TOKEN` from the `ADMIN_TOKEN`), logged to `auto_trade_promotion_log`. Demoting to `OFF` is always one click and instant.
 
-Deliverable: you can add funds (even $1,000) and within 24 h get an email saying "you added $1,000, here's your current drift, want to edit targets or just deploy to existing weights?" with a one-click "deploy to existing weights" that just feeds the gap engine.
+**The Moomoo primary flip** (`BROKER=moomoo`) is independent of the auto-trade soak — it gates `v0.4.4` (auto-trade can't run LIVE on Moomoo without Moomoo being primary) but is itself a separate manual decision once the 4-week Moomoo parallel-run soak is clean. You can run on Moomoo with auto-trade `OFF` (suggest-only on Moomoo) for as long as you like before promoting auto-trade there.
 
-### Phase 5 — Productization (2–3 weeks)
+**Deliverable:** A single accepted suggestion in the Sunday email → an order placed at the limit price on the chosen broker, idempotent client order ID, read-back-confirmed, populated `order_execution` row, daily summary email confirming what was placed (or dry-run-simulated), and the Friday review showing the week's fills reconciled back to the suggestions that drove them.
+
+**ADRs:** ADR-0014 (auto-trade mode discipline + promotion gates), ADR-0015 (kill switch design + recovery semantics), ADR-0017 (reconciliation matching), ADR-0018 (Moomoo parallel-run protocol), ADR-0019 (weekly review composition); update to ADR-0007 (distance-guard calibration data from §6 of the guide).
+
+See `phase_4_guide.md` for the step-by-step build.
+
+### Phase 4.5 — Tavily-driven weekly market context ⚙️ Code complete (2026-05-20); tag `v0.4.5.0` deferred until 2 consecutive Friday weekly-review emails arrive with non-empty Weekly Market Context content (earliest 2026-05-29)
+
+*(Note: the slot originally labeled Phase 4.5 in earlier drafts held "target adjustment & rebalance reviews." That content was moved into Phase 5 in the prior restructure; the slot is reused here for a different, smaller piece of work. Old "Phase 4.5" references in pre-2026-05 docs should be read as today's Phase 5 target-adjustment workstream.)*
+
+**What shipped:**
+
+- `services/tavily.py` — `TavilyClient` Protocol + `TavilyConcreteClient` (lazy SDK import, monthly cap, exception handling) + `FakeTavilyClient` test double + `make_tavily_client()` factory ✓
+- `services/weekly_context.py` — `build_weekly_market_context()` with ~12–16 Tavily fanout queries (2 macro, 1-per-sector, 1-per-ticker, 2 forward-looking) + Sonnet synthesis + `WeeklyMarketContext` frozen dataclass ✓
+- `prompts/weekly_context_v1.txt` — hard rules (no price targets, no buy/sell, no claims beyond Tavily input, no invented entities) ✓
+- Friday weekly review email gained Section 7 "Weekly Market Context" between auto-trade and Moomoo sections; guarded by `{% if review.market_context %}` so the section is fully absent (not broken) on Tavily outage ✓
+- Five-step graceful degradation chain (no key → Fake → `None` → section absent ; cap reached → empty + warning ; SDK exception → empty + traceback ; all-empty → `None` ; LLM schema failure → citations-only) ✓
+- 16 new tests (11 Tavily + 5 weekly context); total 260 (up from 240 at Phase 4 close) ✓
+- ADR-0020 written and accepted (Protocol over ABC; SDK pinned `>=0.6,<0.7` for Nebius acquisition durability; swap path to Serper/Brave/Perplexity documented; informational-only constraint architecturally enforced) ✓
+
+**Bugs caught and fixed during build:**
+
+| Bug | Type | Resolution |
+|---|---|---|
+| `_domain("https://wsj.com/...")` returned `"sj.com"` — `str.lstrip("www.")` strips the *character set* `{'w', '.'}` not the literal prefix | Implementation-time | Replaced with `removeprefix("www.")`; caught by test before merge |
+| Prompt file lookup tried `weekly_context_vv1.txt` — `f"...v{prompt_version}.txt"` with `prompt_version="v1"` produced double-v | Implementation-time | Changed format string to `f"weekly_context_{prompt_version}.txt"`; caught by test |
+| Weekly review email showed "Moomoo OpenD running in PARALLEL" on every install | Post-deploy | `opend_host` default changed from `"host.docker.internal"` to `""`; `OPEND_HOST` must now be explicitly set to trigger parallel-running status |
+| `POST /admin/auto-trade/promote` returned 500: `can't subtract offset-naive and offset-aware datetimes` | Post-deploy | Added `.replace(tzinfo=UTC)` to `last_entry.ts` before the comparison |
+
+**Improvement during session:** `(alpaca_paper, LIVE)` soak window reduced from 14 days → 0. The meaningful gate is `alpaca_live` (28 days paper LIVE). Paper trading has no real money at stake, so the OFF → DRY_RUN → LIVE on paper progression is now immediate. The `alpaca_live` and `moomoo` soak windows remain at 28 days and must not be similarly relaxed — that discipline is what prevents auto-trade disasters.
+
+**Additional fix folded in:** movers Monday lookback widened from 24h → 48h. Weekend and Friday news otherwise falls outside the window by Monday market open. URL-hash dedup prevents double-insertion.
+
+**Phase 4.5 cleanup status:**
+
+| Item | Status | Notes |
+|---|---|---|
+| Code complete | ✅ Done | 2026-05-20 |
+| 16 new tests (11 Tavily + 5 weekly context) green | ✅ Done | 260/260 unit tests pass |
+| `ruff` + `mypy` clean | ✅ Done | No new errors on Phase 4.5 files |
+| ADR-0020 written | ✅ Done | Accepted |
+| CLAUDE.md + README + `.env.example` updated | ✅ Done | New env vars, repo layout, gotchas 21–23 |
+| Bug 1 (`_domain` lstrip) | ✅ Closed | Caught by test before merge |
+| Bug 2 (prompt filename double-v) | ✅ Closed | Caught by test before merge |
+| Bug 3 (opend_host default) | ✅ Closed | Default flipped to `""` |
+| Bug 4 (promote endpoint datetime) | ✅ Closed | `.replace(tzinfo=UTC)` applied |
+| `TAVILY_API_KEY` configured in production `.env` | ⏳ Pending operational step | Manual checklist item A1 |
+| First Friday weekly review email with non-empty Weekly Market Context section | ⏳ Pending | Earliest 2026-05-22 |
+| Second Friday email — consistency check | ⏳ Pending | Earliest 2026-05-29 → enables tag |
+| Negative-test: `TAVILY_API_KEY=""` → section absent (no broken HTML) | ⏳ Pending | Manual checklist item C1 |
+| Critical reading of synthesis quality (factual, no recommendations leaking past guardrails) | ⏳ Pending | Manual checklist item B5 |
+
+**Manual testing checklist:** `pre_phase_5_manual_testing_checklist.md` consolidates Phase 4.5 pre-tag observations alongside accumulated pre-tag debt across Phases 3 and 4. Work through Blocks A–C today, then Blocks D–E over the next two weeks, then tag.
+
+**Why kept separate from Phase 4 rather than folded in:** Phase 4 is already large (4 workstreams + 14–16 weeks of staged soak). Tavily is conceptually distinct work (web search vs broker integration), ships in ~3–5 days, and depends only on Phase 4 *code-complete* (`v0.4.0-phase-4-code-complete`) — not on any auto-trade soak completion. Runs on its own calendar timeline alongside the auto-trade promotion soaks.
+
+**Tavily acquisition durability note:** Tavily was acquired by Nebius in February 2026. API surface remains stable per the official `tavily-python` SDK as of code-complete, but the acquisition is a real durability signal. The integration is deliberately thin (a single `services/tavily.py` wrapper behind a Protocol) so a future swap to a competitor (Serper, Brave Search, Perplexity, Exa) costs less than a day. ADR-0020 documents the re-evaluation cadence: every 6 months or any time Tavily pricing changes ≥ 20%.
+
+**Why Tavily is deliberately NOT used in the Phase 3b daily movers pipeline** (architectural decision worth preserving so future agents don't "standardize"): three reasons in priority order — (1) Tavily's general-web index refreshes on a crawl cadence measured in hours-to-day; Alpaca News (Benzinga-backed) indexes financial headlines within minutes, disqualifying Tavily for same-day mover explanations; (2) Alpaca/Finnhub are purpose-built for ticker-tagged financial news with much higher signal-to-noise than general web search; (3) the two use cases are genuinely different — daily movers ask "what specific same-day company news moved this ticker?"; weekly context asks "what macro/sector themes should I be aware of?" — same-tool-everywhere instinct dilutes both. Tavily-as-third-fallback in Phase 3b (for the case where Alpaca + Finnhub both come up empty on a ≥5% mover) is a sensible Phase 5+ enhancement if "no news explanation" annotations turn out to be common, but is **not** in scope here. See `phase_4_5_guide.md` §8.
+
+**Tavily-augmented weekly context vs the existing daily news pipeline:**
+
+| Existing news pipeline (Phase 3b) | What Tavily adds (Phase 4.5) |
+|---|---|
+| Per-ticker headlines (Alpaca News + Finnhub, Benzinga-skewed) | Broader web (FT, WSJ, Bloomberg, sector publications) |
+| Daily, triggered by ≥5% weekly-mover threshold | Weekly, unconditional |
+| Per-ticker classification (material / sentiment / summary) | Macro + sector narrative synthesis |
+| No Fed / sector rotation / macro coverage | Macro and sector queries as first-class |
+| No forward-looking | Earnings calendar + Fed events + regulatory deadlines next week |
+
+**Cost achieved:** ~12–16 searches per Friday run × 4 runs/month ≈ 60/month, well under Tavily's 1,000-search free-tier cap. Sonnet synthesis call ~$0.02–0.05/week. Total under $1/month at single-user scale (matches the planning estimate).
+
+**Hard guardrails enforced:** Tavily results are *evidence*, never recommendations. The synthesis prompt forbids price targets, buy/sell recommendations, and fundamental claims beyond what's visible in the Tavily-returned content. JSON-schema validation on Sonnet output via the Phase 3a `LLMClient.call()` infrastructure. `WeeklyMarketContext` is a frozen dataclass with no code path to `generate_suggestions()`, `run_auto_trade_pass()`, or any broker adapter — informational-only, enforced architecturally rather than by convention.
+
+**ADRs:** ADR-0020 (Tavily as the weekly-context web-search provider; rationale, alternatives considered, swap path) ✓
+
+See `phase_4_5_guide.md` for the step-by-step build and `pre_phase_5_manual_testing_checklist.md` for the manual observation gates.
+
+### Phase 4.7 — Context-aware weekly order sizing ⚙️ Code complete (2026-05-26); tag `v0.4.7.0` deferred until 2 consecutive Sunday weekly-suggestion emails arrive with ≥ 1 sensible context/earnings adjustment and a legible `context_note` (earliest 2026-06-07)
+
+*(Note: 4.6 is the auto-trade workstream inside Phase 4 (`v0.4.6.*` promotion tags). 4.5 produces the Weekly Market Context as informational content for the Friday email; 4.7 is what makes that context — plus a structured earnings calendar and a sentiment signal — actually drive Sunday's order **sizing**. Read together, 4.5 → 4.7 is "context is information" → "context is risk-managed sizing.")*
+
+**What shipped:**
+
+- `graphs/suggestion_review.py` — new `context_adjust` node spliced between `reason` and `critic`; three sub-passes (deterministic earnings gate → bounded Sonnet narrative multiplier → Python clamp/floor/drop/reanchor) with rationale re-keying after sub-1-share drops ✓
+- `services/earnings.py` — `EarningsClient` Protocol + `FinnhubEarningsClient` (free-tier `earnings_calendar` endpoint) + `FakeEarningsClient` + factory; structured `{ticker: date}` chosen over Tavily's free-text `forward_events` for the deterministic gate ✓
+- `services/sentiment.py` — `SentimentClient` Protocol + `FinnhubCNNSentimentClient` (VIX via Finnhub, CNN Fear & Greed via public endpoint) + `FakeSentimentClient` + factory; explicit "never raise on failure" contract so a CNN endpoint change cannot block the Friday job ✓
+- `prompts/context_size_v1.txt` + `context_size_v2.txt` — v1: bounded multiplier + `prefer_anchor` must be a known scored level for the correct side; v2 (opt-in): adds VIX/Fear-&-Greed sizing rules referencing `asset_classes[ticker]` symbolically (no hardcoded ticker lists in the prompt) ✓
+- `prompts/suggestion_critic_v2.txt` — rule 6 ("Sizing already adjusted — RESPECT these. Only override if the adjustment created a NEW problem") so the critic doesn't silently undo a defensive shrink or rubber-stamp a risky upsize ✓
+- `weekly_market_context` table + `persist_weekly_context()` / `load_latest_weekly_context()` — 4.5 deliberately discarded Tavily synthesis; 4.7 persists the `WeeklyMarketContext` (now also carrying `vix`, `fear_greed_score`, `fear_greed_label`) so Sunday's engine reads Friday's narrative + sentiment. Append-only event table (convention #9); `context_max_age_days=4` rejects stale rows; staleness check lives in the SQL `WHERE` to dodge the SQLite naive-datetime trap ✓
+- `order_suggestion` audit columns (`base_qty`, `size_factor`, `context_note`) with the invariant: `base_qty IS NULL` = `context_adjust` never ran (pre-4.7 row or fresh-context unavailable); `base_qty IS NOT NULL` = node ran, even when neutral ✓
+- Weekly suggestions email — `(base N · ×F)` badge on adjusted qty + `context_note` line in both HTML and text templates so a reader can see *why* a qty changed at a glance ✓
+- `config/targets.yaml` — per-ticker `asset_class: index_etf | leveraged_etf | equity` (default `"equity"`, unknown values warn + coerce); the Sonnet payload now carries `asset_classes` so v2 prompt rules apply symbolically, not by hardcoded ticker name. Adding new ETFs no longer requires editing a prompt file ✓
+- Direction-aware tick-size rounding — `_floor2dp` (buy limits, never overpay) and `_ceil2dp` (sell limits, never undersell) replace bankers'-rounded `round(..., 2)` at the Alpaca adapter and at every `context_adjust` reanchor site. The DB retains full-precision scored levels for audit; only the value sent to the broker is rounded ✓
+- Kill-switch policy split — new `BrokerValidationError` domain exception in `brokers/base.py`; Alpaca HTTP 422-class rejections (sub-penny, wash-sale) now map to `BrokerValidationError` and are caught separately in `auto_trade.py` as per-suggestion skip + continue (system stays LIVE). Only unexpected `Exception` still trips the kill switch. One malformed price no longer orphans every remaining accepted suggestion for the day ✓
+- `UTCDateTime` TypeDecorator — all 22 `DateTime(timezone=True)` columns migrated; reattaches `tzinfo=UTC` on load so SQLite-naive reads can no longer poison `now(UTC) - row.ts` comparisons anywhere in the codebase. Fixes the *class* of bug, not just the one site that surfaced it ✓
+- Prompt-version safety — `@field_validator` on all 4 version settings strips a leading `v`; format strings add the canonical `v`. The same string-concat bug that produced `weekly_context_vv1.txt` in 4.5 and `context_size_vv1.txt` in 4.7 is now structurally impossible ✓
+- 38 new/extended tests (5 earnings + 12 context_adjust + 8 sentiment + 1 UTCDateTime round-trip + 3 config + 2 auto_trade + post-deploy extensions); total 298 (up from 260 at Phase 4.5 close) ✓
+- ADR-0021 (bounded context exception to ADR-0020; carved LLM size-multiplier exception; Finnhub calendar over Tavily forward-events) + ADR-0022 (SentimentClient Protocol; CNN F&G fragility contract; ETF classification authoritative in `targets.yaml`) ✓
+
+**Bugs caught and fixed:**
+
+Eleven bugs during initial build (9 caught in implementation review, 2 post-deploy: `context_size_vv1.txt` filename recurrence, and a sub-penny limit price that fired the kill switch and orphaned five accepted suggestions). A subsequent code review then surfaced 7 systemic issues — the datetime fix was site-local rather than type-systemic; tick-size rounding was Alpaca-only and direction-blind; the kill switch couldn't distinguish "malformed request" from "real risk-control breach"; VIX/F&G were bare private functions with no Protocol or test seam; ETF lists were hardcoded in the prompt; an over-eager initial fix had broken the `base_qty IS NULL` audit invariant; v2 was set as default without a soak cycle. All seven were resolved in a single pass before the paper-dry-run soak began. Full breakdown in §2b of `phase_4_7_completion.md`.
+
+**Phase 4.7 cleanup status:**
+
+| Item | Status | Notes |
+|---|---|---|
+| Code complete | ✅ Done | 2026-05-26 |
+| 298 tests green | ✅ Done | up from 260 at Phase 4.5 close |
+| `ruff` + `mypy` clean | ✅ Done | No new errors on Phase 4.7 files |
+| ADR-0021 written | ✅ Done | Accepted |
+| ADR-0022 written | ✅ Done | Accepted (post-deploy code review) |
+| CLAUDE.md + README + `.env.example` updated | ✅ Done | Bounded Tavily exception; gotchas 24–26; new env vars |
+| `alembic upgrade head` applied in production | ⏳ Pending | First boot of v0.4.7.0 — two new migrations |
+| First Friday `weekly_market_context` row with non-null `vix` + `fear_greed_score` | ⏳ Pending | Earliest 2026-05-29 |
+| First Sunday suggestions email with ≥ 1 `(base · ×F)` badge + `context_note` | ⏳ Pending | Earliest 2026-05-31 |
+| Second Sunday email — consistency check | ⏳ Pending | Earliest 2026-06-07 → enables tag |
+| Live earnings-gate verification (real ticker with confirmed upcoming earnings) | ⏳ Pending | Soak-window opportunistic |
+| Negative-test: `TAVILY_API_KEY=""` → narrative + sentiment skipped, earnings gate still applies, no crash | ⏳ Pending | Manual check |
+| Negative-test: `FINNHUB_API_KEY=""` → earnings + VIX disabled with WARNING, no crash | ⏳ Pending | Manual check |
+| v2 prompt opt-in soak (`CONTEXT_ADJUST_PROMPT_VERSION=2`) | ⏳ Pending | Default stays `"1"` until v2 has run one observed Sunday cycle |
+| Spot-check: CNN F&G `urlopen` has an explicit `timeout=…` — ADR-0022's "never block the Friday job" contract holds at the code level, not just at the catch-Exception level | ⏳ Pending | One-line verification |
+| Resolution note for sug-23/AAPL (left `pending` post Bug 11 recovery) | ⏳ Pending | Either re-place on next auto-trade run or document why skipped |
+
+**Hard guardrails enforced (suggest-only invariant preserved):**
+
+`context_adjust` may only **scale `qty`** within `[CONTEXT_SIZE_MIN, CONTEXT_SIZE_MAX]` and **re-pick among existing scored S/R anchors** for the same ticker and side. It cannot originate a ticker, flip a side, or invent a price. Sonnet's `size_multiplier` is Python-clamped after the call; `prefer_anchor` is validated against `scored_levels` (wrong-side or unknown methods are silently rejected); a buy can only re-anchor to a support and a sell to a resistance. The price ultimately sent to the broker is `_floor2dp` for buys and `_ceil2dp` for sells, so float precision in scored levels can never cause an overpay or undersell. ADR-0021 records why these bounds keep the feature on the suggest-only side of the regulated-advice line even with full bidirectional influence.
+
+**Why v2 prompt is opt-in, not default:** the v2 prompt's VIX/Fear-&-Greed sizing rules — especially "VIX > 35 (crisis) → upsize to `bounds.max`" on non-leveraged index ETFs — encode a deliberate **buy-the-dip / value-investor prior**. That stance is fine but consequential, and v2 had not completed a full Sunday soak when the post-deploy review landed. Default is `CONTEXT_ADJUST_PROMPT_VERSION=1` (narrative-only); flip to `2` after one observed Sunday cycle of v2 behaviour matches expectations. The same opt-in discipline applies to any future prompt version.
+
+**Why context_adjust runs *before* critic in the review graph:** the critic already reviews drafts as a *set*, so combined-cash-floor and over-concentration problems introduced by an upsize land naturally in its hands. Doing the cash check inside `context_adjust` would duplicate logic and break single-responsibility. The critic prompt v2 explicitly tells it to **respect** prior adjustments and only override when the adjustment created a *new* problem.
+
+**Why kept separate from Phase 4.5:** 4.5 produces the synthesis; 4.7 *consumes* it. They have different failure modes (Tavily outage degrades 4.5; Finnhub outage or stale-context degrades 4.7 independently) and different release gates (4.5 needs 2 Friday emails with non-empty content; 4.7 needs 2 Sunday emails with a visible, sensible adjustment). Bundling them would have coupled the 4.5 soak to the 4.7 implementation, slowing both.
+
+**ADRs:** ADR-0021 (context-aware weekly order sizing; bounded exception to ADR-0020; LLM size-multiplier carve-out; Finnhub calendar choice), ADR-0022 (SentimentClient Protocol; CNN Fear & Greed fragility contract; ETF classification authoritative in `targets.yaml`) ✓
+
+See `phase_4_7_guide.md` for the step-by-step build and `phase_4_7_completion.md` (§2a for VIX/F&G; §2b for the post-deploy code review's 7 systemic fixes) for the as-built record.
+
+### Phase 4.8 — Weekly Order Activity Summary + lifecycle hardening ⚙️ Code complete (2026-05-28); post-review fixes shipped 2026-05-29; tag `v0.4.8.0` deferred until 2 consecutive Friday weekly-review emails arrive with the Order Activity section populated and every headline cross-checked against hand-written SQL (earliest 2026-06-05)
+
+*(Phase 4.8 is the final Phase 4 slot. After this, the Phase 4 family is complete — 4 → 4.5 → 4.6 → 4.7 → 4.8 — and Phase 5 multi-tenant productization begins.)*
+
+**What shipped — measurement section:**
+
+- `services/weekly_review_metrics.py` — 5 frozen dataclasses (`OrderFunnel`, `OrderFlow`, `AllocationDriftRow`, `PerTickerWeekRow`, `WeekTrendRow`) + 5 pure compute functions; no ORM rows cross the session boundary ✓
+- 4 SQL files in `src/investor/sql/` (`funnel_counts`, `order_flow`, `alloc_drift`, `per_ticker_breakdown`) — `COUNT(DISTINCT suggestion_id)` per state to prevent GTC-partial-fill double-counting; `COALESCE` guards on `avg_fill_price` for pre-reconciliation rows; `NULLIF(..., 0)` guards zero-equity; `MAX(snapshot_date) ≤ :date` fallbacks for missing snapshots ✓
+- Friday email gains an **Order Activity** section between weekly-suggestions performance and auto-trade soak status — funnel table, dollar-flow table, allocation-drift table (green/red drift_pp + "→ closer/farther"), per-ticker breakdown, 4-week trend strip; DRY_RUN line hidden when zero; holiday and mid-week-targets footnotes conditional ✓
+- Weekday guard — manual triggers on non-Friday days raise rather than render a half-week's data ✓
+- Settings: `weekly_review_trend_weeks=4`, `weekly_review_breakdown_top_n=20` — no env-var required ✓
+- ADR-0023 (allocation drift over trade-attributable fill-rate fiction; live queries over a materialised cache at single-user scale; honest `accepted_not_routed` bucket rather than position-delta inference) ✓
+
+**What shipped — lifecycle bug fixes (8 issues found in a post-implementation read of the suggestion → order → execution data flow):**
+
+- **B2 (HIGH)** — Rule 1 of reconciliation crashed on `sug-N-rN` retry IDs (generated by `_next_client_order_id()` after a `broker_cancelled` re-place), leaving re-placed orders untracked. Fixed via `_parse_suggestion_id` regex helper shared between the generator and parser.
+- **B1 (MEDIUM)** — Manual broker cancellations were silently skipped by `reconcile_activities` (no `filled_at`). New `sync_open_order_statuses()` polls open executions via a single batch `list_orders(status="closed")` call (added to the `BrokerAdapter` Protocol; implemented for both Alpaca and Moomoo) and flips terminal-status rows to `broker_cancelled`.
+- **B3 (MEDIUM)** — Partial-fill activities prematurely flipped the suggestion to `filled` while the GTC remainder was still live. Now gated on `activity.status == "filled"`.
+- **B5 (MEDIUM)** — Mid-week target changes left accepted suggestions in `accepted` for now-removed tickers; auto-trade would route them next day. `load_targets_into_db()` now expires those suggestions *and* calls `adapter.cancel_order()` on any linked live GTC, closing the money-at-risk window between target edit and the morning sweep.
+- **B6 (MEDIUM)** — Expiry sweep called `cancel_order()` but never updated `exec.status`. Now sets `broker_cancelled` *only* after `get_order()` confirms cancellation; if the broker says "already filled" the row is left for reconciliation to resolve correctly.
+- **G1/G2/G3 (LOW)** — pending-past-`expires_at` rows display "(expires Mon)" in the audit; reset endpoint gained `side: buy | sell | all` and a canonical `/admin/reset-week-suggestions` route (old `-buy-` URL retained as backward-compat alias); trend strip's "filled" column now includes partial fills and the header reflects it.
+
+**What shipped — structural safety net:**
+
+- Expiry sweep moved from **16:20 ET → 09:00 ET Mon-Fri**. Closes the documented Monday-morning dual-GTC race where last week's GTC sat live from 09:35 ET (when auto-trade fired) until 16:20 ET.
+- **`_check_stale_live_order` guard in `auto_trade.py`** — refuses to place a new order while *any* `accepted_for_routing` execution exists for the same ticker from a different suggestion. This makes "never two live orders for the same ticker" a *structural* property, enforced at placement time, rather than a *timing* property that depends on APScheduler delivering the sweep before 09:35 ET (which a missed sweep, deploy window, or NTP skew can break).
+
+**Post-review remediation:** a second-pass code review surfaced 7 gaps in the initial lifecycle bug fixes — B5 was flipping status without cancelling the linked broker order; B6 was setting `broker_cancelled` unconditionally after a cancel API call, ignoring the "broker says already filled" race; the scheduler-move alone wasn't a structural property; B2's inline `.split("-r")[0]` was brittle to ID-format changes; B1 was polling O(N) per row instead of batching; the reset endpoint URL still said "buy"; the trend column header didn't reflect the partials inclusion. All 7 closed in a follow-up commit; details in `phase_4_8_post_review_fixes.md`.
+
+**Test growth:** 298 (4.7 close) → 305 (post-4.7 misc) → 315 (4.8 metrics, +10 smoke) → 334 (lifecycle bug fixes, +19) → **342** (post-review fixes, +8).
+
+**Phase 4.8 cleanup status:**
+
+| Item | Status | Notes |
+|---|---|---|
+| Code complete | ✅ Done | 2026-05-28; post-review fixes 2026-05-29 |
+| 342 tests green | ✅ Done | 1 pre-existing flaky test (`test_weekday_guard_raises_on_wednesday` — module-reload + datetime-patch interaction; unrelated to 4.8 work) |
+| `ruff` + `mypy` clean | ✅ Done | No new errors on 4.8 files |
+| ADR-0023 written | ✅ Done | Accepted |
+| CLAUDE.md + README updated | ✅ Done | Order Activity section, two new settings, gotcha on operations-week / GTC-cross-week lag |
+| `list_orders` added to `BrokerAdapter` Protocol; Alpaca + Moomoo implementations | ✅ Done | Moomoo implementation ships ahead of Moomoo go-live so the parallel-run soak can exercise it |
+| Structural stale-live-order guard live in `auto_trade.py` | ✅ Done | Independent of scheduler timing |
+| First live Friday email with Order Activity section | ⏳ Pending | Earliest 2026-05-29 |
+| Second consecutive Friday email — consistency check | ⏳ Pending | Earliest 2026-06-05 → enables tag |
+| `accepted_not_routed` label correctly reads "not yet routed" in DRY_RUN (not "presumed manual") | ⏳ Pending | Confirm in first soak email |
+| Every headline cross-checked against hand-written SQL for one Friday | ⏳ Pending | The only way to catch a quietly-wrong query in production |
+| 09:00 ET Monday expiry sweep verified pre-flight to 09:35 ET auto-trade | ⏳ Pending | Soak-window opportunistic |
+| Stale-live-order guard exercised in real auto-trade run | ⏳ Pending | Soak-window opportunistic |
+| Trend strip populated with 4 weeks of LIVE data | ⏳ Long-tail | First three Fridays in LIVE mode show fewer columns by design |
+| `src/investor/sql/*.sql` vs `queries.py` two-sources-of-truth question resolved or wrapper pattern documented | ⏳ Open | Carried from prior review |
+| Flaky `test_weekday_guard_raises_on_wednesday` fixed | ⏳ Open | One-line follow-up so CI runs 342/342, not 341/342 with a known-flake |
+| Carried from 4.7: sug-23/AAPL pending resolution; CNN F&G `urlopen` explicit timeout | ⏳ Open | Fold into the same pre-tag cleanup pass so they don't bleed into Phase 5 |
+| Trend column header micro-nit ("Filled+∂" vs "Filled (incl. partial)") | ⏳ Optional | Defensible as-is; ∂ is unambiguous to a developer, slightly opaque to a casual reader |
+
+**Hard guardrails preserved:**
+
+The Order Activity section is backward-looking reporting only — nothing in it feeds back into `generate_suggestions()`, `context_adjust`, `auto_trade`, or any broker adapter. Suggest-only invariant unaffected. The honest-accounting `accepted_not_routed` bucket surfaces the "accepted but no LIVE `order_execution` row" gap rather than guessing — manual broker placements remain invisible by design (ADR-0023 records the rejected alternative of position-delta inference). No new schema; no new mutable state; the upgrade trigger to a `weekly_metrics_cache` table is documented (any single metric query crossing 500ms at email-send time) but not adopted.
+
+**Why drift over trade-attributable fill-rate:** `$ filled ÷ $ suggested` looks meaningful and breaks the moment a suggestion fills partially, gets re-placed after `broker_cancelled`, fills next week against a GTC order, or is placed manually. Drift just measures what the portfolio did — which is what a long-term investor cares about. ADR-0023 records the rejected alternative explicitly so the next agent doesn't add the seductive metric back.
+
+**Why the structural guard rather than tightening the scheduler:** APScheduler delays (deploys, container restarts, NTP skew) make any timing-only fix probabilistic. The 30-minute misfire grace bounds the failure but doesn't eliminate it. Adding `_check_stale_live_order` in `auto_trade.py` upgrades "never two live orders for the same ticker" from a property of the cron timing to a property of the placement code itself — verifiable at every run, not just verifiable in the absence of operational incidents.
+
+**Why kept separate from 4.6 (auto-trade):** 4.6 is about *placing* orders; 4.8 is about *reporting* on them. 4.8 reads `order_execution` rows that 4.6 writes; bundling the read and write workstreams would have coupled the 4.6 LIVE-soak progression to a reporting feature that doesn't gate it. The lifecycle bug fixes that crossed both (B1, B5, B6) landed naturally during 4.8 because that's when reading the data flow as a whole surfaced them.
+
+**ADRs:** ADR-0023 (weekly order activity metrics — allocation drift over fill-rate fiction; live queries at single-user scale; honest `accepted_not_routed` bucket) ✓
+
+See `phase_4_8_guide.md` for the step-by-step build, `phase_4_8_completion.md` for the as-built record (Phase 4.8 features + 8 lifecycle bugs + scheduler fix), and `phase_4_8_post_review_fixes.md` for the 7 follow-up remediations.
+
+### Phase 4.9a — Multi-broker plumbing + per-broker reports 📋 Planned (guide: `phase_4_9a_guide.md`); kicked off when Phase 4.8 tag is observably stable and the 4.8 cleanup-table items closed
+
+*(Phase 4.9 is the bridge between the solo single-broker product and Phase 5 multi-tenancy. It splits into 4.9a — multi-broker plumbing — and 4.9b — household targets + rebalance reviews. Phase 5a then inherits a much cleaner data model because `broker_account_id` is already on every per-account table by the time `user_id` lands.)*
+
+**What will ship:**
+
+- `broker_account` becomes a real per-account table — multiple rows per user, each with `id` (UUID), `broker`, `nickname`, `is_active`, time-versioned `cash_usd` / `equity_usd`, JSON `connection_config`. Soft-delete only (convention #9 close-and-insert on the time-versioned fields; the row itself is never hard-deleted because all historical positions/suggestions/executions point at it).
+- `broker_account_id` migrated onto every per-account table (`target_allocation`, `positions_snapshot`, `order_suggestion`, `order_execution`); every existing `UniqueConstraint` rebuilt with `broker_account_id` as the leading column; Jane's existing data backfilled to her Alpaca UUID with a verification SQL (`SELECT broker_account_id, COUNT(*) FROM order_suggestion GROUP BY 1` returns exactly one row pre-migration row count).
+- `auto_trade_state` table — per-broker auto-trade mode (`OFF` | `DRY_RUN` | `LIVE`); the Phase 4.6 OFF → DRY_RUN → LIVE-paper → LIVE-live soak ladder now applies *per broker*. Promoting Alpaca to LIVE does not affect Moomoo, IBKR, or Tiger. Phase 4.8's structural `_check_stale_live_order` guard rescopes to `(broker_account_id, ticker)` — two live orders for the same ticker across different brokers is allowed; two on the same broker is still what the guard prevents.
+- Broker roster: 4.9a ships **Alpaca + Moomoo** (the latter exercised live on a real funded account during the 2026-05-31 smoke). IBKR + Tiger adapters were originally bundled into 4.9a but were paused mid-build and moved to **Phase 4.9c** (a sibling sub-phase to 4.9b — can ship in parallel; see `phase_4_9c_guide.md`).
+- Per-broker daily and weekly emails — `[{nickname}] Daily report for YYYY-MM-DD` subject lines; N emails per cron run with N active brokers. The consolidated view is deferred to 4.9b; expect N daily + N weekly emails per week until then.
+- `targets.yaml` → `data/targets/<broker_account_id>.yaml` per broker; `load_targets_into_db()` parameterised by `broker_account_id`. Phase 5a finishes the move from YAML files to DB rows authored via the dashboard.
+- Per-broker reconciliation and expiry sweep — every Phase 4.8 fix (B1's batch `list_orders`, B5's cancel-on-target-change cascade, B6's verify-before-broker-cancelled, the structural stale-live-order guard) applied per broker_account.
+- ADR-0024 (multi-broker single-user data model — `broker_account_id` partitioning rationale, news/levels/context staying user-level, soft-delete-only policy, per-broker soak ladder semantics). ADRs 0025 (IBKR) and 0026 (Tiger) move with their adapters to Phase 4.9c.
+
+**Expected time budget:** 2–3 weeks. IBKR adapter is the longest single sub-task (~1 week) due to the host-side Gateway dependency and the persistent-socket reconnect machinery. Tiger is ~3–5 days. The data-model migration is ~1.5 days; per-broker report wiring is mechanical once partitioning is clean.
+
+**Depends on:**
+- Phase 4.8 tagged with all carried-over cleanup items closed (queries duplication, flaky weekday-guard test, sug-23/AAPL pending resolution, CNN F&G `urlopen` timeout).
+- (Originally noted: "decide up-front whether to onboard IBKR + Tiger together with Alpaca + Moomoo, or stage them in." Resolved in flight — IBKR + Tiger were paused mid-build and moved to Phase 4.9c. 4.9a shipped with Alpaca + Moomoo only; the multi-broker model is exercised at 2 brokers, sufficient for the 4.9b household view to land.)
+
+**What 4.9a deliberately doesn't include:**
+- Household target allocation, consolidated summary emails, the `email_aggregation` toggle — all 4.9b.
+- Funds-added detection, quarterly/annual review crons, magic-link target-edit guardrails — also 4.9b.
+- **IBKR or Tiger auto-trade LIVE.** Each new broker's LIVE promotion needs its own Phase 4.6 OFF → DRY_RUN → LIVE soak ladder; that's calendar time, not engineering time. 4.9a ships them as suggest-only readers and draft-submitters; LIVE per broker is a separate later workstream after the read paths are observed.
+- Cross-broker order routing — the user picks the broker for each manual order; the system never moves cash, positions, or orders between brokers.
+- Multi-currency native targets, lot-level cost basis tracking, options/futures/crypto in `get_positions` — all Phase 6+ at earliest.
+
+See `phase_4_9a_guide.md` for the step-by-step build. Tag: `v0.4.9a.0`.
+
+### Phase 4.9b — Household targets + consolidated summary + rebalance reviews 🅿️ Parked (2026-06-09); resume after the post-4.9a soak window (target: a few weeks of clean operational signal)
+
+**Why parked, deliberately:** the post-4.9a stretch (2026-06-03 → 06-09; recorded in `post_4_9a_changes.md`) landed a substantial batch of correctness fixes that were caught by *operational observation*, not by tests — direction-aware mover tiers + weekly fresh-start (`1c38fd6`), drift-basis = total-equity (`e5f5a76`), single-snapshot dedup (`a4f9418`), late-GTC reconciliation window (`56438b6`), bars split-adjustment + 50%-distance filter (`85053ca`), CNN sentiment fetch headers + Finnhub-VIX fallback (`acd9a5c`), un-accept path with new `cancelled` terminal status (`72d0d5c…0b48307`), plus the LLM-call-path tuning round (`61077a0`) and the shared email design system (`1aa36cd`). Each of these has its own subtle steady-state behaviour that's worth watching for a few weeks before adding new surface area on top. Soaking the current solution longer is more valuable right now than rushing the household summary in. Resume target: when the soak produces a clean cycle with no new bug-class surfaced *and* the candidate ADRs below have been promoted into `docs/adr/`.
+
+**Pending ADR promotion (from `post_4_9a_changes.md` §"Candidate ADRs / gotchas"):** split-adjusted bars + re-backfill procedure (highest priority — silently changes a data-semantics assumption); VIX/F&G from CNN `graphdata` with browser headers (fragility contract); shared email components (`_components.html.j2` + `_sentiment.html.j2`); movers tiers direction-aware + ISO-week reset; suggestion status `cancelled` terminal. These were grouped as candidates by the agent; promoting at least the bars one before tag avoids any future reader hitting the pre/post-split bar mismatch without context.
+
+**Original planned scope follows — for resumption later:**
+
+
+
+**What will ship:**
+
+- `household_target_allocation` table — *optional* reference target spanning all of a user's brokers (per-ticker `target_pct` of total household equity, `asset_class` carrying from Phase 4.7, time-versioned with the close-and-insert pattern, optional advisory `preferred_broker_account_id`). Per-broker targets remain authoritative; the household target is an aspirational reference. ADR-0027 is the most consequential design call in 4.9b.
+- `services/household_summary.py` — `HouseholdSnapshot` frozen dataclass aggregating per-broker `positions_snapshot` + cash; household drift computation against the explicit household target if declared, or against the *implied* household target (per-broker target sum weighted by per-broker equity) otherwise. The email footnote names the source so the reader knows which model is in play.
+- Consolidated daily + weekly review emails — household header (total equity, total cash, # active brokers, household drift table top-N) + per-broker sections + footer. Phase 4.5 Weekly Market Context and Phase 4.8 Order Activity sections now aggregate across brokers (the funnel sums; per-broker breakdown becomes a new bottom section).
+- `user_settings.email_aggregation` — `per_broker` (4.9a default), `consolidated` (4.9b default when `household_target_allocation` is declared), `both` (power user — N+1 emails). The system surfaces both views rather than forcing one.
+- Funds-added detection per broker (`jobs/funds_detection.py`, daily 18:00 ET strict) — `(today's equity change) − (market moves + realised PnL) > funds_detection_threshold_usd` (default $500); cross-broker transfers surface as *two* events with a header note "consider whether these are a single transfer" rather than silently merging. `funds_event` append-only.
+- Quarterly review cron (first trading day Jan / Apr / Jul / Oct, 06:00 ET); annual review cron (first trading day January, 06:00 ET, with a tax-loss-harvesting hint section using approximate cost basis + explicit caveat); tax-year-end reminder December 20 (US users only, gated on `tax_jurisdiction = "US"`). All three are *prompts*, never actions — the suggest-only product principle extends from order suggestions to target edits.
+- YAML edit guardrails + magic-link confirmation — pre-commit hook computes per-ticker shift; if `max(|shift|) > target_edit_magic_link_threshold_pct` (default 10) the commit is held, a magic-link email is sent, and clicking commits the change and writes a `target_change_event` row. Phase 4.8's B5 cascade fires on either path: any accepted suggestion for a removed ticker is expired *and* its linked GTC cancelled per broker. The magic-link signing uses a distinct namespace (`targets-confirm-v1`) from any future auth magic-link to prevent confusion (pitfall called out in the Phase 5 guide).
+- `target_change_event` append-only audit table — `broker_account_id` (NULL = household-level edit), `source` (`yaml_direct` | `yaml_magic_link` | `dashboard` once 5b lands), diff JSON, `confirmed_by` (`auto` for small edits, `magic_link:<email>` for confirmed large ones).
+- ADRs 0027 (household target as optional reference; per-broker primary, rejected alternative of household-primary that would imply cross-broker allocation = closer to advice), 0028 (funds-added detection heuristic + cross-broker transfer surfacing + wash-sale-not-handled caveat), 0029 (email aggregation toggle rationale).
+
+**Expected time budget:** 1–2 weeks. Most of the work is query + email rendering on top of the schema 4.9a already provides; the rebalance crons are mechanical; the magic-link plumbing reuses prior infrastructure (and is the same pattern Phase 5b's dashboard edit path will use).
+
+**Depends on:** Phase 4.9a (`v0.4.9a.0`) tagged with all 11 smoke rows green.
+
+**What 4.9b deliberately doesn't include:**
+- Dashboard editor for household targets — Phase 5b. In 4.9b the household target is edited via `data/household_targets.yaml` with the same magic-link guardrail as per-broker yamls.
+- Cross-broker order routing — household drift surfaces "buy AAPL" with the advisory `preferred_broker_account_id` (if declared); the user picks the broker and places the order manually.
+- Lot-level tax-loss harvesting suggestions — approximate cost basis with an explicit caveat is enough at this scope; precise lot-level TLH is Phase 6+ and probably never (most brokers do it at their UI).
+- Real-time / intraday consolidated view, risk parity / mean-variance / model portfolios, cross-broker auto-rebalancing — all Phase 6+ at earliest, several of them never (they cross into regulated advice).
+- Quarterly / annual review *action* automation — a future "approve all recommendations" button is suggest-only-line territory and needs an ADR before it ships.
+
+See `phase_4_9b_guide.md` for the step-by-step build. Tag: `v0.4.9b.0`; the umbrella `v0.4.9.0` is set after 4.9a + 4.9b + 4.9c are all observably stable (or after whichever subset has been completed if Jane elects to ship without all three).
+
+### Phase 4.9c — IBKR + Tiger adapters (suggest-only) 🅿️ Parked (2026-06-09); resume alongside or after 4.9b once the post-4.9a soak window has produced a clean operational cycle
+
+**Why parked, alongside 4.9b:** the post-4.9a hardening batch (see 4.9b parking note above) is the operational behaviour Jane wants to soak. Adding two new broker adapters — even read-only / suggest-only ones — expands the surface that has to behave correctly during the soak window: two more `get_positions` paths, two more host-side dependencies (IB Gateway, Tiger RSA-signed REST), two more code paths that could produce a confusing email or a stuck reconciliation row, and four daily emails / Sunday weekly emails instead of two. Resume target: alongside or just after 4.9b restarts, once a clean operational cycle has confirmed the post-4.9a fixes are steady-state.
+
+**Original planned scope follows — for resumption later:**
+
+
+
+*(4.9c is the **sibling** of 4.9b. 4.9b layers household summary on top of the per-broker plumbing; 4.9c extends the broker roster from Alpaca + Moomoo to Alpaca + Moomoo + IBKR + Tiger. Neither depends on the other — they can ship in either order or in parallel. Originally bundled into 4.9a; paused mid-build when the focused scope was "Foundation + Moomoo"; resumed here as a standalone sub-phase.)*
+
+**What will ship:**
+
+- **`IBKRAdapter`** via `ib_insync` against IB Gateway (or TWS) — persistent socket model, same host-side dependency pattern as Moomoo's OpenD; daily Gateway restart at 23:45 ET handled by reconnect-on-error; `client_id` uniqueness convention documented in `connection_config` per account. Full `BrokerAdapter` surface (`get_positions`, `get_account`, `submit_order_draft`, `submit_order`, `cancel_order`, `get_order`, `list_orders`). The `submit_order` LIVE path ships but is gated by `auto_trade_state.mode='OFF'` by default — LIVE soak deferred to its own Phase 4.6-style workstream after read paths are observed.
+- **`TigerAdapter`** via `tigeropen` — REST with RSA-signed requests; regional account types TBSG/TBAU/TBKR/TBHK; FX conversion to USD at the adapter boundary for non-USD accounts (TBAU = AUD, TBHK = HKD, TBSG = SGD or USD) via dual `cash_native` / `cash_usd_at_snapshot` storage; per-position currency labels consistent with the convention 4.9a's post-smoke fixes established (commit `391d062`).
+- Onboarding pre-flight docs per broker — IB Gateway install + auth, Tiger RSA key generation, `connection_config` examples per broker.
+- Suggest-only across both — each new broker registers with `auto_trade_state.mode='OFF'` by default. `submit_order_draft` works; `submit_order` is wired but gated; per-broker LIVE soak is its own Phase 4.6-style workstream.
+- Unit + integration tests against paper accounts (gated by env var so CI doesn't need credentials); mock adapters for CI; smoke tests on real IBKR paper and Tiger paper or sandbox.
+- The 4.9a post-smoke lessons re-applied to both new adapters: `_floor2dp` / `_ceil2dp` direction-aware rounding at `submit_order`; reconciliation by `broker_order_id` (not broker-string); currency labelling on positions; `secType == "STK"` filter; reconnect-on-error wrapper for the persistent-socket adapter.
+- ADR-0025 (IBKR via `ib_insync` against IB Gateway — `ib_insync` over raw `ibapi` for ergonomics + Protocol fit; Gateway over Web API for full GTC / extended-hours surface; `client_id` uniqueness; reconnect pattern) and ADR-0026 (Tiger via `tigeropen`; FX-at-snapshot convention with dual native/USD storage; regional account currency configured per account, not inferred from region code; RSA key path in `connection_config`, never key contents).
+
+**Expected time budget:** ~1.5–2 weeks. IBKR is the bigger chunk (~1 week) due to the host-side Gateway dependency and persistent-socket lifecycle. Tiger is ~3–5 days. Per-broker config wiring is mechanical — the multi-broker plumbing already exists from 4.9a's Stages A–C, so 4.9c is purely "add two new cases to `make_account_adapter` and harden them through smoke."
+
+**Depends on:** Phase 4.9a (`v0.4.9a.0`) tagged. Does *not* depend on 4.9b — the household summary works fine with Alpaca + Moomoo only; the new adapters slot in transparently when they land.
+
+**What 4.9c deliberately doesn't include:**
+- **IBKR or Tiger auto-trade LIVE.** Each new broker's LIVE promotion follows the Phase 4.6 OFF → DRY_RUN → LIVE-paper → 28-day LIVE-live ladder — calendar time, not engineering time. 4.9c ships them as suggest-only.
+- **IBKR Web API path** (rejected per ADR-0025 for limited surface — no GTC, partial extended-hours, narrower asset universe; revisit if Gateway becomes a hard ops burden).
+- **Tiger native-currency target support.** Targets remain USD; non-USD accounts convert at snapshot time with native-currency labels in display. Native-currency targets are Phase 6+.
+- **IBKR multi-currency account handling.** 4.9c gates IBKR onboarding to `currency == "USD"`. IBKR Australia / IBKR HK are a future enhancement.
+- **Schwab, Fidelity, Robinhood, Webull, Trading 212, Saxo.** Wait for user demand. Each adapter is ~1 week of focused work behind the existing Protocol; the pattern is now well-established.
+- Options / futures / crypto in `get_positions` (filtered to STK only — same as 4.9a's Moomoo handling).
+
+See `phase_4_9c_guide.md` for the step-by-step build. Tag: `v0.4.9c.0`.
+
+### Phase 5 — Productization + target adjustment & rebalance reviews (3–4 weeks)
 - Add React dashboard (Vite + Tailwind) reading the same FastAPI.
-- Targets edit page with diff preview and guardrails from Phase 4.5.
 - Auth (Clerk or Supabase).
 - Multi-tenant data model: every row gets `user_id`.
 - Split storage: **Postgres** for OLTP/auth/user rows, **DuckDB** (or MotherDuck in cloud) for per-user analytics/bars.
 - Encrypted per-user broker credentials (envelope-encrypted with a KMS key or `cryptography.fernet` with a rotating master key).
 - Pluggable per-user broker adapter — user picks Alpaca, Moomoo, or IBKR at connect time.
+- **Target adjustment & rebalance reviews** — moved to Phase 4.9b (above). Phase 5 inherits the `target_change_event` table, the funds-detection heuristic, the quarterly / annual / tax-year-end cron schedule, and the magic-link confirmation plumbing. Phase 5b's dashboard targets-edit page is the multi-tenant face of the same machinery: same threshold, same `target_change_event` row (with `source="dashboard"`), same B5 cascade on removed tickers. The "previously Phase 4.5, folded in" history is now: lived in the Phase 4.5 stub, moved to Phase 5 in the prior restructure, moved to Phase 4.9b once multi-broker plumbing made it the natural home.
+- **Mandatory pre-implementation cleanup — ADR renumbering collision.** The Phase 5 guide (`phase_5_guide.md`) currently allocates **ADRs 0024–0031** to Phase 5 work, but Phase 4.9 (a + b + c) took **ADRs 0024–0029**. Before any Phase 5 implementation begins, renumber the Phase 5 guide's ADRs to **0030–0037** so the numbering stays sequential and a future reader doesn't encounter two competing "ADR-0028"s (4.9b's funds-detection heuristic vs Phase 5's pooled-keys / per-user cost accounting). Pure docs work — one find-and-replace pass through `phase_5_guide.md` plus an `ADR index` update. While the Phase 5 guide is open, also refresh its "Phase 4.9 prerequisite" paragraph to reflect the actual 4.9a + 4.9b + 4.9c shape that shipped (currently it describes only the rebalance-review half).
 - **Mandatory pre-launch removal:** the `LLM_CLI_PATH`-with-consumer-OAuth path that Phase 3b shipped (and that the solo project owner uses for personal use) **must be removed entirely** before any second user signs up. The solo personal-use exception in ADR-0016 explicitly does not extend to multi-tenant deployment — what's gray-area-tolerated for one user becomes unambiguous OAuth abuse for many. All users on `LLM_BACKEND=anthropic_api` in Phase 5; remove the `agent_sdk` option from the user-facing config entirely or restrict it to deployments authenticated via per-user `ANTHROPIC_API_KEY` only.
-- Deliverable: a second user can sign up, connect their Alpaca or Moomoo, and get their own weekly emails.
-
-### Phase 4.6 — Opt-in auto-trade execution (~1 week build + 4–6 week soak per promotion)
-
-**This phase overturns the suggest-only default carefully — by adding auto-trade as an opt-in mode behind multiple guards, not by changing the default.** Suggest-only stays as `auto_trade_mode=OFF`, which is the value every new install gets. Promotion to `DRY_RUN` or `LIVE` requires deliberate admin action and a soak window.
-
-**Three-state mode controlled by an app-wide switch with admin access:**
-
-| Mode | Behaviour |
-|---|---|
-| `OFF` (default) | Existing suggest-only behaviour preserved. No broker order calls. |
-| `DRY_RUN` | Auto-trade module computes what *would* be placed for every `accepted` suggestion. Writes `order_execution` rows with `dry_run=true`. **Never calls the broker.** Email confirms what would have happened. |
-| `LIVE` | Calls the broker via `BrokerAdapter.submit_order` (the first time anything outside `brokers/` is allowed to trigger this method). Writes `order_execution` rows with `dry_run=false`. |
-
-**Required guards before any broker call (all enforced atomically):**
-
-- **Trigger discipline:** fires only on `order_suggestion.status='accepted'`. Never on `pending`. Never on fresh suggestions the user hasn't seen.
-- **Hard caps:** per-order $, per-day $, per-week $-per-ticker, per-day order-count. Hitting any cap flips mode to `OFF` and emails a notification.
-- **Wash-sale guard upgraded from stub to blocking:** if a sell at a loss for the same ticker happened in the last 30 days, the buy is dropped with a logged reason. (Phase 4 reconciliation provides the `order_execution` history this check needs.)
-- **Idempotency:** every order's client ID is derived from the suggestion ID (`client_order_id = f"sug-{suggestion.id}"`). Same suggestion cannot be placed twice even on a double-fire. The guard is cleared (status → `broker_cancelled`) when an order is cancelled via `POST /admin/cancel-all-orders`, allowing auto-trade to re-place it.
-- **GTC limit orders:** orders are placed as `time_in_force="gtc"` — they stay open at the broker until filled or explicitly cancelled. The daily expiry sweep (16:20 ET) cancels any open GTC order whose suggestion has passed `expires_at`, then marks the suggestion expired.
-- **Read-back reconciliation within 60 seconds:** every placed order is fetched back from the broker. Mismatch flips mode to `OFF`, alerts.
-- **Kill switch:** `POST /admin/auto-trade/emergency-stop` flips mode to `OFF` and cancels all auto-trade-placed open orders from the last 24 hours.
-- **Manual cancel:** `POST /admin/cancel-all-orders` cancels open orders without touching mode — useful for repricing when limit prices are stale mid-week. Suggestions stay `accepted` and are re-placed on the next auto-trade run.
-
-**Broker scope progression (each step gated on a soak window):**
-
-1. Alpaca paper account in `DRY_RUN` for 2 weeks (validates the framework, no real money).
-2. Alpaca paper account in `LIVE` for 4 weeks (validates the broker call path, still no real money).
-3. Alpaca live account in `LIVE` for 4 weeks (real money, small capital).
-4. Moomoo in `LIVE` (depends on Phase 4 Moomoo adapter shipping first).
-
-Each promotion is a deliberate admin command (not a config edit), logged to `auto_trade_promotion_log` for audit. Demoting back to `OFF` is always one click.
-
-**Deliverable:** A single accepted suggestion in the weekly email becomes a real (or dry-run) order placed at the limit price on the chosen broker, with idempotent client order IDs, read-back confirmation, and a populated `order_execution` row. Tag `v0.4.6.0` after first successful Alpaca paper `DRY_RUN` week; subsequent tags (`v0.4.6.1`, `v0.4.6.2`, …) mark each promotion step.
-
-**ADRs:** ADR-0014 (auto-trade mode discipline + promotion gates), ADR-0015 (kill switch design + recovery semantics).
-
-See `phase_4_6_guide.md` for the step-by-step build.
-
-### Phase 4.7 — Context-Aware Weekly Order Sizing (2026-05-26)
-
-**Motivation:** Phase 4.5 built Friday market-context synthesis via Tavily + Sonnet. This phase makes that context *drive* Sunday suggestion sizing: a new `context_adjust_node` is spliced into the suggestion-review graph between `reason` and `critic`. It applies (a) a deterministic earnings gate using a fresh Finnhub calendar fetch and (b) a bounded Sonnet size multiplier from Friday's persisted market narrative.
-
-**Key design decisions (see ADR-0021):**
-- Bounded context influence: Tavily output may now reach `context_adjust_node` for quantity scaling only, within Python-clamped `[context_size_min, context_size_max]` (default 0.25–1.5). The LLM never originates tickers, sets prices, or makes trade recommendations.
-- Earnings gate uses Finnhub structured calendar, not Tavily free-text `forward_events`.
-- Critic bumped to v2 (rule 6: respect prior defensive sizing adjustments).
-- Friday persists context with `week_of=_next_monday()` key; Sunday loader uses the same key.
-
-**New components:**
-- `services/earnings.py` — `EarningsClient` Protocol + `FinnhubEarningsClient` + `FakeEarningsClient` + factory
-- `services/weekly_context.py` — `persist_weekly_context()`, `load_latest_weekly_context()` helpers
-- `graphs/suggestion_review.py` — `context_adjust_node`, `_deeper_anchor`, `_find_level` helpers; `ReviewContext` extended
-- `prompts/context_size_v1.txt`, `prompts/suggestion_critic_v2.txt`
-- `models.py` — `WeeklyMarketContextRow` table; `OrderSuggestion` audit cols: `base_qty`, `size_factor`, `context_note`
-- Email templates: show `(base N · ×X.XX)` and `context_note` for adjusted suggestions
-
-**Deliverable:** Sunday email shows sensible size adjustments with `context_note` on ≥1 suggestion for two consecutive weeks. Tag `v0.4.7.0`.
-
-**ADRs:** ADR-0021 (context-aware sizing design decisions).
-
-### Phase 4.9a — Multi-broker plumbing + per-broker reports (2026-05-30)
-
-**Motivation:** Let one user hold positions across multiple broker accounts at once (Alpaca + Moomoo first) and receive **separate** daily/weekly emails per broker. Suggest-only holds across all brokers; auto-trade LIVE stays Alpaca-only (each new broker repeats its own Phase 4.6 soak ladder).
-
-**Key design decisions (see ADR-0024):**
-- `broker_account_id` (= `broker_account.account_ref`, a stable partition key) on every per-account table; `broker_account` is dual-purpose (identity + state). No new identity table, no UUIDs in 4.9a; plain column, no DB FK.
-- Per-broker `auto_trade_state` replaces `meta.auto_trade_mode`; each broker has its own OFF→DRY_RUN→LIVE soak ladder and its own guards/caps/kill switch.
-- News, S/R levels, and weekly market context stay **user-level** (one synthesis serves all brokers).
-- Cross-broker wash-sale is deliberately per-broker in 4.9a (tax-lot/cross-account is Phase 6).
-
-**New components:** `services/accounts.py`; `brokers.make_account_adapter` / `build_account_adapters`; `*_all_brokers` job loops; per-account targets files `data/targets/<id>.yaml`; `POST/GET/DELETE /admin/broker-accounts`; account-scoped endpoints (`?broker_account_id`); migrations `7d25844a8a9a` (adopt create_all tables into Alembic), `d8589fe198cf` (partition key + auto_trade_state), `6a4a9fada1dc` (NOT NULL).
-
-**Deliverable:** connect a second broker (Moomoo paper) on top of Alpaca and receive two separate daily + two weekly emails, with audit columns populated per-broker and existing single-broker history carried through migration. Tag `v0.4.9a.0`.
-
-**Out of scope (Phase 4.9b):** household target allocation, consolidated summary email, funds-added detection, quarterly/annual review crons, magic-link target-edit guard. **Out of scope (own sub-phases):** IBKR + Tiger adapters (ADR-0025/0026). **Phase 6:** tax-lot / cross-broker wash-sale.
-
-**ADRs:** ADR-0024 (multi-broker single-user data model).
+- **Mandatory pre-launch removal #2:** auto-trade in `LIVE` mode is a single-user product behaviour. Phase 5 must either remove the auto-trade `LIVE` option from the multi-tenant offering entirely, or carry it forward only after additional regulatory work (most likely it ships as suggest-only-multi-tenant in v1 of the productized version, with auto-trade reserved for the solo deployment).
+- Deliverable: a second user can sign up, connect their Alpaca or Moomoo, define targets via the dashboard, and get their own weekly emails. Funds-added detection and quarterly/annual review prompts work for each user's account independently.
 
 ### Phase 6 — Paper → live hardening (1 week work, 4–6 weeks soak)
 - Add kill switches: daily max suggested spend, max position size, max drift before halting new buys.
