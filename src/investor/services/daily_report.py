@@ -12,9 +12,13 @@ from sqlalchemy.orm import Session
 
 from ..models import BrokerAccount, OrderExecution, OrderSuggestion
 from ..queries import positions_latest
+from .charts import ALLOC_PALETTE, CASH_COLOR, OTHER_COLOR
 from .gap import GapRow, UntrackedPosition, compute_gap, get_untracked_positions
 from .indicators import IndicatorRow
 from .levels import NearbyLevels
+
+# How many position slices to show individually before grouping the rest into "Other".
+_ALLOC_TOP_N = 8
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,48 @@ class OrdersThisWeek:
 
 
 @dataclass(frozen=True)
+class AllocationSlice:
+    """One slice of the allocation donut (a position, 'Other', or 'Cash')."""
+
+    label: str
+    value_usd: float
+    pct: float
+    color: str  # hex, shared by the PNG donut and the HTML legend
+
+
+def _build_allocation_slices(
+    positions: list[Any], cash_usd: float
+) -> list[AllocationSlice]:
+    """Distribution of equity across positions + cash (values assumed USD).
+
+    Largest positions first; positions beyond the top N fold into 'Other'; cash
+    (when positive) is always the final slice. Colours come from the shared
+    chart palette so the donut and legend never drift."""
+    holdings = sorted(
+        ((str(p.ticker), float(p.market_value)) for p in positions if p.market_value > 0),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    pos_total = sum(mv for _, mv in holdings)
+    cash = cash_usd if cash_usd > 0 else 0.0
+    total = pos_total + cash
+    if total <= 0:
+        return []
+
+    slices: list[AllocationSlice] = []
+    top = holdings[:_ALLOC_TOP_N]
+    rest = holdings[_ALLOC_TOP_N:]
+    for i, (ticker, mv) in enumerate(top):
+        slices.append(AllocationSlice(ticker, mv, mv / total * 100, ALLOC_PALETTE[i]))
+    if rest:
+        other_mv = sum(mv for _, mv in rest)
+        slices.append(AllocationSlice("Other", other_mv, other_mv / total * 100, OTHER_COLOR))
+    if cash > 0:
+        slices.append(AllocationSlice("Cash", cash, cash / total * 100, CASH_COLOR))
+    return slices
+
+
+@dataclass(frozen=True)
 class DailyReport:
     date: date
     account: AccountSnapshot | None
@@ -101,6 +147,7 @@ class DailyReport:
     orders_this_week: OrdersThisWeek = field(
         default_factory=lambda: OrdersThisWeek(0, 0, 0.0, [])
     )
+    allocation_slices: list[AllocationSlice] = field(default_factory=list)
 
 
 def compose_daily_report(
@@ -226,4 +273,7 @@ def compose_daily_report(
         untracked_positions=untracked,
         committed_orders=committed,
         orders_this_week=orders_this_week,
+        allocation_slices=_build_allocation_slices(
+            list(positions), account.cash_usd if account else 0.0
+        ),
     )

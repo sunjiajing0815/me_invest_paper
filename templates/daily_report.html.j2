@@ -69,6 +69,39 @@
 
 {# ---- Allocation ---- #}
 {{ ui.section("Allocation") }}
+{% if report.allocation_slices %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 18px 0;">
+  {% if alloc_chart is defined and alloc_chart %}
+  <tr>
+    <td align="center" style="padding:0 0 14px 0;">
+      <img src="cid:alloc_pie" width="260" height="260" alt="Current allocation including cash" style="display:block; width:260px; max-width:78%; height:auto; border:0;">
+    </td>
+  </tr>
+  {% endif %}
+  <tr>
+    <td>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,Helvetica,sans-serif; font-size:12px;">
+        {% for sl in report.allocation_slices %}
+        {% if loop.index0 % 2 == 0 %}<tr>{% endif %}
+        <td class="card-col" width="50%" valign="middle" style="padding:3px 0;">
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+            <td width="16" valign="middle" style="padding-right:6px;">
+              <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+                <td bgcolor="{{ sl.color }}" width="11" height="11" style="font-size:0; line-height:0; border-radius:2px;">&nbsp;</td>
+              </tr></table>
+            </td>
+            <td valign="middle" style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.BODY }};">
+              <strong>{{ sl.label }}</strong> {{ "%.1f"|format(sl.pct) }}% <span style="color:{{ ui.MUTED }};">(${{ "{:,.0f}".format(sl.value_usd) }})</span>
+            </td>
+          </tr></table>
+        </td>
+        {% if loop.index0 % 2 == 1 or loop.last %}</tr>{% endif %}
+        {% endfor %}
+      </table>
+    </td>
+  </tr>
+</table>
+{% endif %}
 <div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 24px 0;">
   <thead>

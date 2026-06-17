@@ -24,6 +24,11 @@ Portfolio Report — {{ report.date.strftime('%Y-%m-%d') }}
 {% endfor %}
 
 {% endif %}
+{% if report.allocation_slices %}
+=== ALLOCATION MIX (incl. cash) ===
+{% for sl in report.allocation_slices %}  {{ sl.label | ljust(8) }} {{ "%.1f"|format(sl.pct) | rjust(5) }}%  (${{ "{:,.0f}".format(sl.value_usd) }})
+{% endfor %}
+{% endif %}
 === ALLOCATION ===
 {% set col_w = [6, 8, 10, 14, 10, 9, 8, 8] %}
 {{ "Ticker" | ljust(6) }}  {{ "Qty" | rjust(8) }}  {{ "AvgCost" | rjust(10) }}  {{ "MktVal" | rjust(14) }}  {{ "Curr%" | rjust(8) }}  {{ "Tgt%" | rjust(6) }}  {{ "Gap%" | rjust(7) }}  Band

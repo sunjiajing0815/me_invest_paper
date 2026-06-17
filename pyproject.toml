@@ -31,6 +31,7 @@ dependencies = [
     "opentelemetry-api>=1.41.1",
     "futu-api>=9.3",
     "tavily-python>=0.6,<0.7",
+    "pillow>=10.4",
 ]
 
 [dependency-groups]

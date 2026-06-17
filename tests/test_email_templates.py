@@ -34,7 +34,11 @@ def _fill(t, side, qty, price, when):  # type: ignore[no-untyped-def]
     return _ns(ticker=t, side=side, filled_qty=qty, filled_price=price, filled_at=when)
 
 
-def _render_daily(committed: list | None = None, orders=None) -> str:  # type: ignore[no-untyped-def]
+def _slice(label, value, pct, color):  # type: ignore[no-untyped-def]
+    return _ns(label=label, value_usd=value, pct=pct, color=color)
+
+
+def _render_daily(committed=None, orders=None, slices=None, alloc_chart=False) -> str:  # type: ignore[no-untyped-def]
     account = _ns(equity_usd=125000, cash_usd=43000, currency="USD",
                   broker="alpaca", mode="paper")
     report = _ns(
@@ -46,11 +50,13 @@ def _render_daily(committed: list | None = None, orders=None) -> str:  # type: i
         positions=[_pos("VOO", 60, 420, 28000, 22.4), _pos("MSFT", 30, 410, 12900, 10.3)],
         committed_orders=committed or [],
         orders_this_week=orders if orders is not None else _orders(),
+        allocation_slices=slices or [],
     )
     tokens = {r.sid: f"tok{r.sid}" for r in (committed or []) if r.cancellable}
     return render_template("daily_report.html.j2", report=report,
                            account_nickname="Alpaca paper", account_broker="alpaca",
-                           base_url="https://x", unaccept_tokens=tokens)
+                           base_url="https://x", unaccept_tokens=tokens,
+                           alloc_chart=alloc_chart)
 
 
 def _render_movers() -> str:
@@ -98,6 +104,24 @@ def test_daily_committed_orders_section_renders_unaccept_link() -> None:
     assert "Committed" in html                              # the section heading
     assert "/suggestions/7/unaccept?token=tok7" in html     # cancellable -> link
     assert "/suggestions/8/unaccept" not in html            # filled -> no link
+
+
+def test_daily_allocation_pie_and_legend_render() -> None:
+    slices = [_slice("VOO", 28000.0, 50.0, "#2f5d8a"),
+              _slice("QQQ", 12900.0, 23.0, "#3a8fb7"),
+              _slice("Cash", 15000.0, 27.0, "#cdd2db")]
+    html = _render_daily(slices=slices, alloc_chart=True)
+    assert 'src="cid:alloc_pie"' in html        # inline image referenced
+    assert 'bgcolor="#2f5d8a"' in html           # legend swatch uses slice colour
+    assert "Cash" in html and "27.0%" in html    # cash slice in legend
+
+
+def test_daily_allocation_legend_without_chart() -> None:
+    """If the chart fails to render, the legend still shows and there is no broken img."""
+    slices = [_slice("VOO", 28000.0, 100.0, "#2f5d8a")]
+    html = _render_daily(slices=slices, alloc_chart=False)
+    assert 'src="cid:alloc_pie"' not in html
+    assert 'bgcolor="#2f5d8a"' in html
 
 
 def test_movers_renders_with_sentiment_pills() -> None:

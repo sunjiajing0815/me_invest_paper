@@ -15,6 +15,7 @@ from ..config import Settings, load_targets
 from ..db import session_scope
 from ..services.accounts import AccountInfo, list_active_accounts, resolve_primary_account_ref
 from ..services.bars import update_bars
+from ..services.charts import build_allocation_pie
 from ..services.daily_report import compose_daily_report
 from ..services.email import EmailSender
 from ..services.magic_link import sign_action
@@ -75,10 +76,22 @@ def run_daily_report_for_account(
         r.sid: sign_action(r.sid, "unaccept", settings.magic_link_secret)
         for r in report.committed_orders if r.cancellable
     }
+    # Allocation donut: render once, embed inline (Content-ID) so it shows in Gmail
+    # without "load images". The HTML references it as <img src="cid:alloc_pie">.
+    inline_images: dict[str, bytes] = {}
+    if report.allocation_slices:
+        try:
+            inline_images["alloc_pie"] = build_allocation_pie(
+                [s.value_usd for s in report.allocation_slices],
+                [s.color for s in report.allocation_slices],
+            )
+        except Exception as exc:
+            logger.warning("allocation pie render failed; sending without chart: %s", exc)
     html = render_template(
         "daily_report.html.j2", report=report,
         account_nickname=account.nickname, account_broker=account.broker,
         base_url=settings.app_base_url, unaccept_tokens=unaccept_tokens,
+        alloc_chart="alloc_pie" in inline_images,
     )
     text = render_template(
         "daily_report.txt.j2", report=report,
@@ -89,7 +102,10 @@ def run_daily_report_for_account(
     if report.account:
         subject += f" (equity ${report.account.equity_usd:,.0f})"
 
-    emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
+    emailer.send(
+        to=settings.email_to, subject=subject, html=html, text=text,
+        inline_images=inline_images or None,
+    )
     logger.info(
         "run_daily_report completed for %s: email sent to %s",
         account.nickname, settings.email_to,
