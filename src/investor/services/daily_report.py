@@ -67,6 +67,27 @@ def _committed_status(exe: Any | None) -> tuple[str, bool]:
 
 
 @dataclass(frozen=True)
+class FillRow:
+    """A single this-week fill (for the daily order-activity summary)."""
+
+    ticker: str
+    side: str
+    filled_qty: float
+    filled_price: float | None
+    filled_at: datetime | None
+
+
+@dataclass(frozen=True)
+class OrdersThisWeek:
+    """Summary of real orders placed and filled since Monday (replaces the levels table)."""
+
+    placed_count: int
+    filled_count: int
+    filled_notional_usd: float
+    fills: list[FillRow] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class DailyReport:
     date: date
     account: AccountSnapshot | None
@@ -77,6 +98,9 @@ class DailyReport:
     nearby_levels: dict[str, NearbyLevels] = field(default_factory=dict)
     untracked_positions: list[UntrackedPosition] = field(default_factory=list)
     committed_orders: list[CommittedOrderRow] = field(default_factory=list)
+    orders_this_week: OrdersThisWeek = field(
+        default_factory=lambda: OrdersThisWeek(0, 0, 0.0, [])
+    )
 
 
 def compose_daily_report(
@@ -144,6 +168,36 @@ def compose_daily_report(
             filled_price=(exe.filled_price if exe else None), cancellable=cancellable,
         ))
 
+    # Orders placed and filled this week (real executions only) — the daily activity recap.
+    week_start = datetime.combine(week_monday, datetime.min.time(), tzinfo=UTC)
+    week_exes = session.scalars(
+        select(OrderExecution).where(
+            OrderExecution.broker_account_id == broker_account_id,
+            OrderExecution.dry_run.is_(False),
+            OrderExecution.created_at >= week_start,
+        )
+    ).all()
+    filled = [e for e in week_exes if e.filled_qty and e.filled_qty > 0]
+    fills = sorted(
+        (
+            FillRow(
+                ticker=e.ticker, side=e.side, filled_qty=e.filled_qty,
+                filled_price=e.filled_price, filled_at=e.filled_at,
+            )
+            for e in filled
+        ),
+        key=lambda f: (f.filled_at is not None, f.filled_at),
+        reverse=True,
+    )
+    orders_this_week = OrdersThisWeek(
+        placed_count=len(week_exes),
+        filled_count=len(filled),
+        filled_notional_usd=sum(
+            e.filled_qty * e.filled_price for e in filled if e.filled_price is not None
+        ),
+        fills=fills,
+    )
+
     indicators: list[IndicatorRow] = []
     nearby_levels: dict[str, NearbyLevels] = {}
 
@@ -171,4 +225,5 @@ def compose_daily_report(
         nearby_levels=nearby_levels,
         untracked_positions=untracked,
         committed_orders=committed,
+        orders_this_week=orders_this_week,
     )

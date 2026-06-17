@@ -62,25 +62,21 @@ def run_daily_report_for_account(
 
     with session_scope() as session:
         take_snapshot(adapter, session, settings, account.account_ref)
+        # No watchlist: the daily report no longer renders S/R levels (those are weekly);
+        # it now shows a this-week orders placed/filled recap instead.
         report = compose_daily_report(
             session,
             broker_account_id=account.account_ref,
-            watchlist=targets.watchlist,
             bars_dir=settings.bars_dir,
         )
 
-    # MA200 in the Levels table is shown for ETFs only (consistent with weekly suggestions).
-    etf_tickers = {
-        t.ticker for t in targets.targets
-        if t.asset_class in ("index_etf", "leveraged_etf")
-    }
     # Signed un-accept links for cancellable committed orders (prefetch-safe confirm page).
     unaccept_tokens = {
         r.sid: sign_action(r.sid, "unaccept", settings.magic_link_secret)
         for r in report.committed_orders if r.cancellable
     }
     html = render_template(
-        "daily_report.html.j2", report=report, etf_tickers=etf_tickers,
+        "daily_report.html.j2", report=report,
         account_nickname=account.nickname, account_broker=account.broker,
         base_url=settings.app_base_url, unaccept_tokens=unaccept_tokens,
     )

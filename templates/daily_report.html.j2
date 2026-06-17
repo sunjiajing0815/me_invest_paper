@@ -139,10 +139,41 @@
 </table>
 {% endif %}
 
-{# ---- Levels at a glance ---- #}
-{% if report.indicators %}
-{{ ui.section("Levels at a Glance") }}
-{{ ui.levels_table(report.indicators, report.nearby_levels, etf_tickers if etf_tickers is defined else None) }}
+{# ---- Orders this week ---- #}
+{% set o = report.orders_this_week %}
+{{ ui.section("Orders This Week") }}
+<p style="font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.BODY }}; margin:0 0 12px 0;">
+  <strong>{{ o.placed_count }}</strong> placed
+  &nbsp;&middot;&nbsp; <strong style="color:{{ ui.POS }};">{{ o.filled_count }}</strong> filled
+  &nbsp;&middot;&nbsp; <strong>${{ "{:,.0f}".format(o.filled_notional_usd) }}</strong> filled notional
+</p>
+{% if o.fills %}
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 24px 0;">
+  <thead>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:7px 10px; text-align:center; border-bottom:2px solid {{ ui.LINE2 }};">Side</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Qty</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Fill</th>
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">When</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in o.fills %}
+    <tr style="border-bottom:1px solid {{ ui.LINE }}; color:{{ ui.BODY }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ f.ticker }}</td>
+      <td style="padding:6px 10px; text-align:center; color:{{ ui.NEG if f.side == 'sell' else ui.POS }};">{{ f.side | upper }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "{:.0f}".format(f.filled_qty) }}</td>
+      <td style="padding:6px 10px; text-align:right;">{% if f.filled_price %}${{ "{:,.2f}".format(f.filled_price) }}{% else %}—{% endif %}</td>
+      <td style="padding:6px 10px;">{{ f.filled_at.strftime('%b %-d %H:%M') if f.filled_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 24px 0;">No fills yet this week.</p>
 {% endif %}
 
 {{ ui.footer("No orders are placed automatically. All execution is manual, in the broker's UI.",
