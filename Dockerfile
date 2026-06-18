@@ -31,7 +31,11 @@ RUN useradd --create-home --shell /bin/bash appuser \
 
 USER appuser
 
-RUN mkdir -p /app/data
+# Create both data dirs as appuser so a freshly-mounted (empty) named volume at
+# /app/db inherits appuser ownership — otherwise the app (appuser) cannot create
+# or journal the SQLite db. /app/db is the SQLite OLTP volume (ADR-0026);
+# /app/data is the parquet/duckdb bind mount.
+RUN mkdir -p /app/data /app/db
 
 EXPOSE 8000
 
