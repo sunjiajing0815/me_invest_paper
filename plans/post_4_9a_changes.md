@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 06-09)
+# Post-4.9a changes (2026-06-03 → 06-18)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -251,6 +251,88 @@ one `ts`. 478 passed, ruff/mypy clean. Live on `main` (rebuilt + restarted 06-13
 
 ---
 
+## 10. Target loader — pct-within-band validation — `1cec2db` (06-15)
+
+A reload of `data/targets/62.yaml` exposed that `load_targets` only validated the **sum** of
+target percentages, not that each pct sits inside its own band. A band that didn't bracket its
+target (QQQ `pct: 25` with `band: [26, 34]` — target below the lower edge) loaded fine and made
+the holding read perpetually "under band".
+
+Fix:
+- `config.py` `load_targets`: raises if not `band_low <= pct <= band_high` for any ticker
+  (in addition to the existing sum check).
+- `data/targets/62.yaml` (bind-mounted data, not committed): QQQ band corrected to `[21, 29]`.
+- Pinned `types-PyYAML` to keep the `import yaml` mypy check clean.
+
+Test: `test_config.py::test_pct_outside_band_raises`. 480 passed, ruff/mypy clean.
+
+## 11. Daily email — Levels → orders recap + allocation donut
+
+### 11a. Replace "Levels at a Glance" with this-week orders recap — `b353d63` (06-17)
+
+S/R levels are weekly-relevant, not daily, so the daily email's levels table is gone. In its
+place: an **"Orders This Week"** section — a headline (`N placed · M filled · $ filled notional`)
+plus a compact fills table (ticker, side, qty, fill price, time) over real (`dry_run=False`)
+`order_execution` rows created since Monday.
+
+- `services/daily_report.py`: `OrdersThisWeek` + `FillRow`; computed in `compose_daily_report`.
+- `jobs/daily_report.py`: the daily job no longer computes indicators/levels or `etf_tickers`
+  (dead work now); `update_bars` stays (weekly freshness).
+- Templates updated (html + txt); removed the obsolete MA200-levels template test.
+
+### 11b. Allocation donut chart (inline CID PNG) — `83515a8` (06-17), **ADR-0025**
+
+A graphically-designed allocation donut (incl. cash) now anchors the daily Allocation section.
+Email clients strip `<svg>` and ignore CSS `conic-gradient`, so the pie is rendered server-side
+with **Pillow** and embedded as an **inline Content-ID image** (renders in Gmail without "load
+images", works offline).
+
+- `services/charts.py` (new): `build_allocation_pie()` (4× supersample → LANCZOS) + `ALLOC_PALETTE`.
+- `services/email.py`: `SMTPEmailer` builds `multipart/related` when `inline_images` are given;
+  `EmailSender`/`FakeEmailer` gain the optional param. Plain emails unchanged.
+- `services/daily_report.py`: `AllocationSlice` + `_build_allocation_slices` (equity = positions +
+  cash; top-8 then "Other"; cash last). Donut + HTML legend share one palette (no colour drift).
+- `jobs/daily_report.py`: renders the PNG and attaches it; render failure → legend-only, no broken
+  image. New runtime dep `pillow>=10.4`.
+
+Tests: `test_charts.py`, `test_email.py` (MIME structure), `test_daily_report_allocation.py`,
+`test_email_templates.py`. 497 passed, ruff/mypy clean. Both daily emails (61, 62) sent with the
+donut, no warnings.
+
+## 12. SQLite WAL data-loss fix — DELETE journal + named-volume DB — `02b1859`,`d5b8d99` (06-18), **ADR-0026**
+
+**Symptom:** the §10 target reload for account 62 (adding TSLA, fixing QQQ) reported `updated` and
+verified present, then days later the DB had **silently reverted** — TSLA gone with no trace (the
+June-1 rows were never even closed), while position snapshots kept advancing. TSLA correctly showed
+as *untracked* because it was genuinely no longer an active target.
+
+**Root cause:** the DB was in **WAL journal mode** (set historically by langgraph `SqliteSaver`,
+never reverted; nothing in the app manages it) on a **macOS Docker bind mount** (`./data`). WAL's
+`-shm`/mmap + POSIX locking is unreliable on Docker Desktop's bind-mount virtualisation (SQLite docs:
+WAL "does not work on a network filesystem"). Committed transactions accumulated in `-wal` (the main
+`.db` lagged it by ~15h; host vs container even reported different sizes for the same file) and the
+un-checkpointed tail was dropped on a restart, reverting to the last checkpoint.
+
+**Fix (both layers):**
+- `db.py`: a `connect` event listener forces `PRAGMA journal_mode=DELETE` + `synchronous=FULL` on
+  every connection (single-writer app — WAL buys nothing); `init_db` **fails fast** if still WAL.
+- `docker-compose.yml`: the OLTP db moved off the bind mount onto a **named volume**
+  (`dbdata:/app/db`, `SQLITE_PATH=/app/db/investor.db`). Parquet/DuckDB stay on `./data`.
+- `Dockerfile`: `mkdir -p /app/db` as appuser so a fresh empty volume is writable (else
+  "attempt to write a readonly database" crash loop).
+- One-time migration: checkpoint+convert the live db off WAL, copy into the named volume (chown 1000),
+  cutover. Verified: `journal_mode=delete`, `synchronous=FULL`, 13 targets incl. TSLA, 905 position
+  rows intact, write path re-confirmed (snapshot 905→919). Old bind-mount db retired (backup
+  `investor.db.bak-pre-vol-2026-06-18` kept).
+
+Test: `test_db.py::test_pragmas_force_delete_journal_not_wal`. 498 passed, ruff/mypy clean.
+
+> **Operational note:** the live DB is no longer at `./data/investor.db` — it lives in the
+> `me_invest_dbdata` volume. Inspect via `docker compose exec app …` against `/app/db/investor.db`;
+> back up with `docker run --rm -v me_invest_dbdata:/db -v "$PWD":/out alpine cp /db/investor.db /out/`.
+
+---
+
 ## Candidate ADRs / gotchas (not yet written)
 
 Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
@@ -263,6 +345,11 @@ Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
 - **One sync = one snapshot `ts`** (`take_snapshot` uses `account.as_of` for all rows);
   `alloc_drift` and other batch logic rely on it — adapters must not set per-row `as_of` (§9).
 - **Suggestion status `cancelled` is terminal** (un-accept); auto-trade ignores it (§8).
+- **`targets.yaml`: each `pct` must lie within its own `band`** — `load_targets` enforces it (§10).
+- *(now written)* **SQLite is DELETE-journal, never WAL; OLTP db on the `me_invest_dbdata`
+  named volume, not `./data`** — ADR-0026 (§12).
+- *(now written)* **Daily email: levels removed (weekly-only) → orders recap + allocation
+  donut (inline CID PNG via Pillow; emailer supports `multipart/related`)** — ADR-0025 (§11).
 
 ## Still open / parked
 

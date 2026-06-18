@@ -59,17 +59,18 @@ src/investor/
     indicators.py     IndicatorRow + compute_indicators() — SMA/EMA/RSI/MACD
     levels.py         SRLevelRow + compute_levels() / persist_levels() / build_nearby_levels()
     suggest.py        OrderSuggestionRow + generate_suggestions() / persist_suggestions()
-    daily_report.py   DailyReport dataclass + compose_daily_report()
+    daily_report.py   DailyReport + compose_daily_report() (orders-this-week recap + allocation_slices)
+    charts.py         build_allocation_pie() — Pillow donut PNG for the daily email (ADR-0025)
     bars.py           update_bars() — Alpaca IEX → Parquet append
     targets.py        load_targets_into_db()
     render.py         Jinja2 template rendering
-    email.py          SMTPEmailer + FakeEmailer
+    email.py          SMTPEmailer + FakeEmailer (inline CID images via multipart/related, ADR-0025)
     reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl()
     auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch()
     tavily.py         TavilyClient Protocol + TavilyConcreteClient + FakeTavilyClient + make_tavily_client()
     weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis
   jobs/
-    daily_report.py   Mon-Fri 16:15 ET — sync, indicators, compose, email
+    daily_report.py   Mon-Fri 16:15 ET — sync, compose (orders recap + allocation donut), email
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
     reconciliation.py Mon-Fri 16:45 ET — match broker fills to suggestions
     moomoo_parallel.py  Mon-Fri 16:50 ET — compare Moomoo vs Alpaca (parallel-run soak)
@@ -80,7 +81,7 @@ config/targets.yaml   user's target allocation (hand-edited or via /targets API)
 migrations/           Alembic revisions
 scripts/              standalone CLIs (sync_positions, show_gap, load_targets)
 docs/adr/             Architecture Decision Records, numbered 0001+
-data/                 SQLite file + Parquet bars; bind-mounted; gitignored
+data/                 Parquet bars + DuckDB; bind-mounted; gitignored (SQLite db is on a named volume — ADR-0026)
 tests/                pytest
 ```
 
@@ -209,6 +210,8 @@ uv run mypy src/
 24. **Week-of alignment for context_adjust_node (Friday→Sunday bridge).** `run_weekly_review` persists market context with `week_of=_next_monday()` (the upcoming Monday). Sunday's `gather_context_node` loads with `state["week_of"]` which is also the upcoming Monday. They must match — do not use `week_of - 7 days` as the persist key.
 25. **Stale context is silently skipped.** If `load_latest_weekly_context` finds no row within `context_max_age_days=4` for the upcoming Monday, it returns `None` and `context_adjust_node` skips the narrative pass entirely. The earnings gate still runs independently. No error is raised — check logs for "no fresh context" if the narrative pass seems absent.
 26. **`context_adjust_node` earnings gate uses Finnhub, not Tavily `forward_events`.** The earnings gate calls `earnings_client.upcoming_earnings()` (Finnhub-backed). If `FINNHUB_API_KEY` is empty, `make_earnings_client()` returns a `FakeEarningsClient(_canned={})` and the gate is a no-op with a WARNING log. Do not wire the earnings gate to Tavily's `forward_events` free-text field.
+27. **SQLite must NOT run in WAL mode, and the OLTP db is on a named volume — not `./data`.** WAL is unsafe on Docker Desktop bind mounts (its `-shm`/mmap + locking is unreliable there) and silently lost a committed target reload once. `db.py` forces `PRAGMA journal_mode=DELETE` + `synchronous=FULL` on every connection and `init_db` fails fast if still WAL. The db lives on the `me_invest_dbdata` Docker volume at `/app/db/investor.db` (`SQLITE_PATH` is overridden in `docker-compose.yml`); Parquet/DuckDB stay on the `./data` bind mount. Inspect via `docker compose exec app …`, not host `sqlite3 ./data/investor.db`. See ADR-0026. (Aside: WAL was originally set by langgraph `SqliteSaver` in Phase 3b — never re-enable it.)
+28. **Daily email shows an allocation donut (inline image) and an orders recap, not S/R levels.** Levels are weekly-only now. The donut is a Pillow PNG (`services/charts.py`) embedded as an inline Content-ID attachment — `SMTPEmailer` switches to `multipart/related` when `inline_images` is passed. `<svg>`/CSS `conic-gradient` don't render in Gmail; don't reach for them. See ADR-0025.
 
 ## Required env vars
 
@@ -231,6 +234,8 @@ Phase 4.9a (multi-broker) adds no required env vars. Per-broker credentials/conn
 Phase 4.5 adds: `TAVILY_API_KEY` (optional; empty = graceful skip of weekly market context section), `TAVILY_MONTHLY_CAP=200` (default 200; cap reached → silent empty + WARNING log).
 
 Phase 4.7 adds: `FINNHUB_API_KEY` (already in config since Phase 3b; now also used for the earnings gate in `context_adjust_node`; empty = no-op gate + WARNING). New sizing settings — all have defaults and are optional: `EARNINGS_SIZE_FACTOR=0.5`, `EARNINGS_REANCHOR=true`, `EARNINGS_LOOKAHEAD_DAYS=7`, `CONTEXT_SIZE_MIN=0.25`, `CONTEXT_SIZE_MAX=1.5`, `CONTEXT_MAX_AGE_DAYS=4`, `CONTEXT_ADJUST_PROMPT_VERSION=v1`, `CRITIC_PROMPT_VERSION=v2`.
+
+Post-4.9a (ADR-0026): in Docker, `SQLITE_PATH` is **overridden to `/app/db/investor.db`** in `docker-compose.yml` so the OLTP db sits on the `dbdata` named volume (not the `./data` bind mount). Locally (non-Docker) `SQLITE_PATH` stays `./data/investor.db` — safe either way now that WAL is disabled. New runtime dep `pillow` (allocation donut, ADR-0025).
 
 ## Where to find more
 

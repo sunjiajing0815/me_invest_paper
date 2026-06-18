@@ -33,7 +33,7 @@ Required variables (see `.env.example` for the full list):
 |---|---|
 | `ALPACA_API_KEY` | Alpaca API key |
 | `ALPACA_SECRET_KEY` | Alpaca secret key |
-| `SQLITE_PATH` | Path to SQLite file, e.g. `data/investor.db` |
+| `SQLITE_PATH` | Path to SQLite file (local: `data/investor.db`; Docker overrides this to `/app/db/investor.db` on a named volume — ADR-0026) |
 | `TARGETS_PATH` | Path to YAML targets, e.g. `config/targets.yaml` |
 | `SMTP_HOST` | e.g. `smtp.gmail.com` |
 | `SMTP_PORT` | e.g. `587` |
@@ -143,7 +143,13 @@ docker compose up --build -d
 docker compose down
 ```
 
-The SQLite file and bar Parquet files are stored in `./data/` (bind-mounted, persists across restarts).
+Bar Parquet files and the DuckDB analytics file are stored in `./data/` (bind-mounted). The **SQLite OLTP database lives on a Docker named volume** (`dbdata` → `/app/db/investor.db`), *not* the bind mount — SQLite journaling is unreliable on Docker Desktop bind mounts and silently lost a write once (see [ADR-0026](docs/adr/0026-sqlite-journaling-and-db-volume.md)). `docker-compose.yml` overrides `SQLITE_PATH` to `/app/db/investor.db` for this reason. Both persist across restarts.
+
+Back up the database with:
+
+```bash
+docker run --rm -v me_invest_dbdata:/db -v "$PWD":/out alpine cp /db/investor.db /out/investor.db.bak
+```
 
 ---
 
@@ -370,9 +376,10 @@ Fires Mon–Fri at 16:15 America/New_York. Contains:
 | Header | Date, equity, cash, broker/mode |
 | Drift alerts | Yellow banner — tickers outside their rebalance band |
 | Untracked positions | Red banner — positions held with no target allocation; prompts to add to `targets.yaml` or trim |
-| Allocation table | Ticker, qty, market value, current %, target %, gap %, band status |
+| Open & committed orders | This-week accepted suggestions + their broker order state, with un-accept links |
+| Allocation | **Donut chart of current allocation incl. cash** (inline image — ADR-0025) + legend, then the allocation table (ticker, qty, market value, current %, target %, gap %, band status) |
 | Gap summary | Top 3 underweight + top 3 overweight |
-| Levels at a glance | SMA-50/200 distance, nearest support and resistance per ticker |
+| Orders this week | Counts (placed / filled / $ filled notional) + a fills table — replaces the old S/R "Levels at a glance" (levels are weekly-only now) |
 | Footer | "No orders are placed automatically." |
 
 Subject: `Portfolio — YYYY-MM-DD (equity $XX,XXX)`
@@ -546,7 +553,7 @@ The warning persists in every email until one of those actions is taken.
 
 ## Data models
 
-All transactional tables are in `data/investor.db` (SQLite).
+All transactional tables are in the SQLite database (`investor.db`). In Docker it lives on the `dbdata` named volume at `/app/db/investor.db`; locally it defaults to `data/investor.db`. It runs in **DELETE journal mode with `synchronous=FULL`, never WAL** (ADR-0026).
 
 ### `target_allocation` / `broker_account` / `positions_snapshot` / `meta`
 
@@ -739,8 +746,15 @@ Per-broker auto-trade mode + optional cap overrides. One row per broker account 
 
 ## Inspecting the database
 
+Local run: `sqlite3 data/investor.db`. Docker (db is on the `dbdata` volume — query inside the container):
+
 ```bash
-sqlite3 data/investor.db
+# one-off query
+docker compose exec app uv run python -c "import sqlite3; \
+  print(sqlite3.connect('/app/db/investor.db').execute('SELECT COUNT(*) FROM order_suggestion').fetchone())"
+
+# or an interactive shell against a copy
+docker run --rm -it -v me_invest_dbdata:/db keinos/sqlite3 sqlite3 /db/investor.db
 ```
 
 ```sql
@@ -903,11 +917,12 @@ src/investor/
     magic_link.py     sign_action() / verify_action() — HMAC-SHA256 email tokens
     news.py           NewsRaw, fetch_alpaca_news(), fetch_finnhub_news(), get_news_for_movers(), load_recent_material_news()
     suggest.py        OrderSuggestionRow (+ base_qty/size_factor/context_note in Phase 4.7), select_anchor() + generate_suggestions() / persist_suggestions()
-    daily_report.py   DailyReport dataclass + compose_daily_report()
+    daily_report.py   DailyReport + compose_daily_report() — orders-this-week recap + allocation_slices (Phase 4.9a+)
+    charts.py         build_allocation_pie() — Pillow donut PNG for the daily email (ADR-0025)
     bars.py           update_bars() — smart backfill + incremental Parquet append
     targets.py        Hash-based idempotent target loader
     render.py         Jinja2 template rendering
-    email.py          SMTPEmailer + FakeEmailer
+    email.py          SMTPEmailer + FakeEmailer — inline CID images via multipart/related (ADR-0025)
     reconciliation.py MatchResult + reconcile_activities() / persist_reconciliation() / compute_realized_pnl() / sync_open_order_statuses() (Phase 4 + 4.8)
     auto_trade.py     AutoTradeOutcome + run_auto_trade_pass() + guards + _trigger_kill_switch() (Phase 4)
     tavily.py         TavilyClient Protocol + TavilyConcreteClient + FakeTavilyClient + factory (Phase 4.5)
@@ -915,7 +930,7 @@ src/investor/
     earnings.py       EarningsClient Protocol + FinnhubEarningsClient + FakeEarningsClient + make_earnings_client() factory (Phase 4.7)
     weekly_review_metrics.py  OrderFunnel / OrderFlow / AllocationDriftRow / PerTickerWeekRow / WeekTrendRow + 5 compute functions; all queries live, no ORM rows cross session boundary (Phase 4.8)
   jobs/
-    daily_report.py        Mon-Fri 16:15 ET — sync, indicators, compose, email
+    daily_report.py        Mon-Fri 16:15 ET — sync, compose (orders recap + allocation donut), email
     suggestion_expiry.py   Mon-Fri 09:00 ET — cancel stale GTC orders + expire suggestions (pre-market, before auto-trade)
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
     reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL, sync broker-cancelled executions (Phase 4)
@@ -949,9 +964,10 @@ sql/
   alloc_drift.sql             Per-ticker allocation drift Mon→Fri with holiday fallback (Phase 4.8)
   per_ticker_breakdown.sql    Per-ticker qty/$ routed and filled for one week (Phase 4.8)
 migrations/           Alembic revisions
-data/
-  investor.db         SQLite — bind-mounted, gitignored
-  bars/               Parquet bar files — bind-mounted, gitignored
+data/                 bind-mounted, gitignored (NOT the SQLite db — see below)
+  bars/               Parquet bar files
+  *.duckdb            DuckDB analytics file
+(SQLite investor.db lives on the `dbdata` Docker named volume at /app/db, ADR-0026)
 tests/
   test_config.py              Settings + YAML loader (8 tests)
   test_gap.py                 Gap computation + band_status, cash-buffer invariant (11 tests)
