@@ -4,7 +4,14 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     env_file: .env
+    # The SQLite OLTP db lives on a named volume (real ext4 in the VM), NOT the
+    # ./data bind mount: SQLite journaling is unreliable on Docker Desktop bind
+    # mounts and silently lost a write once (ADR-0026). Parquet bars / duckdb stay
+    # on the bind mount (append-only, no journaling). Overrides SQLITE_PATH from .env.
+    environment:
+      - SQLITE_PATH=/app/db/investor.db
     volumes:
+      - dbdata:/app/db
       - ./data:/app/data
       - ./config:/app/config:ro
     # Lets the container reach a host-side daemon (Moomoo OpenD) at
@@ -23,3 +30,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 15s
+
+volumes:
+  dbdata:
