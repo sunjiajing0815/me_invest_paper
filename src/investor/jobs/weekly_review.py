@@ -332,6 +332,26 @@ def _build_and_persist_context(
     return market_context
 
 
+def _filter_context_to_watchlist(
+    context: WeeklyMarketContext | None, watchlist: list[str]
+) -> WeeklyMarketContext | None:
+    """Narrow the per-ticker catch-up to one account's watchlist.
+
+    The market context is built ONCE from the union of all active watchlists (one Tavily
+    fanout), so its ``ticker_catchup`` spans every account's tickers. When rendering a single
+    account's email, the catch-up must show only that account's tickers (e.g. Moomoo must not
+    show MU, Alpaca must not show PANW). Macro/sector summaries, forward events, and citations
+    stay user-level (shared, unfiltered). Returns the input unchanged when there's nothing to
+    narrow."""
+    if context is None or not context.ticker_catchup:
+        return context
+    allowed = set(watchlist)
+    filtered = {t: s for t, s in context.ticker_catchup.items() if t in allowed}
+    if filtered == context.ticker_catchup:
+        return context
+    return dataclasses.replace(context, ticker_catchup=filtered)
+
+
 def run_weekly_review_for_account(
     settings: Settings,
     adapter: BrokerAdapter,
@@ -357,6 +377,8 @@ def run_weekly_review_for_account(
          if t.asset_class in ("index_etf", "leveraged_etf")}
         if targets_cfg else set()
     )
+    # The shared (union) context's ticker catch-up must be narrowed to this account's tickers.
+    acct_context = _filter_context_to_watchlist(market_context, tickers)
 
     with session_scope() as session:
         review = _build_review(
@@ -438,7 +460,7 @@ def run_weekly_review_for_account(
         executions_this_week=review.executions_this_week,
         preview_suggestions=preview_suggestions,
         moomoo_status=review.moomoo_status,
-        market_context=market_context,
+        market_context=acct_context,
         order_funnel=review.order_funnel,
         order_flow=review.order_flow,
         drift_rows=review.drift_rows,

@@ -18,6 +18,7 @@ from investor.jobs.weekly_review import (
     SuggestionAudit,
     WeeklyReview,
     _build_review,
+    _filter_context_to_watchlist,
     _week_start,
     run_weekly_review_all_brokers,
     run_weekly_review_for_account,
@@ -25,6 +26,42 @@ from investor.jobs.weekly_review import (
 from investor.models import AutoTradeState, Base, BrokerAccount, OrderSuggestion
 from investor.services.accounts import AccountInfo
 from investor.services.email import FakeEmailer
+from investor.services.weekly_context import WeeklyMarketContext
+
+
+def _ctx(catchup: dict[str, str]) -> WeeklyMarketContext:
+    return WeeklyMarketContext(
+        week_of=date(2026, 6, 15),
+        macro_summary="Fed held rates.",
+        sector_summary="Tech led.",
+        ticker_catchup=catchup,
+        forward_events=["MU earnings 6/24"],
+        citations=[],
+    )
+
+
+def test_filter_context_narrows_ticker_catchup_to_watchlist() -> None:
+    ctx = _ctx({"QQQ": "q", "MU": "m", "PANW": "p"})
+    # Moomoo holds PANW + QQQ, not MU
+    moomoo = _filter_context_to_watchlist(ctx, ["QQQ", "PANW", "TSLA"])
+    assert set(moomoo.ticker_catchup) == {"QQQ", "PANW"}
+    assert "MU" not in moomoo.ticker_catchup
+    # Alpaca holds MU + QQQ, not PANW
+    alpaca = _filter_context_to_watchlist(ctx, ["QQQ", "MU"])
+    assert set(alpaca.ticker_catchup) == {"QQQ", "MU"}
+    assert "PANW" not in alpaca.ticker_catchup
+    # Shared user-level fields are untouched
+    assert moomoo.macro_summary == ctx.macro_summary
+    assert moomoo.forward_events == ctx.forward_events
+
+
+def test_filter_context_passthrough_when_nothing_to_filter() -> None:
+    assert _filter_context_to_watchlist(None, ["QQQ"]) is None
+    ctx = _ctx({})  # empty catch-up → returned unchanged
+    assert _filter_context_to_watchlist(ctx, ["QQQ"]) is ctx
+    full = _ctx({"QQQ": "q"})  # watchlist covers all keys → unchanged instance
+    assert _filter_context_to_watchlist(full, ["QQQ", "MU"]) is full
+
 
 # ── _week_start ────────────────────────────────────────────────────────────────
 
