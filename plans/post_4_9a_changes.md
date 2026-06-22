@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 06-18)
+# Post-4.9a changes (2026-06-03 → 06-23)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -333,6 +333,54 @@ Test: `test_db.py::test_pragmas_force_delete_journal_not_wal`. 498 passed, ruff/
 
 ---
 
+## 13. Weekly review — per-ticker catch-up filtered per account — `275a221` (06-23)
+
+**Symptom:** the "Ticker Catch-Up" subsection (weekly review §8 market context) was **identical
+in both accounts' emails** even though their targets differ — Moomoo's email listed MU (an
+Alpaca-only target) and Alpaca's listed PANW (a Moomoo-only target).
+
+**Root cause:** the user-level market context is built **once** from the *union* of all active
+watchlists (one Tavily fanout — intentional; macro/sector narrative is genuinely user-level), so
+its `ticker_catchup` dict spans every account's tickers. The template rendered the **entire** dict
+in each per-account email.
+
+**Fix:** `jobs/weekly_review.py::_filter_context_to_watchlist` narrows `ticker_catchup` to the
+rendering account's watchlist before building the per-account `WeeklyReview`; macro/sector
+summaries, forward events, and citations stay shared (user-level). The all-brokers union build is
+unchanged. Verified live against the persisted context: Alpaca catch-up has MU/not PANW, Moomoo has
+PANW/not MU.
+
+Test: `test_weekly_review.py::test_filter_context_narrows_ticker_catchup_to_watchlist` (+ passthrough
+case). 500 passed, ruff/mypy clean.
+
+> Note: `forward_events` and `citations` remain shared/unfiltered (macro-ish), so a forward event
+> like "MU earnings 6/24" can still appear in Moomoo's email — left as-is by design; revisit if it
+> becomes noisy.
+
+## 14. Un-accept link returned `{"detail":"invalid action"}` — route ordering — `fa4d064` (06-23)
+
+**Symptom:** clicking the daily-email **Un-accept** link for TQQQ returned
+`{"detail":"invalid action"}` instead of the confirm page.
+
+**Root cause:** **FastAPI route-registration order.** The generic magic-link route
+`GET /suggestions/{sid}/{action}` was registered **before** the specific
+`GET /suggestions/{sid}/unaccept`, so the un-accept URL matched the generic route with
+`action="unaccept"` and hit its `if action not in ("accept","reject")` guard. The dedicated confirm
+page was unreachable. (A `Path(pattern=…)` constraint wouldn't help — it 422s rather than falling
+through — so ordering is the fix.) The existing endpoint tests called the handler *functions*
+directly, bypassing URL dispatch, which is why this slipped through.
+
+**Fix:** registered the specific `GET /suggestions/{sid}/unaccept` route **before** the generic
+`/{action}` route in `main.py`, with a comment documenting the ordering requirement. Added a
+routing-resolution test that asserts the URL resolves to `unaccept_confirm` (and that
+`accept`/`reject` still resolve to the generic handler).
+
+Test: `test_api_unaccept.py::test_get_unaccept_url_resolves_to_confirm_not_generic_action`. 501
+passed, ruff/mypy clean. Verified live: `GET /suggestions/66/unaccept` (the accepted TQQQ, account
+61) now returns HTTP 200 confirm page, zero "invalid action"; GET is side-effect-free so the
+suggestion stayed `accepted`. (Aside: `order_suggestion.id` is a global autoincrement PK — unique
+across all broker accounts — so the `sid`-only lookup + token binding is unambiguous.)
+
 ## Candidate ADRs / gotchas (not yet written)
 
 Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
@@ -350,6 +398,14 @@ Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
   named volume, not `./data`** — ADR-0026 (§12).
 - *(now written)* **Daily email: levels removed (weekly-only) → orders recap + allocation
   donut (inline CID PNG via Pillow; emailer supports `multipart/related`)** — ADR-0025 (§11).
+- **FastAPI matches routes in registration order** — a specific path (`/suggestions/{sid}/unaccept`)
+  must be declared *before* a generic one (`/suggestions/{sid}/{action}`) or the param route
+  swallows it; `Path(pattern=…)` 422s rather than falling through. Test routing via real dispatch,
+  not by calling handlers directly (§14).
+- **`order_suggestion.id` (`sid`) is a global autoincrement PK** — unique across all broker
+  accounts, not per-account; account is derived from the row (§14).
+- **Weekly market context is built once (union of watchlists) but per-ticker catch-up is filtered
+  per account at render** (`_filter_context_to_watchlist`); macro/sector stay shared (§13).
 
 ## Still open / parked
 
