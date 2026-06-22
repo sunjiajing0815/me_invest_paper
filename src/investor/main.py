@@ -621,6 +621,51 @@ def patch_suggestion(sid: int, body: SuggestionActionRequest) -> dict[str, Any]:
     return {"status": "ok", "id": sid, "new_status": new_status}
 
 
+# NOTE: this specific route MUST be registered BEFORE the generic
+# `/suggestions/{sid}/{action}` route below — FastAPI matches in registration order, and
+# `{action}` would otherwise swallow "unaccept" and reject it as an "invalid action".
+@app.get(
+    "/suggestions/{sid}/unaccept", response_class=HTMLResponse, summary="Un-accept confirm page"
+)
+def unaccept_confirm(sid: int, token: str, request: Request) -> HTMLResponse:
+    """Render the prefetch-safe confirmation page. No side effects — the cancel happens on POST."""
+    from .models import OrderExecution, OrderSuggestion
+    from .services.magic_link import verify_action
+
+    settings = request.app.state.settings
+    if not verify_action(sid, "unaccept", token, settings.magic_link_secret):
+        raise HTTPException(status_code=400, detail="invalid or expired token")
+    with session_scope() as s:
+        sug = s.get(OrderSuggestion, sid)
+        if sug is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        live_status = sug.status
+        if sug.status == "accepted":
+            exe = s.scalars(
+                select(OrderExecution).where(
+                    OrderExecution.suggestion_id == sid,
+                    OrderExecution.dry_run.is_(False),
+                    OrderExecution.broker_order_id.is_not(None),
+                ).order_by(OrderExecution.created_at.desc())
+            ).first()
+            if exe is None:
+                live_status = "awaiting placement"
+            else:
+                adapter = request.app.state.adapters.get(sug.broker_account_id)
+                if adapter is None:
+                    live_status = "no adapter for this account"
+                else:
+                    try:
+                        live_status = adapter.get_order(exe.broker_order_id).status
+                    except Exception:  # noqa: BLE001 — broker unreachable; show that, don't fail
+                        live_status = "unknown (broker unreachable)"
+        ctx = {
+            "sid": sid, "token": token, "ticker": sug.ticker, "side": sug.side,
+            "qty": sug.qty, "limit_price": sug.limit_price, "live_status": live_status,
+        }
+    return HTMLResponse(render_template("unaccept_confirm.html.j2", **ctx))
+
+
 @app.get(
     "/suggestions/{sid}/{action}",
     summary="Magic-link accept/reject",
@@ -680,48 +725,6 @@ _UNACCEPT_MESSAGES: dict[str, tuple[str, str]] = {
     "not_actionable": ("Not un-acceptable.", "This suggestion is not in the accepted state."),
     "not_found": ("Not found.", "No such suggestion."),
 }
-
-
-@app.get(
-    "/suggestions/{sid}/unaccept", response_class=HTMLResponse, summary="Un-accept confirm page"
-)
-def unaccept_confirm(sid: int, token: str, request: Request) -> HTMLResponse:
-    """Render the prefetch-safe confirmation page. No side effects — the cancel happens on POST."""
-    from .models import OrderExecution, OrderSuggestion
-    from .services.magic_link import verify_action
-
-    settings = request.app.state.settings
-    if not verify_action(sid, "unaccept", token, settings.magic_link_secret):
-        raise HTTPException(status_code=400, detail="invalid or expired token")
-    with session_scope() as s:
-        sug = s.get(OrderSuggestion, sid)
-        if sug is None:
-            raise HTTPException(status_code=404, detail="suggestion not found")
-        live_status = sug.status
-        if sug.status == "accepted":
-            exe = s.scalars(
-                select(OrderExecution).where(
-                    OrderExecution.suggestion_id == sid,
-                    OrderExecution.dry_run.is_(False),
-                    OrderExecution.broker_order_id.is_not(None),
-                ).order_by(OrderExecution.created_at.desc())
-            ).first()
-            if exe is None:
-                live_status = "awaiting placement"
-            else:
-                adapter = request.app.state.adapters.get(sug.broker_account_id)
-                if adapter is None:
-                    live_status = "no adapter for this account"
-                else:
-                    try:
-                        live_status = adapter.get_order(exe.broker_order_id).status
-                    except Exception:  # noqa: BLE001 — broker unreachable; show that, don't fail
-                        live_status = "unknown (broker unreachable)"
-        ctx = {
-            "sid": sid, "token": token, "ticker": sug.ticker, "side": sug.side,
-            "qty": sug.qty, "limit_price": sug.limit_price, "live_status": live_status,
-        }
-    return HTMLResponse(render_template("unaccept_confirm.html.j2", **ctx))
 
 
 @app.post(

@@ -87,3 +87,25 @@ def test_admin_unaccept(engine: Engine) -> None:
     assert out["result"] == "cancelled"
     with session_scope() as s:
         assert s.get(OrderSuggestion, sid).status == "cancelled"
+
+
+def test_get_unaccept_url_resolves_to_confirm_not_generic_action() -> None:
+    """Regression: GET /suggestions/{sid}/unaccept must route to unaccept_confirm, not the
+    generic /suggestions/{sid}/{action} handler (which rejects 'unaccept' as invalid action).
+    FastAPI matches in registration order, so the specific route must come first."""
+    from starlette.routing import Match
+
+    from investor.main import app
+
+    scope = {"type": "http", "method": "GET", "path": "/suggestions/5/unaccept"}
+    matched = next(
+        (r for r in app.router.routes if r.matches(scope)[0] == Match.FULL), None
+    )
+    assert matched is not None
+    assert matched.endpoint.__name__ == "unaccept_confirm"
+
+    # The generic route still wins for real accept/reject actions.
+    for action in ("accept", "reject"):
+        s2 = {"type": "http", "method": "GET", "path": f"/suggestions/5/{action}"}
+        m = next((r for r in app.router.routes if r.matches(s2)[0] == Match.FULL), None)
+        assert m is not None and m.endpoint.__name__ == "suggestion_magic_link"
