@@ -63,7 +63,7 @@ These are gates the soak baseline needs in place. None are large. All bound the 
 **Effort.** 5 minutes.
 **Refs.** `post_4_9a_cleanup.md` open-items; ADR-0026.
 
-### P0.2 — Retroactive data-integrity audit (post-WAL fix)
+### P0.2 — Retroactive data-integrity audit (post-WAL fix) — ✅ done (2026-06-23; `scripts/audit_integrity.py` + `plans/data_integrity_audit_2026-06.md`; 0 FAIL, 1 low-impact WARN)
 
 **What.** Pick a sample of writes you remember making across the Phase 3b → 2026-06-18 window (target edits, mode promotions, suggestion accepts, broker-account onboards) and verify the live DB matches your memory.
 **Why.** The WAL silent-loss bug was latent for months. The TSLA target reload that surfaced it was one case; the audit is the only thing that bounds the unknown. ADR-0026 §"Open follow-ups" explicitly calls this out.
@@ -72,7 +72,7 @@ These are gates the soak baseline needs in place. None are large. All bound the 
 **Effort.** 1–2 hours.
 **Refs.** ADR-0026; `post_4_9a_cleanup.md` "High-priority operational concerns".
 
-### P0.3 — Documented + verified backup-and-restore procedure for the named-volume DB
+### P0.3 — Documented + verified backup-and-restore procedure for the named-volume DB — ✅ done (2026-06-23; `operational_runbook.md` + weekly `db_backup` job + verified scratch-volume restore)
 
 **What.** Write a step-by-step procedure for backing up `me_invest_dbdata` and restoring it onto a fresh volume. Then execute the restore against a test volume to verify it actually works.
 **Why.** The DB is no longer at `./data/investor.db` on the host filesystem — it lives in the Docker named volume. A `docker volume prune` wipes it; Time Machine on `./data/` no longer covers it. The recovery path being theoretical is the failure mode that bites the day you need it.

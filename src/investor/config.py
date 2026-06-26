@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     weekly_review_trend_weeks: int = 4
     weekly_review_breakdown_top_n: int = 20
 
+    # Post-4.9a (P0.3): weekly SQLite backup of the named-volume DB into the ./data bind mount
+    backup_enabled: bool = True
+    backup_dir: str = "data/backups"
+    backup_keep: int = 8
+
     @field_validator(
         "level_prompt_version", "weekly_context_prompt_version",
         "context_adjust_prompt_version", "critic_prompt_version",

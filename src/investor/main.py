@@ -43,6 +43,7 @@ from .brokers import build_account_adapters, make_account_adapter, make_adapter
 from .config import Settings, load_targets
 from .db import init_db, session_scope
 from .jobs.auto_trade import run_auto_trade_job, run_auto_trade_job_all_brokers
+from .jobs.backup import run_backup
 from .jobs.daily_report import (
     run_daily_report_all_brokers,
     run_daily_report_for_account,
@@ -253,6 +254,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_weekly_review_all_brokers, _settings, emailer, llm, tavily, adapters, sentiment
     )
     auto_trade_fn = partial(run_auto_trade_job_all_brokers, _settings, emailer, adapters)
+    backup_fn = partial(run_backup, _settings)
     scheduler = make_scheduler(
         daily_fn,
         weekly_fn,
@@ -262,6 +264,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         moomoo_parallel_fn,
         weekly_review_fn,
         auto_trade_fn,
+        backup_func=backup_fn,
     )
     scheduler.start()
     app.state.scheduler = scheduler

@@ -51,6 +51,7 @@ def make_scheduler(
     moomoo_parallel_func: Callable[[], None] | None = None,
     weekly_review_func: Callable[[], None] | None = None,
     auto_trade_func: Callable[[], None] | None = None,
+    backup_func: Callable[[], None] | None = None,
 ) -> BackgroundScheduler:
     """Create and configure the scheduler. Does not start it."""
     sched = BackgroundScheduler(timezone="America/New_York")
@@ -165,10 +166,25 @@ def make_scheduler(
             misfire_grace_time=60 * 15,  # 15 min grace — must fire before market moves
         )
 
+    if backup_func is not None:
+        sched.add_job(
+            backup_func,
+            trigger=CronTrigger(
+                day_of_week="sun",
+                hour=2,
+                minute=0,
+                timezone="America/New_York",
+            ),
+            id="db_backup",
+            replace_existing=True,
+            misfire_grace_time=60 * 60 * 6,  # 6h grace — off-hours, non-urgent
+        )
+
     logger.info(
         "APScheduler created. Expiry sweep Mon–Fri 09:00 ET; Auto-trade Mon–Fri 09:35 ET;"
         " Daily report Mon–Fri 16:15 ET; Movers Mon–Fri 16:30 ET;"
         " Reconciliation Mon–Fri 16:45 ET; Moomoo parallel Mon–Fri 16:50 ET;"
-        " Weekly suggestions Sun 18:00 ET; Weekly review Fri 17:00 ET"
+        " Weekly suggestions Sun 18:00 ET; Weekly review Fri 17:00 ET;"
+        " DB backup Sun 02:00 ET"
     )
     return sched
