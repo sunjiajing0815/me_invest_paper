@@ -597,21 +597,26 @@ def _open_exec(session: Session, *, created_at: datetime, broker_order_id: str) 
     session.commit()
 
 
-def _run_recon_capturing_since(account_ref: int) -> datetime:
-    """Run the reconciliation job with the broker calls stubbed; return the `since` used."""
+def _run_recon_capturing_since(account_ref: int, max_lookback_days: int = 100_000) -> datetime:
+    """Run the reconciliation job with the broker calls stubbed; return the `since` used.
+
+    ``max_lookback_days`` defaults huge so the P1.2 cap is effectively disabled for the
+    oldest-open-extension tests (whose fixed _NOW is now real-months in the past).
+    """
     captured: dict[str, datetime] = {}
 
     def _cap(*, session, adapter, since, broker_account_id):  # noqa: ANN001, ARG001
         captured["since"] = since
         return []
 
+    settings = MagicMock(reconciliation_max_lookback_days=max_lookback_days)
     with (
         patch("investor.jobs.reconciliation.reconcile_activities", side_effect=_cap),
         patch("investor.jobs.reconciliation.persist_reconciliation"),
         patch("investor.jobs.reconciliation.sync_open_order_statuses", return_value=0),
     ):
         run_daily_reconciliation_for_account(
-            MagicMock(), MagicMock(),
+            settings, MagicMock(),
             AccountInfo(account_ref=account_ref, nickname="Alpaca", broker="alpaca"),
         )
     return captured["since"]
@@ -639,3 +644,23 @@ def test_window_not_extended_when_no_open_executions(db_session: Session) -> Non
 
     since = _run_recon_capturing_since(_ACCT)
     assert since == last_run - timedelta(hours=1)
+
+
+def test_window_capped_at_max_lookback(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """P1.2: a zombie open order older than the cap clamps `since` and logs a WARNING, so a
+    forgotten GTC can't make every run pull months of activities."""
+    import logging
+
+    real_now = datetime.now(UTC)
+    _open_exec(db_session, created_at=real_now - timedelta(days=40), broker_order_id="b-zombie")
+    db_session.add(Meta(key=_meta_key(_ACCT), value=(real_now - timedelta(days=1)).isoformat()))
+    db_session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        since = _run_recon_capturing_since(_ACCT, max_lookback_days=30)
+
+    # Clamped to ~now-30d, NOT back to the 40-day-old zombie.
+    assert real_now - timedelta(days=31) <= since <= real_now - timedelta(days=29)
+    assert "capped" in caplog.text

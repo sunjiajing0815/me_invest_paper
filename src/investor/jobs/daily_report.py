@@ -22,6 +22,7 @@ from ..services.magic_link import sign_action
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.targets import targets_path_for_account
+from ..services.weekly_context import sentiment_canary
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,12 @@ def run_daily_report_all_brokers(
     """Run the daily report for every active broker account, isolating failures."""
     with session_scope() as session:
         accounts = list_active_accounts(session)
+        # User-level sentiment-degradation canary (P1.5) — logs a WARNING if the latest market
+        # context lost its VIX/Fear&Greed (CNN scrape broke, ADR-0030). Cheap; never raises.
+        try:
+            sentiment_canary(session, settings.sentiment_canary_max_age_days)
+        except Exception:
+            logger.exception("sentiment_canary check failed (non-fatal)")
     for account in accounts:
         adapter = adapters.get(account.account_ref)
         if adapter is None:

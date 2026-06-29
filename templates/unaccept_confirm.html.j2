@@ -6,8 +6,8 @@
 <body style="font-family:Arial,Helvetica,sans-serif; color:{{ ui.BODY }}; background:#ffffff; max-width:520px; margin:0 auto; padding:24px;">
   <h2 style="color:{{ ui.INK }}; margin:0 0 10px 0;">Un-accept suggestion #{{ sid }}?</h2>
   <p style="font-size:15px;">{{ side | upper }} {{ "{:.0f}".format(qty) }} {{ ticker }} @ ${{ "{:,.2f}".format(limit_price) }}</p>
-  <p style="font-size:14px; color:{{ ui.MUTED }};">Current broker order status: <strong style="color:{{ ui.BODY }};">{{ live_status }}</strong>.</p>
-  <p style="font-size:13px; color:{{ ui.MUTED }};">Confirming cancels any working broker order and marks the suggestion cancelled. A fully-filled order can't be un-accepted.</p>
+  <p style="font-size:14px; color:{{ ui.MUTED }};">Last known order status{% if as_of %} (as of {{ as_of }}){% endif %}: <strong style="color:{{ ui.BODY }};">{{ live_status }}</strong>.</p>
+  <p style="font-size:13px; color:{{ ui.MUTED }};">Confirming re-checks the broker, cancels any working order, and marks the suggestion cancelled. A fully-filled order can't be un-accepted.</p>
   <form method="post" action="/suggestions/{{ sid }}/unaccept?token={{ token }}" style="margin-top:18px;">
     <button type="submit" style="background:{{ ui.NEG }}; color:#ffffff; border:0; padding:11px 20px; border-radius:6px; font-size:14px; font-weight:bold; cursor:pointer;">Confirm cancel</button>
   </form>

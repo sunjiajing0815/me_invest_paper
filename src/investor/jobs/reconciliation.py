@@ -61,6 +61,19 @@ def run_daily_reconciliation_for_account(
         if oldest_open is not None:
             since = min(since, oldest_open - timedelta(hours=1))
 
+        # Upper bound: never look back further than the cap. Without this, a forgotten zombie
+        # GTC (stuck accepted_for_routing) makes every run pull months of activities, degrading
+        # cron timing. Surface it; the user decides whether to cancel the stuck order.
+        cap = datetime.now(UTC) - timedelta(days=settings.reconciliation_max_lookback_days)
+        if since < cap:
+            logger.warning(
+                "reconciliation[%s]: lookback capped at %d days (oldest open execution dates to "
+                "%s — likely a zombie GTC; cancel it or it will widen every run)",
+                account.account_ref, settings.reconciliation_max_lookback_days,
+                oldest_open.isoformat() if oldest_open else "n/a",
+            )
+            since = cap
+
     with session_scope() as session:
         results = reconcile_activities(
             session=session,

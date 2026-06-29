@@ -58,7 +58,11 @@ def test_get_confirm_has_no_side_effect(engine: Engine) -> None:
     tok = sign_action(sid, "unaccept", SECRET)
     resp = unaccept_confirm(sid, tok, _req(adapter))
     assert resp.status_code == 200
-    assert "Confirm" in resp.body.decode()
+    body = resp.body.decode()
+    assert "Confirm" in body
+    assert "Working" in body  # DB-derived status (accepted_for_routing → "Working")
+    # P1.4: GET is prefetch-safe — DB-only, no broker call.
+    adapter.get_order.assert_not_called()
     adapter.cancel_order.assert_not_called()
     with session_scope() as s:
         assert s.get(OrderSuggestion, sid).status == "accepted"  # GET changes nothing

@@ -126,6 +126,30 @@ def load_latest_weekly_context(
     return _weekly_context_from_dict(json.loads(row.payload_json))
 
 
+def sentiment_canary(session: Session, max_age_days: int) -> bool:
+    """Warn if the latest market context is recent but has no VIX/Fear&Greed (P1.5).
+
+    The CNN Fear & Greed scrape is fragile (ADR-0030); when it breaks, the Market Sentiment
+    widget silently hides, which reads as a neutral market. This surfaces the degradation:
+    log a WARNING when the most-recent ``weekly_market_context`` row is within ``max_age_days``
+    yet both ``vix`` and ``fear_greed_score`` are NULL. Returns True if the canary tripped.
+    A stale-or-absent latest row is NOT this canary's concern (returns False)."""
+    row = session.scalars(
+        select(WeeklyMarketContextRow).order_by(WeeklyMarketContextRow.created_at.desc())
+    ).first()
+    if row is None or row.created_at < datetime.now(UTC) - timedelta(days=max_age_days):
+        return False
+    ctx = _weekly_context_from_dict(json.loads(row.payload_json))
+    if ctx.vix is None and ctx.fear_greed_score is None:
+        log.warning(
+            "sentiment_canary: latest market context (week_of=%s, created %s) has NULL VIX and "
+            "Fear&Greed — CNN scrape likely degraded (ADR-0030); check sentiment fetch logs",
+            row.week_of, row.created_at.date(),
+        )
+        return True
+    return False
+
+
 def _weekly_context_from_dict(data: dict[str, Any]) -> WeeklyMarketContext:
     """Reconstruct WeeklyMarketContext from asdict() output."""
     citations = [

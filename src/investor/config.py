@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     backup_dir: str = "data/backups"
     backup_keep: int = 8
 
+    # Soak-window P1: reconciliation window cap + manual-cancel inference + sentiment canary
+    reconciliation_max_lookback_days: int = 30
+    manual_cancel_inference_hours: int = 24
+    sentiment_canary_max_age_days: int = 7
+
     @field_validator(
         "level_prompt_version", "weekly_context_prompt_version",
         "context_adjust_prompt_version", "critic_prompt_version",

@@ -633,6 +633,7 @@ def patch_suggestion(sid: int, body: SuggestionActionRequest) -> dict[str, Any]:
 def unaccept_confirm(sid: int, token: str, request: Request) -> HTMLResponse:
     """Render the prefetch-safe confirmation page. No side effects — the cancel happens on POST."""
     from .models import OrderExecution, OrderSuggestion
+    from .services.daily_report import _committed_status
     from .services.magic_link import verify_action
 
     settings = request.app.state.settings
@@ -642,29 +643,24 @@ def unaccept_confirm(sid: int, token: str, request: Request) -> HTMLResponse:
         sug = s.get(OrderSuggestion, sid)
         if sug is None:
             raise HTTPException(status_code=404, detail="suggestion not found")
+        # DB-only status on GET — NO broker call. Email-link prefetchers (SafeLinks, Gmail
+        # preview, Slack unfurl) hit this URL on hover; querying the broker here can rate-limit
+        # it. The POST action re-queries the broker for the authoritative cancel decision.
         live_status = sug.status
+        as_of = None
         if sug.status == "accepted":
             exe = s.scalars(
                 select(OrderExecution).where(
                     OrderExecution.suggestion_id == sid,
                     OrderExecution.dry_run.is_(False),
-                    OrderExecution.broker_order_id.is_not(None),
                 ).order_by(OrderExecution.created_at.desc())
             ).first()
-            if exe is None:
-                live_status = "awaiting placement"
-            else:
-                adapter = request.app.state.adapters.get(sug.broker_account_id)
-                if adapter is None:
-                    live_status = "no adapter for this account"
-                else:
-                    try:
-                        live_status = adapter.get_order(exe.broker_order_id).status
-                    except Exception:  # noqa: BLE001 — broker unreachable; show that, don't fail
-                        live_status = "unknown (broker unreachable)"
+            live_status, _ = _committed_status(exe)
+            as_of = (exe.filled_at or exe.created_at) if exe else None
         ctx = {
             "sid": sid, "token": token, "ticker": sug.ticker, "side": sug.side,
             "qty": sug.qty, "limit_price": sug.limit_price, "live_status": live_status,
+            "as_of": as_of.strftime("%Y-%m-%d %H:%M UTC") if as_of else None,
         }
     return HTMLResponse(render_template("unaccept_confirm.html.j2", **ctx))
 
