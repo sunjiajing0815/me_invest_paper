@@ -16,6 +16,7 @@ from ..services.accounts import (
     list_active_accounts,
 )
 from ..services.reconciliation import (
+    infer_manual_cancels,
     persist_reconciliation,
     reconcile_activities,
     sync_open_order_statuses,
@@ -85,6 +86,12 @@ def run_daily_reconciliation_for_account(
             session, results, broker=account.broker, broker_account_id=account.account_ref
         )
         synced = sync_open_order_statuses(session, adapter, account.account_ref)
+        # P1.3: a broker-UI cancel (no un-accept click) leaves the suggestion 'accepted' and
+        # auto-trade would re-place it; flip it to 'cancelled' after the grace window.
+        inferred = infer_manual_cancels(
+            session, account.account_ref,
+            inference_hours=settings.manual_cancel_inference_hours,
+        )
 
         meta_row = session.get(Meta, meta_key)
         if meta_row is None:
@@ -93,8 +100,9 @@ def run_daily_reconciliation_for_account(
             meta_row.value = datetime.now(UTC).isoformat()
 
     logger.info(
-        "reconciliation: %s account_ref=%s — %d activities, %d open execs synced",
-        account.nickname, account.account_ref, len(results), synced,
+        "reconciliation: %s account_ref=%s — %d activities, %d open execs synced, "
+        "%d manual-cancel(s) inferred",
+        account.nickname, account.account_ref, len(results), synced, inferred,
     )
 
 

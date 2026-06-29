@@ -17,6 +17,7 @@ from investor.models import Base, Meta, OrderExecution, OrderSuggestion
 from investor.services.accounts import AccountInfo
 from investor.services.reconciliation import (
     compute_realized_pnl,
+    infer_manual_cancels,
     persist_reconciliation,
     reconcile_activities,
     sync_open_order_statuses,
@@ -609,7 +610,9 @@ def _run_recon_capturing_since(account_ref: int, max_lookback_days: int = 100_00
         captured["since"] = since
         return []
 
-    settings = MagicMock(reconciliation_max_lookback_days=max_lookback_days)
+    settings = MagicMock(
+        reconciliation_max_lookback_days=max_lookback_days, manual_cancel_inference_hours=24
+    )
     with (
         patch("investor.jobs.reconciliation.reconcile_activities", side_effect=_cap),
         patch("investor.jobs.reconciliation.persist_reconciliation"),
@@ -644,6 +647,63 @@ def test_window_not_extended_when_no_open_executions(db_session: Session) -> Non
 
     since = _run_recon_capturing_since(_ACCT)
     assert since == last_run - timedelta(hours=1)
+
+
+# ── P1.3: manual-broker-UI-cancel inference ──────────────────────────────────
+
+def _exe_for(
+    session: Session, sug_id: int, *, status: str,
+    cancelled_at: datetime | None = None, created_at: datetime | None = None,
+    broker_order_id: str = "bo-x",
+) -> OrderExecution:
+    row = OrderExecution(
+        broker_account_id=_ACCT, suggestion_id=sug_id, ticker="AAPL", side="buy",
+        filled_qty=0.0, broker_order_id=broker_order_id, broker="alpaca", dry_run=False,
+        status=status, match_method="auto_trade_placed", match_confidence=1.0,
+        created_at=created_at or (datetime.now(UTC) - timedelta(days=2)),
+        cancelled_at=cancelled_at,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def test_infer_flips_stale_broker_cancel(db_session: Session) -> None:
+    sug = _sug(db_session, status="accepted")
+    _exe_for(db_session, sug.id, status="broker_cancelled",
+             cancelled_at=datetime.now(UTC) - timedelta(hours=48))
+    n = infer_manual_cancels(db_session, _ACCT, inference_hours=24)
+    assert n == 1
+    assert db_session.get(OrderSuggestion, sug.id).status == "cancelled"
+    assert "broker UI" in (db_session.get(OrderSuggestion, sug.id).note or "")
+
+
+def test_infer_skips_within_grace_window(db_session: Session) -> None:
+    sug = _sug(db_session, status="accepted")
+    _exe_for(db_session, sug.id, status="broker_cancelled",
+             cancelled_at=datetime.now(UTC) - timedelta(hours=1))  # too recent
+    assert infer_manual_cancels(db_session, _ACCT, inference_hours=24) == 0
+    assert db_session.get(OrderSuggestion, sug.id).status == "accepted"
+
+
+def test_infer_skips_when_replace_in_flight(db_session: Session) -> None:
+    """broker_cancelled old, but a newer open execution exists (cancel-and-re-place) → leave it."""
+    sug = _sug(db_session, status="accepted")
+    _exe_for(db_session, sug.id, status="broker_cancelled", broker_order_id="bo-old",
+             cancelled_at=datetime.now(UTC) - timedelta(hours=48),
+             created_at=datetime.now(UTC) - timedelta(hours=48))
+    _exe_for(db_session, sug.id, status="accepted_for_routing", broker_order_id="bo-new",
+             created_at=datetime.now(UTC) - timedelta(hours=1))
+    assert infer_manual_cancels(db_session, _ACCT, inference_hours=24) == 0
+    assert db_session.get(OrderSuggestion, sug.id).status == "accepted"
+
+
+def test_infer_ignores_filled_and_unplaced(db_session: Session) -> None:
+    filled = _sug(db_session, ticker="MU", status="accepted")
+    _exe_for(db_session, filled.id, status="filled",
+             cancelled_at=datetime.now(UTC) - timedelta(hours=48))
+    _sug(db_session, ticker="NVDA", status="accepted")  # no execution at all
+    assert infer_manual_cancels(db_session, _ACCT, inference_hours=24) == 0
 
 
 def test_window_capped_at_max_lookback(

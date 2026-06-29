@@ -302,6 +302,8 @@ class OrderExecution(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
     )
+    # When status was flipped to 'broker_cancelled' (P1.3) — drives manual-cancel inference.
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     __table_args__ = (
         UniqueConstraint("broker_order_id", "broker", name="uq_broker_order_id"),
         Index("ix_order_execution_ticker_filled_at", "ticker", "filled_at"),

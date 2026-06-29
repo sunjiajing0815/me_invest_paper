@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import select
@@ -284,6 +284,7 @@ def sync_open_order_statuses(
         conf = closed_by_id.get(exe.broker_order_id)  # type: ignore[arg-type]
         if conf is not None and conf.status in _TERMINAL_STATUSES:
             exe.status = "broker_cancelled"
+            exe.cancelled_at = datetime.now(UTC)  # P1.3: drives manual-cancel inference
             updated += 1
             logger.info(
                 "sync_open_order_statuses: sug-%s execution %d marked broker_cancelled "
@@ -293,3 +294,52 @@ def sync_open_order_statuses(
                 conf.status,
             )
     return updated
+
+
+def infer_manual_cancels(
+    session: Session, broker_account_id: int, *, inference_hours: int
+) -> int:
+    """Flip a still-'accepted' suggestion to 'cancelled' when its order was cancelled at the
+    broker but the user never used the un-accept link (P1.3; ADR-0032 known gap).
+
+    A suggestion qualifies only when its latest real execution is ``broker_cancelled`` with
+    ``cancelled_at`` older than ``inference_hours`` AND no execution for it is still open
+    (``accepted_for_routing``). The grace window + no-open-execution guard preserve the
+    deliberate cancel-all → next-morning re-place flow (the re-place creates a newer open row).
+    Returns the number of suggestions flipped.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=inference_hours)
+    flipped = 0
+    accepted = session.scalars(
+        select(OrderSuggestion).where(
+            OrderSuggestion.broker_account_id == broker_account_id,
+            OrderSuggestion.status == "accepted",
+        )
+    ).all()
+    for sug in accepted:
+        execs = session.scalars(
+            select(OrderExecution)
+            .where(
+                OrderExecution.suggestion_id == sug.id,
+                OrderExecution.dry_run.is_(False),
+            )
+            .order_by(OrderExecution.created_at.desc())
+        ).all()
+        if not execs or any(e.status == "accepted_for_routing" for e in execs):
+            continue  # nothing placed, or a re-place is in flight → leave it
+        latest = execs[0]
+        if (
+            latest.status == "broker_cancelled"
+            and latest.cancelled_at is not None
+            and latest.cancelled_at < cutoff
+        ):
+            sug.status = "cancelled"
+            sug.acted_at = datetime.now(UTC)
+            sug.note = (f"{sug.note} | " if sug.note else "") + "cancel inferred from broker UI"
+            flipped += 1
+            logger.info(
+                "infer_manual_cancels: sug-%s (%s) accepted→cancelled "
+                "(broker_cancelled %s, no re-place within %dh)",
+                sug.id, sug.ticker, latest.cancelled_at, inference_hours,
+            )
+    return flipped
