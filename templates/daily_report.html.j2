@@ -209,6 +209,8 @@
 <p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 24px 0;">No fills yet this week.</p>
 {% endif %}
 
+{{ ui.holdings_glossary(ticker_names if ticker_names is defined else {}) }}
+
 {{ ui.footer("No orders are placed automatically. All execution is manual, in the broker's UI.",
              report.date.strftime('%Y-%m-%d')) }}
 

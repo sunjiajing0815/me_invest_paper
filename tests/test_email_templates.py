@@ -56,7 +56,8 @@ def _render_daily(committed=None, orders=None, slices=None, alloc_chart=False) -
     return render_template("daily_report.html.j2", report=report,
                            account_nickname="Alpaca paper", account_broker="alpaca",
                            base_url="https://x", unaccept_tokens=tokens,
-                           alloc_chart=alloc_chart)
+                           alloc_chart=alloc_chart,
+                           ticker_names={"VOO": "Vanguard S&P 500 ETF"})
 
 
 def _render_movers() -> str:
@@ -77,6 +78,12 @@ def test_daily_report_renders() -> None:
     assert "Orders This Week" in html
     assert "Levels at a Glance" not in html  # replaced by the orders recap
     assert "Gap Summary" in html
+
+
+def test_daily_report_holdings_glossary_renders() -> None:
+    html = _render_daily()  # passes ticker_names={"VOO": "Vanguard S&P 500 ETF"}
+    assert "Holdings" in html                       # P1.1 glossary section heading
+    assert "Vanguard S&amp;P 500 ETF" in html       # name rendered (autoescaped &)
 
 
 def test_daily_orders_this_week_summary_and_fills() -> None:

@@ -36,6 +36,7 @@ from ..services.snapshot import take_snapshot
 from ..services.suggest import HALF_THE_GAP, _next_monday, generate_suggestions
 from ..services.targets import targets_path_for_account
 from ..services.tavily import TavilyClient
+from ..services.ticker_names import names_for
 from ..services.weekly_context import (
     WeeklyMarketContext,
     build_weekly_market_context,
@@ -470,7 +471,8 @@ def run_weekly_review_for_account(
     )
 
     subject = f"[{account.nickname}] Weekly review: {week_of:%b %d, %Y}"
-    html = render_template("weekly_review.html.j2", review=review)
+    ticker_names = names_for(tickers)
+    html = render_template("weekly_review.html.j2", review=review, ticker_names=ticker_names)
     text = render_template("weekly_review.txt.j2", review=review)
     emailer.send(to=settings.email_to, subject=subject, html=html, text=text)
     logger.info(

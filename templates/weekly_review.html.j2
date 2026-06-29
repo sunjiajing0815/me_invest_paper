@@ -410,6 +410,8 @@
 </table>
 {% endif %}
 
+{{ ui.holdings_glossary(ticker_names if ticker_names is defined else {}) }}
+
 {{ ui.footer("No orders are placed automatically. Log into your broker to act on any suggestion.",
              review.week_of.strftime('%Y-%m-%d')) }}
 

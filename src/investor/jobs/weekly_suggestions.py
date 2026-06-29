@@ -46,6 +46,7 @@ from ..services.suggest import (
     generate_suggestions,
 )
 from ..services.targets import targets_path_for_account
+from ..services.ticker_names import names_for
 from ..services.weekly_context import load_latest_weekly_context
 
 logger = logging.getLogger(__name__)
@@ -354,6 +355,7 @@ def run_weekly_suggestions_for_account(
         scoring_failures=scoring_failures,
         market_context=market_context,
         etf_tickers=etf_tickers,
+        ticker_names=names_for(tickers),
     )
     text = render_template(
         "weekly_suggestions.txt.j2",

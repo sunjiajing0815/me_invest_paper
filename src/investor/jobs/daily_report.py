@@ -22,6 +22,7 @@ from ..services.magic_link import sign_action
 from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.targets import targets_path_for_account
+from ..services.ticker_names import names_for
 from ..services.weekly_context import sentiment_canary
 
 logger = logging.getLogger(__name__)
@@ -88,15 +89,17 @@ def run_daily_report_for_account(
             )
         except Exception as exc:
             logger.warning("allocation pie render failed; sending without chart: %s", exc)
+    ticker_names = names_for(targets.watchlist)
     html = render_template(
         "daily_report.html.j2", report=report,
         account_nickname=account.nickname, account_broker=account.broker,
         base_url=settings.app_base_url, unaccept_tokens=unaccept_tokens,
-        alloc_chart="alloc_pie" in inline_images,
+        alloc_chart="alloc_pie" in inline_images, ticker_names=ticker_names,
     )
     text = render_template(
         "daily_report.txt.j2", report=report,
         account_nickname=account.nickname, account_broker=account.broker,
+        ticker_names=ticker_names,
     )
 
     subject = f"[{account.nickname}] Portfolio — {report.date:%Y-%m-%d}"
