@@ -114,7 +114,7 @@ These are gates the soak baseline needs in place. None are large. All bound the 
 
 These are existing-broker features that add immediate value without expanding surface area in ways that complicate the soak signal.
 
-### P1.1 — Ticker-name / fund-proxy annotation in emails
+### P1.1 — Ticker-name / fund-proxy annotation in emails — ✅ done (2026-06-30; `services/ticker_names.py` + holdings-glossary footer macro)
 
 **What.** Surface a one-line ticker-name annotation alongside each ticker in the email tables — e.g. `BTC (Grayscale Bitcoin Mini Trust ETF)`, `VOO (Vanguard S&P 500 ETF)`, `JEPI (JPMorgan Equity Premium Income ETF)`.
 **Why.** The `BTC` discovery (ADR-0029) — that the ticker was a Grayscale ETF, not crypto-spot — was a real cognitive mismatch. Annotation prevents the same class of bug going forward and reduces the cost of glancing at a daily email.
@@ -123,7 +123,7 @@ These are existing-broker features that add immediate value without expanding su
 **Effort.** ~2 hours including tests.
 **Refs.** ADR-0029 "References"; `post_4_9a_cleanup.md` "Open — specific implementation concerns".
 
-### P1.2 — Reconciliation window upper bound
+### P1.2 — Reconciliation window upper bound — ✅ done (2026-06-30; `RECONCILIATION_MAX_LOOKBACK_DAYS=30` + WARNING)
 
 **What.** Add `RECONCILIATION_MAX_LOOKBACK_DAYS` setting (default 30) to cap how far back `services/reconciliation.py` looks for activity. Log a `WARNING` when capped.
 **Why.** Post-4.9a commit `56438b6` fixed the late-GTC reconciliation by extending the lookback to the oldest still-open execution. Without an upper bound, a forgotten zombie GTC from 60 days ago will make reconciliation pull months of activities every run, slowly degrading cron timing.
@@ -141,7 +141,7 @@ These are existing-broker features that add immediate value without expanding su
 **Effort.** ~3 hours including test.
 **Refs.** ADR-0032 "Known Gap"; `post_4_9a_cleanup.md` "Open — specific implementation concerns".
 
-### P1.4 — `GET /suggestions/{sid}/unaccept` prefetch hardening
+### P1.4 — `GET /suggestions/{sid}/unaccept` prefetch hardening — ✅ done (2026-06-30; GET reads DB status, no broker call)
 
 **What.** Render the un-accept confirmation page from the DB's last-known execution status instead of querying the broker on GET. Only query the broker on POST (the action endpoint).
 **Why.** Microsoft 365 SafeLinks, Gmail link-preview, Slack unfurl all hit the GET URL on link-hover or email-scan — sometimes repeatedly. At solo scale this is benign; in any growth scenario it can rate-limit against the broker. ADR-0032 flags this as a "Negative" consequence; mitigation is bounded and worth doing now.
@@ -150,7 +150,7 @@ These are existing-broker features that add immediate value without expanding su
 **Effort.** ~2 hours including test.
 **Refs.** ADR-0032 "Consequences" negative bullet; `post_4_9a_cleanup.md` "Open — specific implementation concerns".
 
-### P1.5 — CNN sentiment canary
+### P1.5 — CNN sentiment canary — ✅ done (2026-06-30; `sentiment_canary()` daily WARNING; email-footer UX deferred to P5.3)
 
 **What.** A daily canary check that the last `weekly_market_context` row has non-NULL `vix` and `fear_greed_score`. If both have been NULL for > 7 days, log a `WARNING` and (optionally) include a "sentiment data unavailable" footer in the next weekly review email.
 **Why.** ADR-0030 documents the CNN scrape fragility — if CNN changes anti-bot, the Market Sentiment widget silently hides. Silent absence reads as "neutral market", which itself is a misleading signal. The canary surfaces the failure mode before it has been quietly degraded for weeks.
@@ -159,7 +159,7 @@ These are existing-broker features that add immediate value without expanding su
 **Effort.** ~2 hours including test.
 **Refs.** ADR-0030 "Operational fragility contract"; `post_4_9a_cleanup.md` (consider adding as a new item).
 
-### P1.6 — Dividend-adjustment decision on bars
+### P1.6 — Dividend-adjustment decision on bars — ✅ done (2026-06-30, Phase A: keep SPLIT-only; ≤5.6% NEE drift, immaterial; see ADR-0029 update)
 
 **What.** Decide whether to extend `services/bars.py` from `Adjustment.SPLIT` to `Adjustment.ALL` (split + dividend) for the swing-low detectors that look back > 1 year. If yes, implement and re-backfill.
 **Why.** High-dividend ETFs (SCHD ~3.5%/yr, JEPI ~7%/yr) drift mildly stale on multi-year backfills under SPLIT-only — accumulated dividends are no longer in the price the market trades at. ADR-0029 documents the deliberate SPLIT-only choice but flags this as a follow-up. The soak window is the right time to gather a few weeks of "would a dividend-adjusted swing-low have produced a different suggestion?" data before committing.

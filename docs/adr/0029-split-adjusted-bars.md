@@ -53,9 +53,31 @@ Stop app → back up the Parquet dir → delete `data/bars/*.parquet` → restar
 - The 50%-distance filter may mask genuine signal in deep downtrends (a ticker whose only
   support is 60% below current now silently skips).
 
+## Follow-up — dividend-adjustment decision (resolved 2026-06-30, soak-window P1.6)
+
+The "dividends not adjusted" follow-up above was evaluated. `scripts/compare_dividend_adjustment.py`
+fetched 2y of bars under SPLIT vs ALL for the highest-yield holdings actually on the watchlists
+(no SCHD/JEPI are held). Maximum divergence at the oldest bar — the largest a 2-year-old swing low
+could shift — and the 2-year min-low shift:
+
+| ticker | oldest Δ% | min-low Δ% |
+|---|---|---|
+| NEE | −5.62% | −3.60% |
+| VOO | −2.77% | −1.47% |
+| MSFT | −1.55% | −0.98% |
+| QQQ | −1.04% | −0.59% |
+| ISRG / BTC | 0% | 0% (no dividend) |
+
+**Decision: keep `Adjustment.SPLIT` (no change).** Even the most dividend-heavy holding (NEE,
+~2.7%/yr) shifts a swing low by ≤5.6%, well inside the suggestion engine's ~15% anchor band and the
+50%-distance filter; everything else is <2%. The drift is immaterial for the current portfolios.
+Re-evaluate (and re-run the script) only if a high-yield ETF like SCHD/JEPI is added to a watchlist.
+
 ## References
 
 - `services/bars.py::update_bars` (`adjustment=Adjustment.SPLIT`),
-  `services/levels.py::build_nearby_levels` (`max_distance_pct`).
+  `services/levels.py::build_nearby_levels` (`max_distance_pct`),
+  `scripts/compare_dividend_adjustment.py` (the P1.6 analysis).
 - Follow-up tracked in `plans/post_4_9a_changes.md`: ticker-name annotation in emails (surface
-  "BTC = Grayscale Bitcoin Mini Trust ETF") to prevent the cognitive mismatch earlier.
+  "BTC = Grayscale Bitcoin Mini Trust ETF") to prevent the cognitive mismatch earlier — shipped in
+  soak-window P1.1 (`services/ticker_names.py` + holdings glossary).
