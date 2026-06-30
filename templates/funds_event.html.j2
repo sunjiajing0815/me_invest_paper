@@ -1,0 +1,34 @@
+{%- import '_components.html.j2' as ui -%}
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+{{ ui.responsive_style() }}</head>
+<body class="eb-body" style="font-family:{{ ui.FONT }}; color:{{ ui.BODY }}; background:#ffffff; max-width:600px; margin:0 auto; padding:16px;">
+{{ ui.preheader(flow.kind|capitalize ~ " of $" ~ ("%,.0f"|format(flow.delta_usd|abs)) ~ " detected on " ~ nickname) }}
+{{ ui.header(flow.kind|capitalize ~ " detected", subtitle=nickname ~ " · " ~ broker) }}
+
+{% if multi %}
+<p style="font-family:{{ ui.FONT }}; font-size:12px; color:{{ ui.WARN }};">
+  More than one account flagged a cash flow today — consider whether these are a single transfer between brokers.
+</p>
+{% endif %}
+
+<p style="font-family:{{ ui.FONT }}; font-size:15px; color:{{ ui.INK }};">
+  <strong>{{ "+" if flow.delta_usd > 0 else "−" }}${{ "%,.0f"|format(flow.delta_usd|abs) }}</strong>
+  unexplained cash change since the prior day.
+</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="font-family:{{ ui.FONT }}; font-size:13px; color:{{ ui.BODY }};">
+  <tr><td style="padding:2px 12px 2px 0; color:{{ ui.MUTED }};">Cash (prior → now)</td><td>${{ "%,.0f"|format(flow.prev_cash) }} → ${{ "%,.0f"|format(flow.cur_cash) }}</td></tr>
+  <tr><td style="padding:2px 12px 2px 0; color:{{ ui.MUTED }};">Trade cash flow (sells − buys)</td><td>${{ "%,.0f"|format(flow.trade_cash_flow) }}</td></tr>
+  <tr><td style="padding:2px 12px 2px 0; color:{{ ui.MUTED }};">External flow</td><td><strong>${{ "%,.0f"|format(flow.delta_usd) }}</strong></td></tr>
+</table>
+
+<p style="font-family:{{ ui.FONT }}; font-size:12px; color:{{ ui.MUTED }}; margin-top:10px;">
+  Heuristic: cash change not explained by the day's fills. Dividends/fees below the threshold are
+  ignored; a large flow may be a deposit, withdrawal, or an uncategorised dividend — review and, if
+  funds moved, consider whether your targets still fit.
+</p>
+
+{{ ui.footer("No orders are placed automatically.") }}
+</body>
+</html>

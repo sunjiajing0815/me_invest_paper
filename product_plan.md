@@ -802,7 +802,8 @@ ADRs in this workspace are collected inline here, alongside the phase entries th
 - ADR-**0026** — SQLite DELETE journal mode + named-volume DB (WAL data-loss fix). Written in the code repo 2026-06-18; mirrored inline below.
 - ADRs **0027–0032** — post-4.9a hardening batch from 2026-06-03 → 06-09 (Tavily-as-movers-fallback, movers tiers direction-aware, bars split-adjusted, CNN sentiment fragility + Phase 5 pre-launch removal #3, shared email components, suggestion `cancelled` terminal). **Renumbered 2026-06-18** from the original 0025–0030 reservation, after the code-repo agent independently took 0025 and 0026 for the donut and WAL ADRs. Full text below.
 - ADR-**0033** — Snapshot one-`ts`-per-batch contract (broker-adapter invariant; every row in a sync batch shares one `ts`, enforced by `take_snapshot`). **Written** 2026-06-23 in `docs/adr/0033-snapshot-one-ts-per-batch.md` — must hold before 4.9c lands IBKR + Tiger. See post-4.9a §9.
-- ADRs **0034–0036** — reserved for Phase 4.9b at resumption (household-target-as-optional, funds-detection heuristic, email-aggregation toggle).
+- ADR-**0035** — Funds-flow detection via a cash-flow heuristic. **Written** 2026-06-30 (soak-window P2.3) in `docs/adr/0035-funds-detection.md`.
+- ADRs **0034, 0036** — reserved for the Phase 4.9b household unit at resumption (household-target-as-optional; email-aggregation toggle).
 - ADRs **0037–0038** — reserved for Phase 4.9c at resumption (IBKR adapter, Tiger adapter).
 - ADRs **0039+** — reserved for Phase 5 and beyond (Phase 5 guide currently still allocates 0024–0031; will be renumbered when Phase 5 implementation begins, see "Mandatory pre-implementation cleanup" in the Phase 5 entry).
 

@@ -1,0 +1,16 @@
+{{ flow.kind|capitalize }} detected — {{ nickname }} ({{ broker }})
+{% if multi %}
+NOTE: more than one account flagged a cash flow today — consider whether these are a single
+transfer between brokers.
+{% endif %}
+Unexplained cash change since the prior day: {{ "+" if flow.delta_usd > 0 else "-" }}${{ "%,.0f"|format(flow.delta_usd|abs) }}
+
+  Cash (prior -> now)            ${{ "%,.0f"|format(flow.prev_cash) }} -> ${{ "%,.0f"|format(flow.cur_cash) }}
+  Trade cash flow (sells - buys) ${{ "%,.0f"|format(flow.trade_cash_flow) }}
+  External flow                  ${{ "%,.0f"|format(flow.delta_usd) }}
+
+Heuristic: cash change not explained by the day's fills. Dividends/fees below the threshold are
+ignored; a large flow may be a deposit, withdrawal, or an uncategorised dividend — review and, if
+funds moved, consider whether your targets still fit.
+---
+No orders are placed automatically.

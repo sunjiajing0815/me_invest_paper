@@ -82,6 +82,27 @@ class TargetChangeEvent(Base):
     )
 
 
+class FundsEvent(Base):
+    """Append-only record of a detected external cash flow (deposit/withdrawal) — P2.3."""
+
+    __tablename__ = "funds_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    broker_account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    delta_usd: Mapped[float] = mapped_column(Double, nullable=False)  # signed external flow
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # deposit | withdrawal
+    prev_cash: Mapped[float] = mapped_column(Double, nullable=False)
+    cur_cash: Mapped[float] = mapped_column(Double, nullable=False)
+    trade_cash_flow: Mapped[float] = mapped_column(Double, nullable=False)  # sells − buys
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
 class PositionsSnapshot(Base):
     """One row per ticker per sync. Weight is computed at write time."""
 

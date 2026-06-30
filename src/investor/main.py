@@ -48,6 +48,7 @@ from .jobs.daily_report import (
     run_daily_report_all_brokers,
     run_daily_report_for_account,
 )
+from .jobs.funds_detection import run_funds_detection_all_brokers
 from .jobs.moomoo_parallel import run_moomoo_parallel
 from .jobs.movers import run_movers_email
 from .jobs.reconciliation import (
@@ -257,6 +258,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     auto_trade_fn = partial(run_auto_trade_job_all_brokers, _settings, emailer, adapters)
     backup_fn = partial(run_backup, _settings)
+    funds_fn = partial(run_funds_detection_all_brokers, _settings, emailer)
     scheduler = make_scheduler(
         daily_fn,
         weekly_fn,
@@ -267,6 +269,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         weekly_review_fn,
         auto_trade_fn,
         backup_func=backup_fn,
+        funds_detection_func=funds_fn,
     )
     scheduler.start()
     app.state.scheduler = scheduler

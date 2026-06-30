@@ -174,7 +174,7 @@ These are existing-broker features that add immediate value without expanding su
 
 These are 4.9b items that work fine on the current 2-broker setup and add real user value during a multi-month soak. The household-view items (P2.4, P2.5) are bigger and worth doing as a unit; do P2.1–P2.3 first.
 
-### P2.1 — `target_change_event` audit table
+### P2.1 — `target_change_event` audit table — ✅ done (2026-06-30; loader writes diff+max_shift events, source-tagged)
 
 **What.** Add the append-only `target_change_event` table that records every accepted edit (diff JSON, source: `yaml_direct` | `yaml_magic_link` | `admin_endpoint`, confirmed_by).
 **Why.** No-cost audit trail. Standalone valuable (you can see what target edits happened when and why). Prerequisite for P2.2 (magic-link guardrails) and any future "evolution of targets" retrospective in the annual review.
@@ -183,7 +183,7 @@ These are 4.9b items that work fine on the current 2-broker setup and add real u
 **Effort.** ~2 hours including migration + test.
 **Refs.** `phase_4_9b_guide.md` §6.
 
-### P2.2 — YAML edit guardrails + magic-link confirmation (≥ 10pp shift)
+### P2.2 — YAML edit guardrails (≥ 10pp shift) — ✅ done (2026-06-30; **warn-only** — git pre-commit infeasible since data/targets is gitignored; reload applies + logs WARNING + emails notice. No magic-link/held state.)
 
 **What.** Pre-commit hook on `data/targets/*.yaml` and `data/household_targets.yaml`: compute per-ticker shift; if `max(|shift|) > 10pp`, hold the commit and send a magic-link email; clicking commits via `GET /admin/targets/confirm?token=<hmac>` and writes a `target_change_event` row.
 **Why.** Prevents the "I edited the YAML at midnight and didn't realize I 60-pp-shifted a target" footgun. The magic-link infrastructure already exists from the un-accept path (ADR-0032); reuse the `sign_action` pattern with a distinct namespace (`targets-confirm-v1`).
@@ -192,7 +192,7 @@ These are 4.9b items that work fine on the current 2-broker setup and add real u
 **Effort.** ~4 hours.
 **Refs.** `phase_4_9b_guide.md` §5.
 
-### P2.3 — Funds-added detection per broker
+### P2.3 — Funds-added detection per broker — ✅ done (2026-06-30; cash-flow heuristic, daily 18:00 ET job, ADR-0035)
 
 **What.** Daily 18:00 ET cron that compares today's `equity_usd` against yesterday's, subtracts market-moves + realised PnL, and flags an unexplained delta > `FUNDS_DETECTION_THRESHOLD_USD` (default $500). Emits a `funds_event` row + an email naming the broker.
 **Why.** High user value — you find out by email when funds have moved in or out, with the broker named explicitly. Cross-broker transfers surface as two events with a header note "consider whether these are a single transfer".
