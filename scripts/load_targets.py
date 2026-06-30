@@ -45,7 +45,7 @@ def main() -> None:
         h = yaml_hash(path)
         with session_scope() as sess:
             result = load_targets_into_db(
-                sess, targets, h, broker_account_id=acct.account_ref
+                sess, targets, h, broker_account_id=acct.account_ref, source="yaml_direct"
             )
         print(f"load_targets: account {acct.account_ref} ({acct.nickname}) → {result}")
 

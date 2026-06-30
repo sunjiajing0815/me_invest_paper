@@ -1,0 +1,40 @@
+{%- import '_components.html.j2' as ui -%}
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+{{ ui.responsive_style() }}</head>
+<body class="eb-body" style="font-family:{{ ui.FONT }}; color:{{ ui.BODY }}; background:#ffffff; max-width:600px; margin:0 auto; padding:16px;">
+{{ ui.preheader("Large target edit on " ~ nickname ~ " — max shift " ~ ("%.1f"|format(max_shift_pp)) ~ "pp") }}
+{{ ui.header("Target allocation changed", subtitle=nickname ~ " · " ~ broker) }}
+
+<p style="font-family:{{ ui.FONT }}; font-size:13px; color:{{ ui.BODY }};">
+  A target reload shifted at least one ticker by <strong>{{ "%.1f"|format(max_shift_pp) }} pp</strong>
+  (≥ {{ "%.0f"|format(threshold) }} pp threshold). The change <strong>has been applied</strong> —
+  this is a heads-up, not a confirmation request. If it wasn't intended, edit
+  <code>targets.yaml</code> and reload again.
+</p>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:{{ ui.FONT }}; font-size:13px; margin:8px 0 0 0;">
+  <thead>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:7px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Old %</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">New %</th>
+      <th style="padding:7px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Shift</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in shifts %}
+    <tr style="border-bottom:1px solid {{ ui.LINE }}; color:{{ ui.BODY }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ s.ticker }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "%.1f"|format(s.old) }}%</td>
+      <td style="padding:6px 10px; text-align:right;">{{ "%.1f"|format(s.new) }}%</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ ui.NEG if s.shift < 0 else ui.POS }};">{{ "%+.1f"|format(s.shift) }}pp</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{{ ui.footer("No orders are placed automatically. Targets drive next Sunday's suggestions.") }}
+</body>
+</html>

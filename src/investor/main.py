@@ -69,6 +69,7 @@ from .models import (
     BrokerAccount,
     OrderExecution,
     OrderSuggestion,
+    TargetChangeEvent,
 )
 from .queries import account_last_sync, positions_latest, targets_active_count
 from .scheduler import make_scheduler
@@ -84,7 +85,7 @@ from .services.auto_trade import (
     set_mode,
 )
 from .services.daily_report import AccountSnapshot
-from .services.email import SMTPEmailer
+from .services.email import EmailSender, SMTPEmailer
 from .services.gap import GapRow, compute_gap, get_untracked_positions
 from .services.indicators import compute_indicators
 from .services.levels import build_nearby_levels, compute_levels
@@ -92,6 +93,7 @@ from .services.magic_link import sign_action
 from .services.render import render_template
 from .services.suggest import _next_monday
 from .services.targets import (
+    compute_target_shifts,
     load_targets_into_db,
     targets_path_for_account,
     yaml_hash,
@@ -831,6 +833,49 @@ def admin_run_daily_report(broker_account_id: int | None = None) -> dict[str, st
     return {"status": "ok", "message": msg}
 
 
+def _warn_large_target_edit(
+    emailer: EmailSender, settings: Settings, acct: AccountInfo
+) -> None:
+    """P2.2 (warn-only): log + best-effort email when a just-applied reload shifted a ticker by
+    more than ``target_edit_warn_threshold_pct``. Never raises into the reload path."""
+    try:
+        with session_scope() as sess:
+            ev = sess.scalars(
+                select(TargetChangeEvent)
+                .where(TargetChangeEvent.broker_account_id == acct.account_ref)
+                .order_by(TargetChangeEvent.id.desc())
+            ).first()
+            if ev is None or ev.max_shift_pp <= settings.target_edit_warn_threshold_pct:
+                return
+            diff = json.loads(ev.diff_json)
+            max_shift = ev.max_shift_pp
+        old, new = diff.get("old", {}), diff.get("new", {})
+        top = sorted(
+            compute_target_shifts(old, new).items(), key=lambda kv: abs(kv[1]), reverse=True
+        )[:5]
+        rows = [
+            {"ticker": t, "old": old.get(t, 0.0), "new": new.get(t, 0.0), "shift": v}
+            for t, v in top
+        ]
+        logger.warning(
+            "reload-targets: large target edit on %s (account_ref=%s) — max shift %.1fpp (%s)",
+            acct.nickname, acct.account_ref, max_shift,
+            ", ".join(f"{t}{v:+.1f}pp" for t, v in top),
+        )
+        kw = dict(
+            nickname=acct.nickname, broker=acct.broker, max_shift_pp=max_shift,
+            threshold=settings.target_edit_warn_threshold_pct, shifts=rows,
+        )
+        emailer.send(
+            to=settings.email_to,
+            subject=f"[{acct.nickname}] Large target edit — {max_shift:.1f}pp shift",
+            html=render_template("target_change_notice.html.j2", **kw),
+            text=render_template("target_change_notice.txt.j2", **kw),
+        )
+    except Exception:
+        logger.exception("reload-targets: target-change notice failed (non-fatal)")
+
+
 @app.post(
     "/admin/reload-targets",
     summary="Reload targets from targets.yaml",
@@ -879,6 +924,8 @@ def admin_reload_targets(
                     adapter=adapters.get(acct.account_ref),
                 )
             all_tickers |= set(targets_cfg.watchlist)
+            if results[str(acct.account_ref)] == "updated":
+                _warn_large_target_edit(request.app.state.emailer, settings, acct)
     except Exception as exc:
         logger.error("reload-targets failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Reload failed: {exc}") from exc

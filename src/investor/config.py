@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     manual_cancel_inference_hours: int = 24
     sentiment_canary_max_age_days: int = 7
 
+    # Soak-window P2: large-target-edit warn threshold + funds-detection threshold
+    target_edit_warn_threshold_pct: float = 10.0
+    funds_detection_threshold_usd: float = 500.0
+
     @field_validator(
         "level_prompt_version", "weekly_context_prompt_version",
         "context_adjust_prompt_version", "critic_prompt_version",

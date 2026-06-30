@@ -1,0 +1,10 @@
+Target allocation changed — {{ nickname }} ({{ broker }})
+
+A target reload shifted at least one ticker by {{ "%.1f"|format(max_shift_pp) }} pp
+(>= {{ "%.0f"|format(threshold) }} pp threshold). The change HAS been applied — heads-up only.
+If unintended, edit targets.yaml and reload again.
+
+{% for s in shifts %}  {{ s.ticker | ljust(6) }} {{ "%.1f"|format(s.old) | rjust(6) }}% -> {{ "%.1f"|format(s.new) | rjust(6) }}%  ({{ "%+.1f"|format(s.shift) }}pp)
+{% endfor %}
+---
+No orders are placed automatically. Targets drive next Sunday's suggestions.

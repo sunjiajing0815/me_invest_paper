@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,18 @@ from sqlalchemy.orm import Session
 
 from ..brokers.base import BrokerAdapter
 from ..config import Settings, TargetsConfig
-from ..models import Meta, OrderExecution, OrderSuggestion, TargetAllocation
+from ..models import (
+    Meta,
+    OrderExecution,
+    OrderSuggestion,
+    TargetAllocation,
+    TargetChangeEvent,
+)
+
+
+def compute_target_shifts(old: dict[str, float], new: dict[str, float]) -> dict[str, float]:
+    """Per-ticker pct shift new−old over the union of tickers (added/removed = shift from/to 0)."""
+    return {t: new.get(t, 0.0) - old.get(t, 0.0) for t in (old.keys() | new.keys())}
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +58,14 @@ def load_targets_into_db(
     *,
     broker_account_id: int,
     adapter: BrokerAdapter | None = None,
+    source: str = "admin_endpoint",
 ) -> str:
     """Idempotent per-broker target loader. Skips writes if this account's hash is
     unchanged. Returns 'unchanged' or 'updated'.
 
     All reads/writes (the content-hash meta key, target_allocation close-and-insert,
-    and the mid-week accepted-suggestion expiry) are scoped to broker_account_id.
+    the target_change_event audit row, and the mid-week accepted-suggestion expiry) are
+    scoped to broker_account_id.
     """
     hash_key = f"targets_yaml_hash:{broker_account_id}"
     stored = session.get(Meta, hash_key)
@@ -59,14 +73,16 @@ def load_targets_into_db(
         return "unchanged"
 
     now = datetime.now(UTC)
-    for row in (
+    old_rows = (
         session.query(TargetAllocation)
         .filter(
             TargetAllocation.effective_to.is_(None),
             TargetAllocation.broker_account_id == broker_account_id,
         )
         .all()
-    ):
+    )
+    old_pct = {r.ticker: r.target_pct for r in old_rows}
+    for row in old_rows:
         row.effective_to = now
     session.flush()
 
@@ -86,6 +102,19 @@ def load_targets_into_db(
         stored.value = content_hash
     else:
         session.add(Meta(key=hash_key, value=content_hash))
+
+    # P2.1: append an audit row for this applied edit (diff + largest per-ticker shift).
+    new_pct = {t.ticker: t.pct for t in targets.targets}
+    shifts = compute_target_shifts(old_pct, new_pct)
+    max_shift_pp = max((abs(v) for v in shifts.values()), default=0.0)
+    session.add(TargetChangeEvent(
+        broker_account_id=broker_account_id,
+        ts=now,
+        source=source,
+        diff_json=json.dumps({"old": old_pct, "new": new_pct}),
+        max_shift_pp=max_shift_pp,
+    ))
+    session.flush()
 
     today = datetime.now(UTC).date()
     current_week_monday = today - timedelta(days=today.weekday())

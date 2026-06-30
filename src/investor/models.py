@@ -62,6 +62,26 @@ class TargetAllocation(Base):
     )
 
 
+class TargetChangeEvent(Base):
+    """Append-only audit of every applied target-allocation edit (P2.1)."""
+
+    __tablename__ = "target_change_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # = BrokerAccount.account_ref; NULL reserved for a future household-level edit (P2.4).
+    broker_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ts: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    source: Mapped[str] = mapped_column(String, nullable=False)  # admin_endpoint|yaml_direct
+    diff_json: Mapped[str] = mapped_column(Text, nullable=False)  # {"old": {t: pct}, "new": {...}}
+    max_shift_pp: Mapped[float] = mapped_column(Double, nullable=False)  # largest |shift|
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
 class PositionsSnapshot(Base):
     """One row per ticker per sync. Weight is computed at write time."""
 

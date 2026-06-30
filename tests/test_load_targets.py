@@ -14,8 +14,14 @@ from sqlalchemy.pool import StaticPool
 
 from investor.config import load_targets
 from investor.db import override_engine_for_testing
-from investor.models import Base, OrderExecution, OrderSuggestion, TargetAllocation
-from investor.services.targets import yaml_hash
+from investor.models import (
+    Base,
+    OrderExecution,
+    OrderSuggestion,
+    TargetAllocation,
+    TargetChangeEvent,
+)
+from investor.services.targets import compute_target_shifts, yaml_hash
 
 _ACCT = 1  # account_ref for these single-account tests
 
@@ -439,3 +445,55 @@ def test_targets_are_per_broker_account(db_session: Session, tmp_path: Path) -> 
 
     assert _active(1) == {"VOO"}
     assert _active(2) == {"TSLA"}  # B's open rows were not closed by A's reload
+
+
+# ── P2.1: target_change_event audit ──────────────────────────────────────────
+
+def test_compute_target_shifts_changed_added_removed() -> None:
+    shifts = compute_target_shifts({"VOO": 30.0, "MU": 5.0}, {"VOO": 35.0, "TSLA": 5.0})
+    assert shifts["VOO"] == pytest.approx(5.0)    # changed
+    assert shifts["MU"] == pytest.approx(-5.0)    # removed → to 0
+    assert shifts["TSLA"] == pytest.approx(5.0)   # added → from 0
+
+
+def test_change_event_written_with_diff_and_max_shift(
+    db_session: Session, tmp_path: Path
+) -> None:
+    import json
+    f = tmp_path / "t.yaml"
+    f.write_text(YAML_V1)
+    _load(db_session, load_targets(str(f)), yaml_hash(str(f)), )
+    f.write_text(YAML_V2)  # VOO 30 → 35, AAPL 15 → 10
+    _load(db_session, load_targets(str(f)), yaml_hash(str(f)))
+    db_session.commit()
+
+    events = db_session.query(TargetChangeEvent).order_by(TargetChangeEvent.id).all()
+    assert len(events) == 2                          # one per applied change
+    assert events[0].source == "admin_endpoint"
+    latest = events[1]
+    assert latest.max_shift_pp == pytest.approx(5.0)  # VOO/AAPL both 5pp
+    diff = json.loads(latest.diff_json)
+    assert diff["old"]["VOO"] == pytest.approx(30.0)
+    assert diff["new"]["VOO"] == pytest.approx(35.0)
+
+
+def test_no_change_event_when_hash_unchanged(db_session: Session, tmp_path: Path) -> None:
+    f = tmp_path / "t.yaml"
+    f.write_text(YAML_V1)
+    h = yaml_hash(str(f))
+    _load(db_session, load_targets(str(f)), h)
+    _load(db_session, load_targets(str(f)), h)  # unchanged → no-op
+    db_session.commit()
+    assert db_session.query(TargetChangeEvent).count() == 1
+
+
+def test_change_event_source_threaded(db_session: Session, tmp_path: Path) -> None:
+    from investor.services.targets import load_targets_into_db
+    f = tmp_path / "t.yaml"
+    f.write_text(YAML_V1)
+    load_targets_into_db(
+        db_session, load_targets(str(f)), yaml_hash(str(f)),
+        broker_account_id=_ACCT, source="yaml_direct",
+    )
+    db_session.commit()
+    assert db_session.query(TargetChangeEvent).one().source == "yaml_direct"
