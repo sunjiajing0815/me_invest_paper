@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -398,6 +399,49 @@ class TestReasonNode:
         result = self._run_reason_node(parsed_real, drafts=drafts)
 
         assert set(result["rationales"].keys()) == {0, 1}
+
+    def test_reason_node_reasons_about_adjusted_draft(self) -> None:
+        """Regression: reason runs AFTER context_adjust, so its payload carries the FINAL
+        re-anchored/re-sized limit/anchor/qty — the prose can't cite a stale anchor."""
+        import dataclasses
+        import json as _json
+
+        from investor.graphs.suggestion_review import DraftRationale
+        adj = dataclasses.replace(
+            _make_draft(ticker="TQQQ", limit_price=70.32, anchor_method="pivot_monthly_S1"),
+            base_qty=69.0, size_factor=0.75,
+            context_note="Leveraged ETF fear-greed=31; monthly S1 stronger than swing low.",
+        )
+        parsed = DraftRationales(items=[
+            DraftRationale(draft_index=0, rationale="Anchored at pivot_monthly_S1 $70.32."),
+        ])
+        mock_llm = MagicMock()
+        mock_llm.call.return_value = (_make_llm_response(parsed.model_dump_json()), parsed)
+
+        @contextmanager
+        def mock_factory() -> Generator[MagicMock, None, None]:
+            yield _make_mock_session()
+
+        with patch("investor.graphs.suggestion_review.load_prompt", return_value="sys"):
+            reason_node(_make_state(drafts=[adj]), mock_llm, mock_factory)
+
+        d0 = _json.loads(mock_llm.call.call_args.kwargs["user"])["drafts"][0]
+        assert d0["limit_price"] == pytest.approx(70.32)
+        assert d0["anchor_method"] == "pivot_monthly_S1"
+        assert d0["size_factor"] == pytest.approx(0.75)
+        assert d0["base_qty"] == pytest.approx(69.0)
+        assert d0["context_note"]  # present
+
+    def test_graph_runs_context_adjust_before_reason(self) -> None:
+        """Regression: the compiled graph must run context_adjust before reason."""
+        from investor.graphs.suggestion_review import build_suggestion_review_graph
+        g = build_suggestion_review_graph(
+            MagicMock(), MagicMock(), [], "data/bars", MagicMock(), MagicMock()
+        )
+        edges = {(e.source, e.target) for e in g.get_graph().edges}
+        assert ("gather_context", "context_adjust") in edges
+        assert ("context_adjust", "reason") in edges
+        assert ("reason", "critic") in edges
 
     def test_reason_node_truncates_long_rationale(self) -> None:
         """reason_node truncates rationale to ≤ 600 chars."""

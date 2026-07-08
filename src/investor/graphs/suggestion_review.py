@@ -238,6 +238,11 @@ def reason_node(
             "limit_price": drafts[i].limit_price,
             "confidence_at_creation": drafts[i].confidence_at_creation,
             "anchor_method": drafts[i].anchor_method,
+            # context_adjust has already run — these describe any size/anchor adjustment so the
+            # rationale can explain it (and always matches the final limit/anchor/qty above).
+            "base_qty": drafts[i].base_qty,
+            "size_factor": drafts[i].size_factor,
+            "context_note": drafts[i].context_note,
         }
         for i in missing
     ]
@@ -798,7 +803,8 @@ def build_suggestion_review_graph(
 ) -> Any:
     """Build and compile the suggestion review graph.
 
-    gather_context → reason → context_adjust → critic → revise/skip_revise → finalize
+    gather_context → context_adjust → reason → critic → revise/skip_revise → finalize
+    (context_adjust before reason so the rationale describes the final re-anchored/re-sized draft)
 
     Nodes are bound at compile time via lambdas — ``llm``, ``session_factory``,
     ``watchlist``, ``bars_dir``, ``settings``, and ``earnings_client`` are closed
@@ -840,9 +846,13 @@ def build_suggestion_review_graph(
     g.add_node("finalize", lambda s: finalize_node(s, session_factory))
 
     g.add_edge(START, "gather_context")
-    g.add_edge("gather_context", "reason")
-    g.add_edge("reason", "context_adjust")
-    g.add_edge("context_adjust", "critic")
+    # context_adjust runs BEFORE reason so the Sonnet rationale describes the FINAL
+    # (re-anchored + re-sized) limit/anchor/qty. If reason ran first, a narrative/earnings
+    # re-anchor in context_adjust would leave the prose citing the stale pre-adjust limit
+    # (e.g. rationale says "$66.79 swing_low_5bar" while the row shows $70.32 pivot_monthly_S1).
+    g.add_edge("gather_context", "context_adjust")
+    g.add_edge("context_adjust", "reason")
+    g.add_edge("reason", "critic")
     g.add_conditional_edges(
         "critic",
         route_after_critic,
