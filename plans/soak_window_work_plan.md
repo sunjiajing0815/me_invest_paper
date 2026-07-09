@@ -1,6 +1,8 @@
 # Soak-Window Work Plan (2026-06-18 → ~few months)
 
-A curated subset of the open backlog — drawn from `post_4_9a_cleanup.md`, the parked
+A curated subset of the open backlog — drawn from the post-4.9a follow-ups (recorded in
+`plans/post_4_9a_changes.md`; a separate `post_4_9a_cleanup.md` tracker was planned but never
+created — references to it below resolve to that changelog + this plan), the parked
 `phase_4_9b_guide.md` and `phase_4_9c_guide.md`, and the parked `phase_5_guide.md` —
 selected for execution **during the extended soak window** while we observe the
 post-4.9a hardening batch in steady state.
@@ -348,7 +350,7 @@ The `product_plan.md` Phase 4.9b / 4.9c / Phase 5 entries already carry the resu
 ## Cross-references
 
 - `post_4_9a_changes.md` — source of the §1–§12 hardening narrative.
-- `post_4_9a_cleanup.md` — durable backlog (this plan is a *curated execution order* for a subset of those items).
+- `post_4_9a_cleanup.md` — **never created**; its intended role (durable backlog) is served by `plans/post_4_9a_changes.md` + this plan. Per-task "Refs" lines above that cite it are historical.
 - `product_plan.md` "Architecture Decision Records" section — ADRs 0024–0032 live here.
 - `phase_4_9b_guide.md`, `phase_4_9c_guide.md` — parked guides; the resumption sequencing at the bottom of this file pulls from them.
 - `phase_5_guide.md` — parked; P4.1 / P4.2 / P4.3 are the solo-applicable subset.

@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-from investor.config import Settings, load_targets
-from investor.services.bars import update_bars
+from investor.config import Settings, load_targets  # noqa: E402
+from investor.services.bars import update_bars  # noqa: E402
 
 
 def main() -> None:

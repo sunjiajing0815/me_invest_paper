@@ -1,11 +1,11 @@
-# Investor Assistant — Phase 4.8
+# Investor Assistant — Phase 4.9a (soak window)
 
 A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a **weekly review email** covers realised PnL, suggestion outcomes, an **Order Activity summary** (funnel counts, dollar flow, allocation drift Mon→Fri, per-ticker breakdown, 4-week trend), auto-trade status, and a Tavily-powered market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
-**Current phase:** 4.9a — Multi-broker plumbing + per-broker reports (**code-complete**)  
-**Status:** Phase 4.8 tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a Stages A–C are code-complete on `main` — the app is fully multi-broker across the data model, jobs, scheduler, and API. Remaining before the `v0.4.9a.0` tag: the 2-broker smoke test (connect Moomoo paper alongside Alpaca and confirm two daily + two weekly emails). The mode read path is wired to `auto_trade_state` (B1), so a restart is safe — auto-trade reads its prior mode back per broker.
+**Current phase:** 4.9a shipped (2 live brokers: Alpaca paper + Moomoo real, suggest-only) — now in the **post-4.9a soak window** (tag `v0.4.9a-hardened`).  
+**Status:** the app is fully multi-broker across the data model, jobs, scheduler, and API; the post-4.9a hardening batch (ADR-0025–0033) plus soak-window P0/P1/P2-Wave-A work (backup job, integrity audit, funds detection, target-change audit) are live. See `plans/soak_window_work_report.md` for the running completion record. Phase 4.9b (household view), 4.9c (IBKR + Tiger), and Phase 5 (multi-tenant) are parked pending the soak.
 >
 > The **foundation-hardening commit** (env.py + f2680 fixes, the `adopt_legacy_create_all_tables` migration, and the `init_db` reorder making Alembic the single source of truth) carries **no** auto-trade gate — it is a no-op on the existing DB and is safe to deploy independently.
 
@@ -324,9 +324,9 @@ curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/cancel-all-or
 # → {"cancelled": ["ord-abc"], "failed": [], "total_cancelled": 1, "total_failed": 0}
 ```
 
-### `POST /admin/reset-week-buy-suggestions` *(requires X-Admin-Token)*
+### `POST /admin/reset-week-suggestions` *(requires X-Admin-Token)*
 
-Cancels open broker orders for the current week and resets those suggestions to `pending`. Use when limit prices are stale mid-week and you want to reconsider suggestions before the next Sunday run.
+Cancels open broker orders for the current week and resets those suggestions to `pending`. Use when limit prices are stale mid-week and you want to reconsider suggestions before the next Sunday run. (`/admin/reset-week-buy-suggestions` remains as a backward-compat alias.)
 
 Query param: `side` — `"buy"` (default), `"sell"`, or `"all"`. Default `"buy"` preserves the original behaviour.
 
@@ -335,14 +335,14 @@ Query param: `side` — `"buy"` (default), `"sell"`, or `"all"`. Default `"buy"`
 - Sets `OrderSuggestion.status → "pending"`, clears `acted_at`.
 
 ```bash
-curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/reset-week-buy-suggestions
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/admin/reset-week-suggestions
 # → {"week_of": "2026-05-25", "suggestions_reset": [12, 13], "orders_cancelled": ["ord-abc"], "cancel_failed": []}
 
 # Reset sell suggestions too
-curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "localhost:8000/admin/reset-week-buy-suggestions?side=sell"
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "localhost:8000/admin/reset-week-suggestions?side=sell"
 
 # Reset all sides
-curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "localhost:8000/admin/reset-week-buy-suggestions?side=all"
+curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "localhost:8000/admin/reset-week-suggestions?side=all"
 ```
 
 ### `POST /admin/resend-weekly-email` *(requires X-Admin-Token)*
