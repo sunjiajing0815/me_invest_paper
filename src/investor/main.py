@@ -85,12 +85,12 @@ from .services.auto_trade import (
     resolve_primary_account_ref,
     set_mode,
 )
-from .services.daily_report import AccountSnapshot
+from .services.daily_report import AccountSnapshot, _committed_status
 from .services.email import EmailSender, SMTPEmailer
 from .services.gap import GapRow, compute_gap, get_untracked_positions
 from .services.indicators import compute_indicators
 from .services.levels import build_nearby_levels, compute_levels
-from .services.magic_link import sign_action
+from .services.magic_link import sign_action, verify_action
 from .services.render import render_template
 from .services.suggest import _next_monday
 from .services.targets import (
@@ -99,6 +99,7 @@ from .services.targets import (
     targets_path_for_account,
     yaml_hash,
 )
+from .services.unaccept import unaccept_suggestion
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -522,8 +523,6 @@ def indicators(broker_account_id: int | None = None) -> list[dict[str, Any]]:
 
     Uses the watchlist of one broker account's targets file (defaults to the primary).
     """
-    from .config import load_targets
-    from .services.indicators import compute_indicators
 
     settings = _get_settings()
     ref = _resolve_scope(broker_account_id, default="primary")
@@ -563,7 +562,6 @@ def indicators(broker_account_id: int | None = None) -> list[dict[str, Any]]:
 @app.get("/suggestions", summary="Pending order suggestions for current week")
 def suggestions(broker_account_id: int | None = None) -> list[dict[str, Any]]:
     """Return pending order suggestions for one broker account (defaults to primary)."""
-    from .models import OrderSuggestion
 
     ref = _resolve_scope(broker_account_id, default="primary")
     if not ref:
@@ -607,7 +605,6 @@ def suggestions(broker_account_id: int | None = None) -> list[dict[str, Any]]:
 )
 def patch_suggestion(sid: int, body: SuggestionActionRequest) -> dict[str, Any]:
     """Accept or reject a pending order suggestion by ID."""
-    from .models import OrderSuggestion
 
     if body.action not in ("accept", "reject"):
         raise HTTPException(status_code=400, detail="action must be 'accept' or 'reject'")
@@ -637,9 +634,6 @@ def patch_suggestion(sid: int, body: SuggestionActionRequest) -> dict[str, Any]:
 )
 def unaccept_confirm(sid: int, token: str, request: Request) -> HTMLResponse:
     """Render the prefetch-safe confirmation page. No side effects — the cancel happens on POST."""
-    from .models import OrderExecution, OrderSuggestion
-    from .services.daily_report import _committed_status
-    from .services.magic_link import verify_action
 
     settings = request.app.state.settings
     if not verify_action(sid, "unaccept", token, settings.magic_link_secret):
@@ -682,8 +676,6 @@ def suggestion_magic_link(
     request: Request,
 ) -> HTMLResponse:
     """Handle magic-link accept/reject from the weekly email."""
-    from .models import OrderSuggestion
-    from .services.magic_link import verify_action
 
     settings = request.app.state.settings
 
@@ -736,9 +728,6 @@ _UNACCEPT_MESSAGES: dict[str, tuple[str, str]] = {
 )
 def unaccept_act(sid: int, token: str, request: Request) -> HTMLResponse:
     """Cancel any working order and mark the suggestion cancelled (the confirm-page POST)."""
-    from .models import OrderSuggestion
-    from .services.magic_link import verify_action
-    from .services.unaccept import unaccept_suggestion
 
     settings = request.app.state.settings
     if not verify_action(sid, "unaccept", token, settings.magic_link_secret):
@@ -762,8 +751,6 @@ def unaccept_act(sid: int, token: str, request: Request) -> HTMLResponse:
 )
 def admin_unaccept(sid: int, request: Request) -> dict[str, str]:
     """Un-accept via the admin API (ops path; same service as the email confirm)."""
-    from .models import OrderSuggestion
-    from .services.unaccept import unaccept_suggestion
 
     with session_scope() as s:
         sug = s.get(OrderSuggestion, sid)
@@ -1201,7 +1188,6 @@ def admin_reconcile_manual(
     body: ReconcileManualRequest,
 ) -> dict[str, Any]:
     """Manually set suggestion_id on an order_execution row (match_method='manual_matched')."""
-    from .models import OrderExecution, OrderSuggestion
 
     with session_scope() as session:
         execution = session.get(OrderExecution, execution_id)
@@ -1387,7 +1373,6 @@ def admin_cancel_all_orders(
     brokers, or one via broker_account_id. Each order is cancelled via its own account's
     adapter. Does NOT change auto-trade mode (use emergency-stop for mode → OFF).
     """
-    from .models import OrderExecution
 
     adapters = request.app.state.adapters
     scope_refs = _resolve_scope(broker_account_id, default="all")

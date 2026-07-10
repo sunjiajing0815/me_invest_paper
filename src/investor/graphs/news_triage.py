@@ -185,7 +185,7 @@ def route_after_critic(state: NewsTriageState) -> Literal["arbitrate", "no_arbit
 # ---------------------------------------------------------------------------
 
 
-def build_news_triage_graph(db_path: str = "data/investor.db") -> object:
+def build_news_triage_graph() -> object:
     """Build and compile the news triage graph. Call once at app startup.
 
     ``llm`` and ``session`` are passed at invoke time via
@@ -218,4 +218,4 @@ def build_news_triage_graph(db_path: str = "data/investor.db") -> object:
     )
     g.add_edge("arbitrate", END)
     g.add_edge("no_arbitrate", END)
-    return g.compile(checkpointer=make_checkpointer(db_path))
+    return g.compile(checkpointer=make_checkpointer())

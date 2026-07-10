@@ -235,7 +235,7 @@ def run_movers_email(
     )
 
     # 5. Build graph once, invoke per ticker
-    graph: Any = build_news_triage_graph(settings.sqlite_path)
+    graph: Any = build_news_triage_graph()
     final_by_ticker: dict[str, list[NewsTriageItem]] = {}
     arbitrated_hashes: set[str] = set()
 
