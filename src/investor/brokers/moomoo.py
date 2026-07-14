@@ -117,25 +117,91 @@ class MoomooAdapter:
             currency=self._currency,
         )
 
+    def _accinfo_total(self, currency: str) -> float | None:
+        """Account total_assets expressed in ``currency`` (None on any failure/zero)."""
+        ft = self._ft
+        cur = getattr(ft.Currency, currency, None)
+        if cur is None:
+            return None
+        try:
+            ret, data = self._trade_ctx.accinfo_query(trd_env=self._trd_env, currency=cur)
+            if ret != ft.RET_OK or data.empty:
+                return None
+            total = float(data.iloc[0]["total_assets"])
+        except Exception:  # noqa: BLE001 — FX derivation must never fail a sync
+            return None
+        return total if total > 0 else None
+
+    def _fx_rates_to_usd(self, currencies: set[str]) -> dict[str, float]:
+        """USD-per-unit rates for each non-USD currency, derived from the broker itself.
+
+        ``accinfo_query`` can express the SAME account total in any currency, so
+        ``total(USD) / total(HKD)`` is Moomoo's own implied USDHKD rate at this instant —
+        no external FX feed needed. Currencies whose rate can't be derived are omitted
+        (callers leave those values native and WARN rather than fail the sync).
+        """
+        wanted = {c for c in currencies if c != "USD"}
+        if not wanted:
+            return {}
+        usd_total = self._accinfo_total("USD")
+        if usd_total is None:
+            logger.warning("MoomooAdapter: accinfo(USD) unavailable — skipping FX conversion")
+            return {}
+        rates: dict[str, float] = {}
+        for cur in wanted:
+            cur_total = self._accinfo_total(cur)
+            if cur_total is None:
+                logger.warning(
+                    "MoomooAdapter: accinfo(%s) unavailable — %s values stay native", cur, cur
+                )
+                continue
+            rates[cur] = usd_total / cur_total
+            logger.info("MoomooAdapter: implied FX %s→USD = %.6f", cur, rates[cur])
+        return rates
+
     def get_positions(self) -> list[Position]:
-        """Return current positions from Moomoo position_list_query."""
+        """Return current positions from Moomoo position_list_query.
+
+        Moomoo reports ``market_val``/``cost_price`` in each security's NATIVE traded
+        currency (HKD for an HK stock), but every stored value in this app is USD —
+        ``take_snapshot`` divides by ``equity_usd``, so an unconverted HKD position
+        inflates its weight ~7.8× (the 07709 29.6% bug, post-4.9a §15). Non-USD
+        positions are converted here at the broker's own implied rate and labelled
+        ``USD``; if a rate can't be derived the value stays native with its native
+        label and a WARNING — a visibly-odd row beats a failed sync.
+        """
         ft = self._ft
         ret, data = self._trade_ctx.position_list_query(trd_env=self._trd_env)
         if ret != ft.RET_OK:
             raise RuntimeError(f"Moomoo position_list_query failed: {data}")
         now = datetime.now(UTC)  # one timestamp for the whole batch (mirrors AlpacaAdapter)
-        positions = []
+
+        raw = []
         for _, row in data.iterrows():
             code = str(row["code"])
-            ticker = _strip_market_prefix(code)
+            raw.append((
+                _strip_market_prefix(code),
+                float(row["qty"]),
+                float(row["cost_price"]),
+                float(row["market_val"]),
+                _currency_for_code(code, self._currency),
+            ))
+
+        rates = self._fx_rates_to_usd({cur for *_, cur in raw})
+        positions = []
+        for ticker, qty, avg_cost, market_value, cur in raw:
+            if cur != "USD" and cur in rates:
+                avg_cost *= rates[cur]
+                market_value *= rates[cur]
+                cur = "USD"
             positions.append(
                 Position(
                     ticker=ticker,
-                    qty=float(row["qty"]),
-                    avg_cost=float(row["cost_price"]),
-                    market_value=float(row["market_val"]),
+                    qty=qty,
+                    avg_cost=avg_cost,
+                    market_value=market_value,
                     as_of=now,
-                    currency=_currency_for_code(code, self._currency),
+                    currency=cur,
                 )
             )
         return positions
@@ -149,12 +215,21 @@ class MoomooAdapter:
     def get_activities(
         self, since: datetime, until: datetime | None = None
     ) -> list[Activity]:
-        """Return fills from deal_list_query (actual fills, not order statuses)."""
+        """Return fills from deal_list_query (actual fills, not order statuses).
+
+        Fill prices for non-US securities are converted to USD (same implied-rate
+        mechanism as ``get_positions``) so reconciliation/PnL/funds-detection never mix
+        native-currency prices with USD accounting.
+        """
         ft = self._ft
         # Moomoo deal_list_query does not support date filter — filter in Python
         ret, data = self._trade_ctx.deal_list_query(trd_env=self._trd_env)
         if ret != ft.RET_OK:
             raise RuntimeError(f"Moomoo deal_list_query failed: {data}")
+        fill_currencies = {
+            _currency_for_code(str(row["code"]), self._currency) for _, row in data.iterrows()
+        }
+        rates = self._fx_rates_to_usd(fill_currencies)
         activities = []
         for _, row in data.iterrows():
             # Parse fill timestamp — Moomoo returns strings like "2024-01-15 10:30:00"
@@ -176,11 +251,16 @@ class MoomooAdapter:
                 side = "sell"
             else:
                 continue  # skip unknown side
-            ticker = _strip_market_prefix(str(row["code"]))
+            code = str(row["code"])
+            ticker = _strip_market_prefix(code)
             broker_order_id = str(row["order_id"])
             # client_order_id stored in remark field (per ADR-0018)
             remark = str(row.get("remark", "")) if "remark" in row else ""
             client_order_id: str | None = remark if remark else None
+            filled_price = float(row["price"])
+            cur = _currency_for_code(code, self._currency)
+            if cur != "USD" and cur in rates:
+                filled_price *= rates[cur]
             activities.append(
                 Activity(
                     broker_order_id=broker_order_id,
@@ -188,7 +268,7 @@ class MoomooAdapter:
                     ticker=ticker,
                     side=side,
                     filled_qty=float(row["qty"]),
-                    filled_price=float(row["price"]),
+                    filled_price=filled_price,
                     filled_at=filled_at,
                     status="filled",
                 )

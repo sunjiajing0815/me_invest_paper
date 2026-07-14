@@ -132,7 +132,8 @@ def test_get_positions_empty_returns_empty_list(adapter: MoomooAdapter) -> None:
 
 
 def test_get_positions_labels_native_currency_from_market(adapter: MoomooAdapter) -> None:
-    """Per-position currency is derived from the market prefix: US.→USD, AU.→AUD."""
+    """When no FX rate can be derived (accinfo unavailable here), non-USD positions
+    keep their native value AND native label — a visibly-odd row beats a failed sync."""
     df = pd.DataFrame([
         {"code": "US.AAPL", "qty": 10.0, "cost_price": 150.0, "market_val": 1600.0},
         {"code": "AU.CSL", "qty": 25.0, "cost_price": 130.0, "market_val": 2415.0},
@@ -140,7 +141,75 @@ def test_get_positions_labels_native_currency_from_market(adapter: MoomooAdapter
     adapter._trade_ctx.position_list_query.return_value = (0, df)
     by_ticker = {p.ticker: p for p in adapter.get_positions()}
     assert by_ticker["AAPL"].currency == "USD"
-    assert by_ticker["CSL"].currency == "AUD"
+    assert by_ticker["CSL"].currency == "AUD"          # no rate → native label kept
+    assert by_ticker["CSL"].market_value == pytest.approx(2415.0)  # and native value
+
+
+# ── FX conversion (the 07709 HKD 29.6% bug — post-4.9a §15) ───────────────────
+
+def _accinfo_by_currency(ft_mock: MagicMock, totals: dict[str, float]):  # type: ignore[no-untyped-def]
+    """accinfo_query side_effect returning the account total in the requested currency."""
+    for cur in totals:
+        setattr(ft_mock.Currency, cur, cur)
+
+    def _side_effect(**kwargs):  # type: ignore[no-untyped-def]
+        cur = kwargs.get("currency", "USD")
+        if cur not in totals:
+            return (1, "no such currency")
+        return (0, pd.DataFrame([{
+            "acc_id": "1819", "cash": 0.0, "total_assets": totals[cur], "power": 0.0,
+        }]))
+    return _side_effect
+
+
+def test_hkd_position_converted_to_usd(ft_mock: MagicMock, adapter: MoomooAdapter) -> None:
+    """An HK position's market_value/avg_cost convert at the broker's implied rate
+    (total(USD)/total(HKD)) and the row is labelled USD — so weight_pct (÷ equity_usd)
+    is correct instead of ~7.8× inflated."""
+    adapter._trade_ctx.accinfo_query.side_effect = _accinfo_by_currency(
+        ft_mock, {"USD": 30_224.0, "HKD": 235_747.2}  # implied USDHKD = 0.128205...
+    )
+    df = pd.DataFrame([
+        {"code": "HK.07709", "qty": 100.0, "cost_price": 89.0, "market_val": 8940.0},
+        {"code": "US.QQQ", "qty": 10.0, "cost_price": 600.0, "market_val": 8706.0},
+    ])
+    adapter._trade_ctx.position_list_query.return_value = (0, df)
+
+    by_ticker = {p.ticker: p for p in adapter.get_positions()}
+    rate = 30_224.0 / 235_747.2
+    assert by_ticker["07709"].currency == "USD"
+    assert by_ticker["07709"].market_value == pytest.approx(8940.0 * rate)   # ≈ $1,146
+    assert by_ticker["07709"].avg_cost == pytest.approx(89.0 * rate)
+    # USD position untouched
+    assert by_ticker["QQQ"].market_value == pytest.approx(8706.0)
+
+
+def test_usd_only_positions_skip_fx_lookup(adapter: MoomooAdapter) -> None:
+    """All-USD portfolios must not pay the extra accinfo calls."""
+    df = pd.DataFrame([
+        {"code": "US.QQQ", "qty": 10.0, "cost_price": 600.0, "market_val": 8706.0},
+    ])
+    adapter._trade_ctx.position_list_query.return_value = (0, df)
+    adapter.get_positions()
+    adapter._trade_ctx.accinfo_query.assert_not_called()
+
+
+def test_hk_fill_price_converted_in_activities(
+    ft_mock: MagicMock, adapter: MoomooAdapter
+) -> None:
+    """deal_list_query fills for HK securities convert filled_price to USD so
+    reconciliation/PnL/funds-detection never mix HKD prices with USD accounting."""
+    adapter._trade_ctx.accinfo_query.side_effect = _accinfo_by_currency(
+        ft_mock, {"USD": 1000.0, "HKD": 7800.0}
+    )
+    df = pd.DataFrame([{
+        "code": "HK.07709", "order_id": "o-1", "trd_side": "BUY", "qty": 100.0,
+        "price": 89.4, "create_time": "2026-07-10 10:30:00", "remark": "",
+    }])
+    adapter._trade_ctx.deal_list_query.return_value = (0, df)
+    acts = adapter.get_activities(since=datetime(2026, 7, 1, tzinfo=UTC))
+    assert len(acts) == 1
+    assert acts[0].filled_price == pytest.approx(89.4 * 1000.0 / 7800.0)
 
 
 # ── get_activities ────────────────────────────────────────────────────────────
