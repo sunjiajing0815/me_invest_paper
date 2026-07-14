@@ -6,12 +6,9 @@ import dataclasses
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.db import override_engine_for_testing
-from investor.models import Base, OrderSuggestion
+from investor.models import OrderSuggestion
 from investor.services.daily_report import AccountSnapshot
 from investor.services.gap import GapRow
 from investor.services.levels import NearbyLevels, SRLevelRow
@@ -73,14 +70,6 @@ def _levels(
     )
 
 
-@pytest.fixture()
-def db_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 # ---------------------------------------------------------------------------

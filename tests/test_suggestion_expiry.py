@@ -7,28 +7,16 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
-import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.db import override_engine_for_testing
 from investor.jobs.suggestion_expiry import sweep_expired_suggestions
-from investor.models import Base, OrderExecution, OrderSuggestion
+from investor.models import OrderExecution, OrderSuggestion
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def db_session() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _make_session_factory(session: Session):  # type: ignore[return]

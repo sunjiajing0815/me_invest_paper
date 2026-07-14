@@ -6,14 +6,12 @@ from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Activity, OrderConfirmation
-from investor.db import override_engine_for_testing
 from investor.jobs.reconciliation import _meta_key, run_daily_reconciliation_for_account
-from investor.models import Base, Meta, OrderExecution, OrderSuggestion
+from investor.models import Meta, OrderExecution, OrderSuggestion
 from investor.services.accounts import AccountInfo
 from investor.services.reconciliation import (
     compute_realized_pnl,
@@ -117,13 +115,6 @@ def _adapter(activities: list[Activity]) -> MagicMock:
     return m
 
 
-@pytest.fixture()
-def db_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
 
 
 # ── Rule 1: sug-N client_order_id ────────────────────────────────────────────

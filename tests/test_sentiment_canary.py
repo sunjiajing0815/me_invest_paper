@@ -2,25 +2,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.models import Base, WeeklyMarketContextRow
+from investor.models import WeeklyMarketContextRow
 from investor.services.weekly_context import sentiment_canary
-
-
-@pytest.fixture()
-def s() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _ctx_row(s: Session, *, vix: float | None, fg: int | None, age_days: int = 0) -> None:

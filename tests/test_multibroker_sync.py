@@ -15,30 +15,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Account, Position
 from investor.config import Settings
-from investor.db import override_engine_for_testing, session_scope
+from investor.db import session_scope
 from investor.jobs.sync import run_sync_all_brokers, run_sync_for_account
-from investor.models import Base, BrokerAccount
+from investor.models import BrokerAccount
 from investor.services.accounts import resolve_primary_account_ref
 
 _ALPACA = 1  # lowest account_ref → the original / primary account
 _MOOMOO = 2  # onboarded later, MORE recently synced (the Bug-B trap)
 
 
-@pytest.fixture()
-def db_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 class _FakeAdapter:

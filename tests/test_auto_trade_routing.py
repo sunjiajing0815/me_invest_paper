@@ -25,19 +25,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
-import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Account, OrderConfirmation, OrderRequest
 from investor.config import Settings
-from investor.db import override_engine_for_testing, session_scope
+from investor.db import session_scope
 from investor.jobs.auto_trade import run_auto_trade_job, run_auto_trade_job_for_account
 from investor.models import (
     AutoTradeCaps,
     AutoTradeState,
-    Base,
     BrokerAccount,
     OrderExecution,
     OrderSuggestion,
@@ -54,14 +51,6 @@ _ALPACA = 1  # primary (lowest active ref)
 _MOOMOO = 2  # onboarded later
 
 
-@pytest.fixture()
-def db_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 class _PlacingAdapter:

@@ -8,14 +8,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from investor.config import load_targets
-from investor.db import override_engine_for_testing
 from investor.models import (
-    Base,
     OrderExecution,
     OrderSuggestion,
     TargetAllocation,
@@ -56,14 +52,6 @@ YAML_V2 = textwrap.dedent("""\
 """)
 
 
-@pytest.fixture()
-def db_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 class TestLoadTargetsIntoDb:

@@ -2,28 +2,16 @@
 snapshot batch via ts = MAX(ts); per-row timestamps break it — the Moomoo drift-zeros bug)."""
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Account, Position
-from investor.models import Base, PositionsSnapshot
+from investor.models import PositionsSnapshot
 from investor.services.snapshot import take_snapshot
-
-
-@pytest.fixture()
-def session() -> Generator[Session, None, None]:
-    eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(eng)
-    with Session(eng) as s:
-        yield s
-    eng.dispose()
 
 
 def _adapter() -> tuple[Any, Account]:

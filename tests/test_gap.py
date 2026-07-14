@@ -5,26 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.db import override_engine_for_testing
-from investor.models import Base, BrokerAccount, PositionsSnapshot, TargetAllocation
+from investor.models import BrokerAccount, PositionsSnapshot, TargetAllocation
 from investor.services.gap import GapRow, compute_gap, get_untracked_positions
 
 _ACCT = 1  # account_ref for the seeded test account
 
 
-@pytest.fixture()
-def db_session() -> Session:
-    """Provide a transactional in-memory SQLite session."""
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _seed_account(session: Session, equity: float = 10_000.0) -> datetime:

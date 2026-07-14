@@ -7,13 +7,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from investor.brokers.base import Account
 from investor.config import Settings
-from investor.db import override_engine_for_testing
 from investor.jobs.weekly_review import (
     SuggestionAudit,
     WeeklyReview,
@@ -23,7 +20,7 @@ from investor.jobs.weekly_review import (
     run_weekly_review_all_brokers,
     run_weekly_review_for_account,
 )
-from investor.models import AutoTradeState, Base, BrokerAccount, OrderSuggestion
+from investor.models import AutoTradeState, BrokerAccount, OrderSuggestion
 from investor.services.accounts import AccountInfo
 from investor.services.email import FakeEmailer
 from investor.services.weekly_context import WeeklyMarketContext
@@ -159,14 +156,6 @@ def test_suggestion_audit_fields() -> None:
 
 # ── _build_review: pending-past-expires display fix ──────────────────────────
 
-@pytest.fixture()
-def _db_session() -> Session:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    override_engine_for_testing(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _mock_adapter() -> MagicMock:

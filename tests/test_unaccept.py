@@ -1,26 +1,13 @@
 """Tests for services/unaccept.py — un-accept an accepted suggestion."""
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import date
 from unittest.mock import MagicMock
 
-import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.models import Base, OrderExecution, OrderSuggestion
+from investor.models import OrderExecution, OrderSuggestion
 from investor.services.unaccept import UnacceptResult, unaccept_suggestion
-
-
-@pytest.fixture()
-def s() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _add_suggestion(session: Session, status: str = "accepted") -> OrderSuggestion:

@@ -1,28 +1,18 @@
 """Tests for the cash-flow funds-detection heuristic (P2.3, ADR-0035)."""
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.models import Base, BrokerAccount, OrderExecution
+from investor.models import BrokerAccount, OrderExecution
 from investor.services.funds import detect_funds_flow
 
 _NOW = datetime.now(UTC)
 _YESTERDAY = _NOW - timedelta(days=2)  # safely before today-start (ET)
 
 
-@pytest.fixture()
-def s() -> Generator[Session, None, None]:
-    eng = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(eng)
-    with Session(eng) as session:
-        yield session
-    eng.dispose()
 
 
 def _acct(session: Session, cash: float, *, last_sync: datetime, closed: bool) -> None:

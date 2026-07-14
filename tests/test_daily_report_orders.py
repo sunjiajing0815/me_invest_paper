@@ -1,25 +1,13 @@
 """compose_daily_report summarises this-week orders placed and filled (replaces Levels)."""
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.models import Base, OrderExecution
+from investor.models import OrderExecution
 from investor.services.daily_report import compose_daily_report
-
-
-@pytest.fixture()
-def s() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _this_monday() -> date:

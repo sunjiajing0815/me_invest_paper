@@ -1,26 +1,14 @@
 """compose_daily_report builds allocation slices (incl. cash) for the donut chart."""
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from investor.models import Base, BrokerAccount, PositionsSnapshot
+from investor.models import BrokerAccount, PositionsSnapshot
 from investor.services.charts import CASH_COLOR
 from investor.services.daily_report import compose_daily_report
-
-
-@pytest.fixture()
-def s() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    engine.dispose()
 
 
 def _account(session: Session, cash: float, equity: float) -> None:
