@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 06-23)
+# Post-4.9a changes (2026-06-03 → 07-14)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -380,6 +380,30 @@ passed, ruff/mypy clean. Verified live: `GET /suggestions/66/unaccept` (the acce
 61) now returns HTTP 200 confirm page, zero "invalid action"; GET is side-effect-free so the
 suggestion stayed `accepted`. (Aside: `order_suggestion.id` is a global autoincrement PK — unique
 across all broker accounts — so the `sid`-only lookup + token binding is unambiguous.)
+
+## 15. Moomoo FX — non-USD positions/fills now converted to USD — `4550a41` (07-14)
+
+**Symptom:** a manually-bought HK position (07709, 100 shares, 8,940 HKD ≈ \$1,140) showed as
+**29.6% of the \$30.2k account-62 portfolio** in the daily email's untracked box; account-62
+weights summed to 106.8%.
+
+**Root cause:** Moomoo's `position_list_query`/`deal_list_query` report values in each
+security's **native traded currency**; the adapter labelled the currency (post-smoke `391d062`)
+but **never converted**, and `take_snapshot` computes `weight_pct = market_value / equity_usd`
+— HKD numerator over USD denominator (~7.8× inflation). No FX conversion existed anywhere;
+unnoticed because every prior position was USD.
+
+**Fix:** convert at the adapter boundary using the **broker's own implied rate** — dual
+`accinfo_query` (`total(USD)/total(HKD)` = Moomoo's USDHKD at that instant, no external FX
+feed). `get_positions` converts `market_value`/`avg_cost`; `get_activities` converts
+`filled_price`; converted rows are labelled `USD`. Rate-derivation failure leaves values
+native with native labels + WARNING (visibly-odd row beats a failed sync); all-USD portfolios
+skip the extra calls. One-time backfill converted the 4 historical 07709 snapshot rows
+(29.6→3.8%, weight = mv×rate since the equity denominator was always USD-correct); no
+HKD-priced `order_execution` rows existed. Verified live: implied FX 0.127576, 07709 at 5.4%.
+
+Tests: `test_moomoo.py` — HKD position converts (mv+avg_cost, label→USD), USD-only skips FX
+lookups, rate-failure keeps native value+label, HK fill price converts. 537 passed.
 
 ## Candidate ADRs / gotchas (not yet written)
 
