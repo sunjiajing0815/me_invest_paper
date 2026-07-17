@@ -355,17 +355,22 @@ def _deeper_anchor(
     return min(candidates, key=lambda lv: lv.price) if candidates else None
 
 
+_REANCHOR_MAX_DISTANCE_PCT = 0.15  # mirror generate_suggestions' anchor distance guard
+
+
 def _find_level(
     levels: list[ScoredLevel], method: str, side: str, current_price: float
 ) -> ScoredLevel | None:
-    """Return the scored level matching `method` only if it is the correct type AND on
-    the correct side of `current_price` for `side`: a BUY anchors to a support at/below
-    current, a SELL to a resistance at/above current.
+    """Return the scored level matching `method` only if it is the correct type, on the
+    correct side of `current_price` for `side` (BUY → support at/below current, SELL →
+    resistance at/above), AND within ``_REANCHOR_MAX_DISTANCE_PCT`` of current price.
 
-    Without the price check the critic could re-anchor a BUY onto a "support" that price
-    has already fallen through (a limit above market) — exactly the directional guard
-    generate_suggestions applies to drafts. ``current_price <= 0`` (no indicator) skips
-    the price check and falls back to method+type only.
+    Without the price checks the critic/narrative could re-anchor a BUY onto a "support"
+    that price has already fallen through (a limit above market) or onto a stale level
+    far below market — the MU \\$751.43 re-anchor was 23% below the \\$979 close because
+    only the original anchor selection enforced the 15% distance guard (post-4.9a §16).
+    ``current_price <= 0`` (no indicator) skips the price checks and falls back to
+    method+type only.
     """
     expected_type = "support" if side == "buy" else "resistance"
     for lv in levels:
@@ -375,6 +380,15 @@ def _find_level(
             if side == "buy" and lv.price > current_price:
                 continue
             if side == "sell" and lv.price < current_price:
+                continue
+            if abs(lv.price / current_price - 1) > _REANCHOR_MAX_DISTANCE_PCT:
+                log.warning(
+                    "_find_level: %s %s rejected — %.2f is %.0f%% from current %.2f "
+                    "(max %.0f%%)",
+                    method, expected_type, lv.price,
+                    abs(lv.price / current_price - 1) * 100, current_price,
+                    _REANCHOR_MAX_DISTANCE_PCT * 100,
+                )
                 continue
         return lv
     return None

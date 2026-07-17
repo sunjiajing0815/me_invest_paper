@@ -601,3 +601,17 @@ class TestFindLevelDirectional:
     def test_wrong_type_for_side_is_rejected(self) -> None:
         levels = [_lv("ema_21", 199.0, "resistance")]
         assert _find_level(levels, "ema_21", "buy", 250.0) is None  # resistance can't anchor a BUY
+
+    def test_distance_guard_rejects_far_level(self) -> None:
+        """Regression (MU \\$751.43, post-4.9a §16): a stale support 23% below current
+        must be rejected — re-anchors respect the same 15% guard as original selection."""
+        levels = [_lv("sma_20", 751.43, "support")]
+        assert _find_level(levels, "sma_20", "buy", 979.36) is None  # 23% away → rejected
+
+    def test_distance_guard_accepts_within_15pct(self) -> None:
+        levels = [_lv("sma_50", 898.85, "support")]
+        assert _find_level(levels, "sma_50", "buy", 979.36) is not None  # 8.2% → OK
+
+    def test_distance_guard_skipped_without_current_price(self) -> None:
+        levels = [_lv("sma_20", 751.43, "support")]
+        assert _find_level(levels, "sma_20", "buy", 0.0) is not None  # no indicator → no check

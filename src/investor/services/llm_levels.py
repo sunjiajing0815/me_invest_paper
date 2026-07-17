@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from pydantic import BaseModel
@@ -179,16 +179,25 @@ def score_levels_for_ticker(
     return out
 
 
-def load_latest_scored_levels(session: Session) -> dict[str, list[ScoredLevel]]:
+def load_latest_scored_levels(
+    session: Session, *, max_age_days: int = 7
+) -> dict[str, list[ScoredLevel]]:
     """Load the most-recently-scored S/R levels per ticker from the DB.
 
-    Returns only rows where confidence IS NOT NULL (i.e., LLM-scored rows).
-    Per ticker, returns all scored rows from the latest ``as_of`` date,
-    sorted by confidence descending.
+    Returns only rows where confidence IS NOT NULL (i.e., LLM-scored rows) whose
+    ``as_of`` is within ``max_age_days``. The staleness cutoff matters: without it, a
+    ticker whose scoring stopped persisting kept serving months-old prices to the
+    review graph — context_adjust re-anchored MU onto a June sma_20 at \\$751 when the
+    stock traded \\$979 (post-4.9a §16). A ticker with no FRESH scored rows is simply
+    absent, which the graph already treats as "no scored levels" (re-anchor skipped).
+
+    Per ticker, returns all scored rows from the latest fresh ``as_of`` date, sorted by
+    confidence descending.
     """
+    cutoff = datetime.now(UTC).date() - timedelta(days=max_age_days)
     rows = (
         session.query(SRLevelORM)
-        .filter(SRLevelORM.confidence.isnot(None))
+        .filter(SRLevelORM.confidence.isnot(None), SRLevelORM.as_of >= cutoff)
         .all()
     )
 

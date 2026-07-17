@@ -141,8 +141,9 @@ def run_weekly_suggestions_for_account(
     Order of operations:
       1. update_bars (tolerates failure — stale bars are better than no email)
       2. compute_indicators (DuckDB, no session needed)
-      3. LLM level scoring (separate session scope)
-      4. snapshot + gap + levels inside session scope; generate drafts (no persist yet)
+      3. persist_levels (MUST precede scoring — the score write-back updates these rows)
+      4. LLM level scoring (per-worker session scopes)
+      5. snapshot + gap inside session scope; generate drafts (no persist yet)
       5. suggestion-review graph: gather_context → reason → critic → revise → finalize
          finalize_node persists finals and returns suggestion_ids
       6. render + email outside session scope
@@ -178,6 +179,14 @@ def run_weekly_suggestions_for_account(
     indicators = compute_indicators(tickers, settings.bars_dir)
     sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
     week_of = _next_monday()
+
+    # Persist computed levels BEFORE scoring: score_levels_for_ticker writes confidences
+    # back onto sr_level rows by (ticker, method, as_of) — if the rows don't exist yet the
+    # write-back silently no-ops and the DB keeps serving stale scored sets to the review
+    # graph (the MU $751.43 bug: last persisted scores were 6 weeks old). The upsert only
+    # touches price/type on conflict, so re-running never clobbers scores.
+    with session_scope() as session:
+        persist_levels(session, sr_rows)
 
     # Load last-24h material news, then score all tickers in parallel
     with session_scope() as session:
@@ -222,7 +231,6 @@ def run_weekly_suggestions_for_account(
         )
 
         targets_id = get_active_targets_id(session)
-        persist_levels(session, sr_rows)
 
         nearby = build_nearby_levels(tickers, sr_rows, indicators)
         drafts, skipped = generate_suggestions(
