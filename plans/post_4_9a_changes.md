@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 07-14)
+# Post-4.9a changes (2026-06-03 → 07-17)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -404,6 +404,38 @@ HKD-priced `order_execution` rows existed. Verified live: implied FX 0.127576, 0
 
 Tests: `test_moomoo.py` — HKD position converts (mv+avg_cost, label→USD), USD-only skips FX
 lookups, rate-failure keeps native value+label, HK fill price converts. 537 passed.
+
+## 16. Stale scored levels — score persistence + staleness cutoff + re-anchor distance guard — `3097461` (07-17)
+
+**Symptom:** the 07-13 MU suggestion shipped a limit of **\$751.43 — 23% below** the \$979.36
+close. The draft was correct (`sma_50 \$898.85`, ~8% below, inside the 15% guard);
+`context_adjust`'s narrative pass re-anchored it onto a **six-week-old** `sma_20` support at
+\$751.43 (the real 07-12 sma_20 was \$1,052.93 — a *resistance*).
+
+**Root-cause chain (three layers, all fixed):**
+1. **LLM level scores had silently not persisted since 06-01.** The weekly job scored levels
+   *before* `persist_levels` created the fresh `sr_level` rows, so the score write-back (keyed
+   `ticker/method/as_of`) no-oped. In-memory scores still fed the drafts (why drafts looked
+   fine); only the DB went stale. The job now persists levels **before** scoring — the upsert
+   touches only price/type on conflict, so re-runs never clobber scores. (The tickers that DID
+   have fresh scores were exactly those from double-run days, where run 2 found run 1's rows.)
+2. **`load_latest_scored_levels` had no staleness cutoff** — it served the June-1 price world
+   (MU ~\$750) to the review graph in July. Now ignores scored sets older than
+   `max_age_days=7`; a ticker with no fresh scores is absent → the graph's existing
+   no-scored-levels path skips the narrative re-anchor.
+3. **Re-anchor paths had no distance guard** — the 15% max-distance rule lived only in
+   `generate_suggestions`' original anchor selection. `_find_level` (used by both the narrative
+   `prefer_anchor` and critic `revise`) now rejects levels >15% from current price, with a
+   WARNING when it fires.
+
+Defence in depth: any one layer alone would have prevented \$751.43. Tests:
+`test_llm_levels_persistence.py` (write-back persists; upsert preserves scores; stale
+excluded / fresh served) + `test_suggestion_review.py` distance-guard cases (23% rejected,
+8% accepted, no-price skip). 545 passed. Verified live: MU's stale June set no longer served.
+
+> Operational note: the accepted MU order (sid 85, \$751.43 GTC) predates the fix — expires
+> with the Friday sweep unless un-accepted earlier. Sunday's run is the end-to-end proof that
+> fresh scores persist.
 
 ## Candidate ADRs / gotchas (not yet written)
 
