@@ -455,6 +455,9 @@ Settings: `TOPUP_ENABLED=true`, `TOPUP_HIGHLIGHT_MIN_CONF=0.75`. 30 new tests (5
 ~2× the gap (AMZN \$3,511 vs a \$1,751 gap — caught from the real email). Base is now the
 **gap to target** (`floor(gap_usd/price)`, min 1 share); `band_high` is only the safety cap for
 the 1-share-floor case. Regression tests added; this week's pending top-ups regenerated.
+**Per-ticker scaling (07-20, same day):** the sentiment fraction is now modulated by each
+anchor's LLM confidence (`effective = fraction × conf`, unscored fallback = 0.5) so sizing
+differentiates per ticker within a week; `size_factor`/`context_note` record the effective value.
 
 ## Candidate ADRs / gotchas (not yet written)
 

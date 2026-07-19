@@ -46,8 +46,15 @@ A ticker gets a top-up draft in a weekly run iff **all** of:
 band_cap    = max { n ∈ ℕ : current_pct + n·(price/equity)·100 ≤ band_high }   # safety cap
 gap_shares  = floor(gap_usd / price)          # whole shares that close the gap TO TARGET
 base_shares = max(1, gap_shares)
-qty         = min( max(1, floor(base_shares × fraction)), band_cap )
+effective   = fraction × anchor_confidence    # per-ticker (unscored fallback conf = 0.5)
+qty         = min( max(1, floor(base_shares × effective)), band_cap )
 ```
+
+> **Per-ticker scaling (added 2026-07-20):** the market-level sentiment fraction is
+> modulated by each anchor's LLM confidence, so a 0.72-confidence level sizes larger than
+> a 0.60 one in the same week (e.g. fear ×0.75 × conf 0.72 = ×0.54). Both inputs are
+> AI-supplied metrics; the arithmetic stays deterministic Python. `size_factor` and
+> `context_note` record the effective per-ticker value.
 
 > **Corrected 2026-07-20:** the first shipped version sized `base` from the band-headroom
 > (`band_cap`) — deploying ~2× the gap (AMZN: \$3,511 vs a \$1,751 gap). The base is the

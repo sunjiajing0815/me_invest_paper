@@ -89,17 +89,19 @@ def _run(gap: GapRow, levels: NearbyLevels, *, band_high: float,
 
 def test_under_target_in_band_gets_topup() -> None:
     # NEE-like: 4.2% of 5% target, band_high 8, price 71, equity 100k.
-    # GAP to target = (5-4.2)% * 100k = $800 → base 11 @ 71; ×0.5 → 5 shares.
+    # GAP to target = (5-4.2)% * 100k = $800 → base 11 @ 71.
+    # Effective fraction = sentiment 0.5 × conf 0.5 (unscored fallback) = 0.25 → qty 2.
     # (Band headroom would be $3,800/53 shares — sizing must use the GAP, not the band.)
     out = _run(_gap("NEE", 4.2, 5.0), _levels("NEE", 73.0, 71.0), band_high=8.0)
     assert len(out) == 1
     s = out[0]
     assert s.kind == "topup" and s.side == "buy"
     assert s.limit_price == pytest.approx(71.0)
-    assert s.base_qty == 11 and s.size_factor == pytest.approx(0.5)
-    assert s.qty == 5
+    assert s.base_qty == 11 and s.size_factor == pytest.approx(0.25)
+    assert s.qty == 2
     assert s.qty * s.limit_price <= 800 + 71  # deploys ~the gap, never ~the band headroom
-    assert "top-up sized ×0.5" in (s.context_note or "")
+    assert "top-up sized ×0.25" in (s.context_note or "")
+    assert "conf 0.50" in (s.context_note or "")
 
 
 def test_at_or_over_target_not_eligible() -> None:
@@ -134,11 +136,11 @@ def test_distance_guard_applies() -> None:
 
 
 def test_cash_budget_reduces_qty() -> None:
-    # gap-based base 11 ×0.5 = 5 @ $71 = $355, but only $300 above the $100 floor
-    # → qty reduced to floor(200/71) = 2.
+    # base 11 × (0.5 sentiment × 0.5 conf) = 2 @ $71 = $142, but only $171 cash:
+    # $71 above the $100 floor → qty reduced to floor(71/71) = 1.
     out = _run(_gap("NEE", 4.2, 5.0), _levels("NEE", 73.0, 71.0), band_high=8.0,
-               cash=300.0)
-    assert len(out) == 1 and out[0].qty == 2
+               cash=171.0)
+    assert len(out) == 1 and out[0].qty == 1
 
 
 def test_cash_below_floor_skips() -> None:
@@ -155,6 +157,10 @@ def test_scored_anchor_preferred_and_confidence_captured() -> None:
     assert len(out) == 1
     assert out[0].anchor_method == "ema_21"
     assert out[0].confidence_at_creation == pytest.approx(0.8)
+    # per-ticker scaling: 0.5 sentiment × 0.8 conf = 0.40 effective
+    assert out[0].size_factor == pytest.approx(0.4)
+    gap_shares = int(800 / 70.5)  # 11
+    assert out[0].qty == int(gap_shares * 0.4)  # 4
 
 
 # ── email template rendering ──────────────────────────────────────────────────
@@ -223,7 +229,7 @@ def test_gap_sizing_never_deploys_band_headroom() -> None:
     assert len(out) == 1
     s = out[0]
     assert s.base_qty == 7          # floor(1760/234)
-    assert s.qty == 5               # floor(7×0.75)
+    assert s.qty == 2               # floor(7 × 0.75 sentiment × 0.5 unscored-conf)
     assert s.qty * s.limit_price < 1_800  # deploys within the gap
 
 
@@ -235,3 +241,17 @@ def test_one_share_floor_capped_by_band() -> None:
     out = _run(_gap("QQQ", 4.97, 5.0), _levels("QQQ", 460.0, 450.0), band_high=5.5,
                fraction=1.0)
     assert len(out) == 1 and out[0].qty == 1 and out[0].base_qty == 1
+
+
+def test_high_confidence_scales_up_vs_low() -> None:
+    """Per-ticker scaling: same gap + sentiment, higher anchor confidence → larger qty."""
+    def run_with_conf(conf: float):  # type: ignore[no-untyped-def]
+        scored = {"NEE": [ScoredLevel(method="ema_21", price=70.5, type="support",
+                                      confidence=conf, rationale="t")]}
+        return _run(_gap("NEE", 3.0, 5.0), _levels("NEE", 73.0, 71.0), band_high=8.0,
+                    fraction=1.0, scored=scored)
+    hi = run_with_conf(0.9)[0]
+    lo = run_with_conf(0.5)[0]
+    assert hi.qty > lo.qty
+    assert hi.size_factor == pytest.approx(0.9)
+    assert lo.size_factor == pytest.approx(0.5)

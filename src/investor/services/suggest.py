@@ -527,7 +527,8 @@ def generate_topup_suggestions(
          (qty reduced to fit; skipped if not even 1 share fits)
 
     Sizing: base = whole shares closing the gap TO TARGET (min 1);
-    qty = max(1, floor(base × fraction)), capped at the band_high share ceiling.
+    qty = max(1, floor(base × fraction × anchor_confidence)), capped at the band_high
+    share ceiling. Unscored fallback anchors use a neutral confidence of 0.5.
     """
     out: list[OrderSuggestionRow] = []
     equity = account.equity_usd
@@ -569,7 +570,14 @@ def generate_topup_suggestions(
         gap_shares = int(g.gap_usd / anchor.price)
         base_shares = max(1, gap_shares)
 
-        qty = max(1, int(base_shares * sentiment_fraction))
+        # Per-ticker scaling: the market-level sentiment fraction is modulated by the
+        # anchor's LLM confidence (higher-conviction level → larger size). Unscored
+        # fallback anchors count as a neutral 0.5. Both inputs are AI-supplied metrics;
+        # the arithmetic is deterministic Python (guardrail-clean).
+        conf = anchor.confidence if anchor.confidence is not None else 0.5
+        effective_fraction = sentiment_fraction * conf
+
+        qty = max(1, int(base_shares * effective_fraction))
         qty = min(qty, band_cap_shares)
         affordable = int((cash_remaining - cash_floor) / anchor.price)
         qty = min(qty, affordable)
@@ -595,8 +603,11 @@ def generate_topup_suggestions(
             confidence_at_creation=anchor.confidence,
             anchor_method=anchor.method,
             base_qty=float(base_shares),
-            size_factor=sentiment_fraction,
-            context_note=f"top-up sized ×{sentiment_fraction:g} ({sentiment_note})",
+            size_factor=round(effective_fraction, 2),
+            context_note=(
+                f"top-up sized ×{effective_fraction:.2f}"
+                f" ({sentiment_note} × conf {conf:.2f})"
+            ),
             kind="topup",
         ))
     return out
