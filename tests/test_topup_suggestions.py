@@ -89,14 +89,16 @@ def _run(gap: GapRow, levels: NearbyLevels, *, band_high: float,
 
 def test_under_target_in_band_gets_topup() -> None:
     # NEE-like: 4.2% of 5% target, band_high 8, price 71, equity 100k.
-    # headroom (8-4.2)% * 100k = $3,800 → base 53 @ 71; ×0.5 → 26 shares.
+    # GAP to target = (5-4.2)% * 100k = $800 → base 11 @ 71; ×0.5 → 5 shares.
+    # (Band headroom would be $3,800/53 shares — sizing must use the GAP, not the band.)
     out = _run(_gap("NEE", 4.2, 5.0), _levels("NEE", 73.0, 71.0), band_high=8.0)
     assert len(out) == 1
     s = out[0]
     assert s.kind == "topup" and s.side == "buy"
     assert s.limit_price == pytest.approx(71.0)
-    assert s.base_qty == 53 and s.size_factor == pytest.approx(0.5)
-    assert s.qty == 26
+    assert s.base_qty == 11 and s.size_factor == pytest.approx(0.5)
+    assert s.qty == 5
+    assert s.qty * s.limit_price <= 800 + 71  # deploys ~the gap, never ~the band headroom
     assert "top-up sized ×0.5" in (s.context_note or "")
 
 
@@ -132,11 +134,11 @@ def test_distance_guard_applies() -> None:
 
 
 def test_cash_budget_reduces_qty() -> None:
-    # base 53 ×0.5 = 26 @ $71 = $1,846 but only $500 available above the $100 floor
-    # → qty reduced to floor(400/71) = 5.
+    # gap-based base 11 ×0.5 = 5 @ $71 = $355, but only $300 above the $100 floor
+    # → qty reduced to floor(200/71) = 2.
     out = _run(_gap("NEE", 4.2, 5.0), _levels("NEE", 73.0, 71.0), band_high=8.0,
-               cash=500.0)
-    assert len(out) == 1 and out[0].qty == 5
+               cash=300.0)
+    assert len(out) == 1 and out[0].qty == 2
 
 
 def test_cash_below_floor_skips() -> None:
@@ -210,3 +212,26 @@ def test_topup_highlight_pill_only_when_flagged() -> None:
 def test_no_topup_section_when_empty() -> None:
     html = _render_weekly_html([])
     assert "Top-Up Opportunities" not in html
+
+
+def test_gap_sizing_never_deploys_band_headroom() -> None:
+    """Regression (07-20 email): AMZN-like 1.76% gap must NOT size from band headroom.
+    current 3.2% of 5% target, band_high 8, price 234, equity 100k, fraction 0.75:
+    gap $1,800 → base 7 → qty 5 (~$1,170) — NOT base 20/qty 15 (~$3,511) from headroom."""
+    out = _run(_gap("AMZN", 3.24, 5.0), _levels("AMZN", 247.0, 234.0), band_high=8.0,
+               fraction=0.75)
+    assert len(out) == 1
+    s = out[0]
+    assert s.base_qty == 7          # floor(1760/234)
+    assert s.qty == 5               # floor(7×0.75)
+    assert s.qty * s.limit_price < 1_800  # deploys within the gap
+
+
+def test_one_share_floor_capped_by_band() -> None:
+    """Tiny gap (<1 share) → 1-share floor, allowed only because 1 share fits under
+    band_high (the eligibility cap). qty stays 1 regardless of fraction."""
+    # gap (5-4.97)% * 100k = $30 @ $450 → gap_shares 0 → base 1; band headroom
+    # (5.5-4.97)% * 100k = $530 → cap 1 → qty 1.
+    out = _run(_gap("QQQ", 4.97, 5.0), _levels("QQQ", 460.0, 450.0), band_high=5.5,
+               fraction=1.0)
+    assert len(out) == 1 and out[0].qty == 1 and out[0].base_qty == 1

@@ -36,7 +36,7 @@ No suggestions this week — all positions within band, or no nearby S/R level.
 {% if skipped %}
 {% set topups = suggestions | selectattr('kind', 'equalto', 'topup') | list %}
 {% if topups %}
-=== TOP-UP OPPORTUNITIES (near-target, sized by market sentiment) ===
+=== TOP-UP OPPORTUNITIES (fills gap to target, sentiment-scaled, band-capped) ===
 [*] = strong entry: high-confidence level, no bearish news this week
 {% for s in topups %}
 {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}

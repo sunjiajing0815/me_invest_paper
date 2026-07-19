@@ -526,7 +526,8 @@ def generate_topup_suggestions(
       5. cost fits ``cash_available`` (post-regular-drafts budget) minus the cash floor
          (qty reduced to fit; skipped if not even 1 share fits)
 
-    Sizing: base = max whole shares under band_high; qty = max(1, floor(base × fraction)).
+    Sizing: base = whole shares closing the gap TO TARGET (min 1);
+    qty = max(1, floor(base × fraction)), capped at the band_high share ceiling.
     """
     out: list[OrderSuggestionRow] = []
     equity = account.equity_usd
@@ -552,13 +553,24 @@ def generate_topup_suggestions(
         if anchor is None:
             continue
 
-        # base = max whole shares that keep the holding <= band_high at the anchor price
+        # Band cap: max whole shares that keep the holding <= band_high at the anchor
+        # price. This is a SAFETY CAP, not the sizing basis — it only binds in the
+        # 1-share-floor case (a whole share can overshoot a tiny gap but must never
+        # cross the upper band).
         headroom_pct = band_high - g.current_pct
-        base_shares = int(headroom_pct / 100.0 * equity / anchor.price)
-        if base_shares < 1:
+        band_cap_shares = int(headroom_pct / 100.0 * equity / anchor.price)
+        if band_cap_shares < 1:
             continue  # even one share would breach the upper band
 
+        # Base = whole shares that close the gap TO TARGET (not to band_high — sizing
+        # from band headroom deployed ~2x the gap; the user's spec is "fill the gap,
+        # capped by the band"). target <= band_high is loader-enforced (§10), so
+        # gap-based sizing stays within the band by construction.
+        gap_shares = int(g.gap_usd / anchor.price)
+        base_shares = max(1, gap_shares)
+
         qty = max(1, int(base_shares * sentiment_fraction))
+        qty = min(qty, band_cap_shares)
         affordable = int((cash_remaining - cash_floor) / anchor.price)
         qty = min(qty, affordable)
         if qty < 1:
@@ -574,9 +586,10 @@ def generate_topup_suggestions(
             qty=float(qty),
             limit_price=round(anchor.price, 2),
             reason=(
-                f"top-up: {g.current_pct:.1f}% vs {g.target_pct:.1f}% target — buy at "
+                f"top-up: {g.current_pct:.1f}% vs {g.target_pct:.1f}% target "
+                f"(~${g.gap_usd:,.0f} gap) — buy at "
                 f"{anchor.method} ${anchor.price:,.2f}{conf_str};"
-                f" keeps holding ≤ band {band_high:.0f}%"
+                f" fills the gap, stays ≤ band {band_high:.0f}%"
             ),
             expires_at=_next_friday_eod(),
             confidence_at_creation=anchor.confidence,

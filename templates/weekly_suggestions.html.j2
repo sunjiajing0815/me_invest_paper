@@ -96,8 +96,8 @@
 {% if topup_items is defined and topup_items %}
 {{ ui.section("Top-Up Opportunities") }}
 <p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 8px 0;">
-  Near-target tickers with headroom below their band &mdash; sized by market sentiment.
-  Buying the suggested qty keeps the holding within its band.
+  Near-target tickers &mdash; qty fills the remaining gap to target, scaled by market
+  sentiment, and never crosses the band.
   <span style="color:{{ ui.POS }}; font-weight:bold;">&#9733; Strong entry</span> = high-confidence level and no bearish news this week.
 </p>
 <div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">

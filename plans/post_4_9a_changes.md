@@ -451,6 +451,11 @@ section. `context_adjust` exempts top-ups (sized at creation — no F&G double-c
 `_select_buy_anchor` extracted so regular + top-up share one anchor/distance bar.
 Settings: `TOPUP_ENABLED=true`, `TOPUP_HIGHLIGHT_MIN_CONF=0.75`. 30 new tests (575 total).
 
+**Sizing correction (07-20):** the first live run sized the base from band-headroom, deploying
+~2× the gap (AMZN \$3,511 vs a \$1,751 gap — caught from the real email). Base is now the
+**gap to target** (`floor(gap_usd/price)`, min 1 share); `band_high` is only the safety cap for
+the 1-share-floor case. Regression tests added; this week's pending top-ups regenerated.
+
 ## Candidate ADRs / gotchas (not yet written)
 
 Worth promoting into `docs/adr/` or CLAUDE.md "Common gotchas" if these stick:
