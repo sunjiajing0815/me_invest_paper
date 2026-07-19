@@ -396,6 +396,7 @@ Fires Sunday at 18:00 America/New_York. Contains:
 | Untracked positions | Red banner — same as daily report; persists until resolved |
 | Suggestions table | Ticker, side, qty, limit price, current price, distance to level, reason, **Accept / Reject buttons** |
 | Top-line summary | Total $ to deploy, # buys, # sells |
+| Top-Up Opportunities | Sentiment-sized near-target buys (kind=topup) with band-headroom qty; ★ STRONG ENTRY highlight when anchor conf ≥ 0.75 and no bearish news |
 | Levels at a glance | SMA-50/200 distance, nearest support and resistance per watchlist ticker |
 | Footer | Reminder that execution is manual |
 

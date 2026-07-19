@@ -18,21 +18,33 @@ Market sentiment: {% if market_context.vix is not none %}VIX {{ "%.1f"|format(ma
 {% set hdr = "%-6s  %-4s  %5s  %10s  %10s  %9s  %s" %}
 {{ "Ticker" | ljust(6) }}  {{ "Side" | ljust(4) }}  {{ "Qty" | rjust(5) }}  {{ "Limit" | rjust(10) }}  {{ "Current" | rjust(10) }}  {{ "~$" | rjust(9) }}  Reason
 {{ "-" * 80 }}
-{% for s in suggestions %}
+{% for s in suggestions if s.kind|default('regular') != 'topup' %}
 {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
 {% set current = ind.close if ind else 0 %}
 {% set cost = s.qty * s.limit_price %}
 {{ s.ticker | ljust(6) }}  {{ s.side.upper() | ljust(4) }}  {{ "{:.0f}".format(s.qty) | rjust(5) }}{% if s.size_factor is defined and s.size_factor != 1.0 and s.base_qty is defined and s.base_qty is not none %} (base {{ "{:.0f}".format(s.base_qty) }} x{{ "%.2f"|format(s.size_factor) }}){% endif %}  {{ "${:,.2f}".format(s.limit_price) | rjust(10) }}  {{ ("${:,.2f}".format(current) if current else "—") | rjust(10) }}  {{ "${:,.0f}".format(cost) | rjust(9) }}  {{ s.reason }}{% if s.context_note is defined and s.context_note %}  [{{ s.context_note }}]{% endif %}
 {% endfor %}
 
-{% set buys = suggestions | selectattr('side', 'equalto', 'buy') | list %}
-{% set sells = suggestions | selectattr('side', 'equalto', 'sell') | list %}
+{% set regular_only = suggestions | rejectattr('kind', 'equalto', 'topup') | list %}
+{% set buys = regular_only | selectattr('side', 'equalto', 'buy') | list %}
+{% set sells = regular_only | selectattr('side', 'equalto', 'sell') | list %}
 {{ buys | length }} buy{{ 's' if buys | length != 1 else '' }} (${{ "{:,.0f}".format(buys | sum(attribute='qty') * 0) }}{% set _ = namespace(tot=0) %}{% for s in buys %}{% set _.tot = _.tot + s.qty * s.limit_price %}{% endfor %}${{ "{:,.0f}".format(_.tot) }}) | {{ sells | length }} trim{{ 's' if sells | length != 1 else '' }}
 {% else %}
 No suggestions this week — all positions within band, or no nearby S/R level.
 {% endif %}
 
 {% if skipped %}
+{% set topups = suggestions | selectattr('kind', 'equalto', 'topup') | list %}
+{% if topups %}
+=== TOP-UP OPPORTUNITIES (near-target, sized by market sentiment) ===
+[*] = strong entry: high-confidence level, no bearish news this week
+{% for s in topups %}
+{% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
+{% set current = ind.close if ind else 0 %}
+{{ '[*]' if s.is_highlighted|default(false) else '   ' }} {{ s.ticker | ljust(6) }}  BUY  {{ "{:.0f}".format(s.qty) | rjust(5) }}{% if s.base_qty is defined and s.base_qty is not none %} (base {{ "{:.0f}".format(s.base_qty) }} x{{ "%.2f"|format(s.size_factor) }}){% endif %}  {{ "${:,.2f}".format(s.limit_price) | rjust(10) }}  {{ ("${:,.2f}".format(current) if current else "—") | rjust(10) }}  {{ s.reason }}{% if s.context_note is defined and s.context_note %}  [{{ s.context_note }}]{% endif %}
+{% endfor %}
+
+{% endif %}
 === NOT SUGGESTED (considered but no actionable level) ===
 {% for sk in skipped %}
   {{ sk.ticker }}: {{ sk.side }} (gap {{ "{:+.1f}%".format(sk.gap_pct) }}) — {{ sk.reason }}

@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 07-17)
+# Post-4.9a changes (2026-06-03 → 07-19)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -436,6 +436,20 @@ excluded / fresh served) + `test_suggestion_review.py` distance-guard cases (23%
 > Operational note: the accepted MU order (sid 85, \$751.43 GTC) predates the fix — expires
 > with the Friday sweep unless un-accepted earlier. Sunday's run is the end-to-end proof that
 > fresh scores persist.
+
+## 17. Top-up suggestions — sentiment-sized near-target buys — (07-19)
+
+**Feature** (`plans/topup_suggestions_design.md`): tickers below target that get no regular
+buy draft now receive a **top-up suggestion** when whole share(s) fit under `band_high`:
+qty = max(1, floor(max-shares-under-band × sentiment fraction)), where the fraction is a
+deterministic F&G/VIX table (fear→buy more; from the Friday-persisted context). First-class
+`order_suggestion` rows (`kind='topup'`, migration `d4e5f6a7b8c9`) — Accept/Reject links,
+Friday expiry, **and the normal auto-trade path**. Deterministic highlight
+(`is_highlighted`): anchor confidence ≥ `TOPUP_HIGHLIGHT_MIN_CONF` (0.75) AND no bearish
+material news in 7d → "★ STRONG ENTRY" styling in the new **Top-Up Opportunities** email
+section. `context_adjust` exempts top-ups (sized at creation — no F&G double-count);
+`_select_buy_anchor` extracted so regular + top-up share one anchor/distance bar.
+Settings: `TOPUP_ENABLED=true`, `TOPUP_HIGHLIGHT_MIN_CONF=0.75`. 30 new tests (575 total).
 
 ## Candidate ADRs / gotchas (not yet written)
 

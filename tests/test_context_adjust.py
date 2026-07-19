@@ -466,3 +466,35 @@ def test_context_adjust_includes_asset_classes_in_payload() -> None:
     assert "asset_classes" in payload, "payload missing 'asset_classes' key"
     assert payload["asset_classes"]["VOO"] == "index_etf"
     assert payload["asset_classes"]["TQQQ"] == "leveraged_etf"
+
+def test_topup_draft_exempt_from_adjustments() -> None:
+    """kind='topup' drafts are sentiment-sized at creation — context_adjust must pass
+    them through untouched (no earnings resize/re-anchor, no narrative pass)."""
+    import dataclasses as _dc
+    draft = _dc.replace(
+        _make_draft(ticker="AAPL", qty=4.0, limit_price=150.0, anchor_method="sma_50"),
+        kind="topup", base_qty=8.0, size_factor=0.5,
+        context_note="top-up sized ×0.5 (fear&greed=38)",
+    )
+    ctx = _make_ctx(
+        earnings_by_ticker={"AAPL": date(2026, 6, 2)},  # would halve+reanchor a regular
+        scored_levels={
+            "AAPL": [
+                _make_level("sma_50", 150.0, "support"),
+                _make_level("sma_200", 130.0, "support"),
+            ]
+        },
+    )
+    state = _make_state([draft], ctx)
+    settings = _make_settings(earnings_size_factor=0.5, earnings_reanchor=True)
+    llm = MagicMock()
+    session_factory = lambda: _mock_session_factory(MagicMock())  # noqa: E731
+
+    result = context_adjust_node(state, llm, session_factory, settings)
+
+    out = result["drafts"][0]
+    assert out.qty == 4.0                       # not resized
+    assert out.limit_price == 150.0             # not re-anchored
+    assert out.base_qty == 8.0 and out.size_factor == 0.5  # creation-time audit kept
+    assert out.kind == "topup"
+    llm.call.assert_not_called()

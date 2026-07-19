@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     target_edit_warn_threshold_pct: float = 10.0
     funds_detection_threshold_usd: float = 500.0
 
+    # Top-up suggestions (plans/topup_suggestions_design.md)
+    topup_enabled: bool = True
+    topup_highlight_min_conf: float = 0.75
+
     @field_validator(
         "level_prompt_version", "weekly_context_prompt_version",
         "context_adjust_prompt_version", "critic_prompt_version",

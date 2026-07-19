@@ -92,6 +92,65 @@
 </p>
 {% endif %}
 
+{# ---- Top-up opportunities (plans/topup_suggestions_design.md) ---- #}
+{% if topup_items is defined and topup_items %}
+{{ ui.section("Top-Up Opportunities") }}
+<p style="font-family:Arial,Helvetica,sans-serif; font-size:12px; color:{{ ui.MUTED }}; margin:0 0 8px 0;">
+  Near-target tickers with headroom below their band &mdash; sized by market sentiment.
+  Buying the suggested qty keeps the holding within its band.
+  <span style="color:{{ ui.POS }}; font-weight:bold;">&#9733; Strong entry</span> = high-confidence level and no bearish news this week.
+</p>
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; margin:0 0 20px 0;">
+  <thead>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Qty</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Limit</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Current</th>
+      <th style="padding:8px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">~$</th>
+      <th style="padding:8px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in topup_items %}
+    {% set s = item.suggestion %}
+    {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
+    {% set current = ind.close if ind else 0 %}
+    {% set cost = s.qty * s.limit_price %}
+    {% set hl = s.is_highlighted is defined and s.is_highlighted %}
+    {% set row_bg = ui.HL_BG if hl else ui.ROWALT %}
+    <tr style="background:{{ row_bg }}; color:{{ ui.BODY }};{% if hl %} border-left:3px solid {{ ui.HL_BORDER }};{% endif %}">
+      <td style="padding:8px 10px 3px 10px; font-weight:bold;">
+        {{ s.ticker }}
+        {% if hl %}<span style="background:{{ ui.POS }}; color:#ffffff; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:bold; margin-left:6px; white-space:nowrap;">&#9733; STRONG ENTRY</span>{% endif %}
+      </td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">
+        {{ "{:.0f}".format(s.qty) }}
+        {% if s.size_factor is defined and s.base_qty is defined and s.base_qty is not none %}
+        <span style="color:{{ ui.MUTED }}; font-size:11px;">(base&nbsp;{{ "{:.0f}".format(s.base_qty) }}&nbsp;&middot;&nbsp;&times;{{ "%.2f"|format(s.size_factor) }})</span>
+        {% endif %}
+      </td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(s.limit_price) }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
+      <td style="padding:8px 10px 3px 10px; white-space:nowrap;">
+        <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}" style="background:{{ ui.POS }}; color:#ffffff; padding:5px 11px; text-decoration:none; border-radius:4px; font-size:11px; font-weight:bold; margin-right:4px;">Accept</a>
+        <a href="{{ base_url }}/suggestions/{{ item.sid }}/reject?token={{ item.reject_token }}" style="background:{{ ui.MUTED }}; color:#ffffff; padding:5px 11px; text-decoration:none; border-radius:4px; font-size:11px;">Reject</a>
+      </td>
+    </tr>
+    <tr style="background:{{ row_bg }}; border-bottom:2px solid {{ ui.LINE2 }};{% if hl %} border-left:3px solid {{ ui.HL_BORDER }};{% endif %}">
+      <td colspan="6" style="padding:2px 10px 8px 10px; font-size:12px; color:{{ ui.MUTED }};">
+        {{ item.rationale if item.rationale else s.reason }}
+        {% if s.context_note is defined and s.context_note %}<span> &middot; {{ s.context_note }}</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
 {# ---- Not suggested ---- #}
 {% if skipped %}
 {{ ui.section("Not Suggested This Week") }}

@@ -43,6 +43,9 @@ class OrderSuggestionRow:
     base_qty: float | None = None
     size_factor: float = 1.0
     context_note: str | None = None
+    # "regular" | "topup" (plans/topup_suggestions_design.md)
+    kind: str = "regular"
+    is_highlighted: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,61 @@ def select_anchor(
 # Core engine
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class _BuyAnchor:
+    price: float
+    method: str
+    confidence: float | None
+    rationale: str | None
+
+
+def _select_buy_anchor(
+    nearby: NearbyLevels,
+    ticker_scored: list[ScoredLevel] | None,
+    max_distance_pct: float,
+) -> tuple[_BuyAnchor | None, str | None]:
+    """Shared buy-anchor selection: scored ``select_anchor`` (supports at/below current
+    only) with nearest-support fallback, then the distance guard. Returns
+    ``(anchor, None)`` or ``(None, skip_reason)`` — reason strings match the historical
+    SkippedRow wording. Used by regular suggestions AND top-ups so both share one
+    anchor-quality bar."""
+    confidence: float | None = None
+    rationale: str | None = None
+    price: float | None = None
+    method: str | None = None
+    cur = nearby.current_price or 0.0
+    # Directional: a BUY anchors to a support AT OR BELOW the current price. A scored
+    # "support" can sit above current once price drops through it, and anchoring there
+    # puts the limit above market (fills immediately, not the intended pullback).
+    buy_levels = [
+        lv for lv in (ticker_scored or []) if lv.type == "support" and lv.price <= cur
+    ]
+    if buy_levels:
+        anchor = select_anchor(buy_levels, cur, max_distance_pct=max_distance_pct)
+        if anchor is not None:
+            price = anchor.price
+            method = anchor.method
+            confidence = anchor.confidence
+            rationale = anchor.rationale or None
+    if price is None:
+        if not nearby.supports:
+            return None, "no support levels found"
+        level = nearby.supports[0]
+        price = level.price
+        method = level.method
+    distance_pct = (
+        abs(price / nearby.current_price - 1) * 100 if nearby.current_price else 999
+    )
+    if distance_pct > max_distance_pct:
+        return None, (
+            f"nearest support ({method} ${price:,.2f})"
+            f" is {distance_pct:.1f}% away"
+            f" — exceeds {max_distance_pct:.0f}% limit"
+        )
+    assert method is not None
+    return _BuyAnchor(price, method, confidence, rationale), None
+
+
 def generate_suggestions(
     *,
     gap_rows: list[GapRow],
@@ -187,65 +245,19 @@ def generate_suggestions(
             continue
 
         if g.gap_pct > 0:  # underweight → buy at nearest support
-            # --- Scored-levels path ---
-            confidence_at_creation: float | None = None
-            anchor_price: float | None = None
-            anchor_method: str | None = None
-            anchor_rationale: str | None = None
-            ticker_scored = (scored_levels or {}).get(g.ticker)
-            cur_price = nearby.current_price or 0.0
-            # Directional: a BUY anchors to a support AT OR BELOW the current price. A
-            # scored "support" can sit above current once price drops through it, and
-            # anchoring there puts the limit above market (fills immediately, not the
-            # intended pullback). Above-current supports fall through to the fallback.
-            buy_levels = [
-                lv for lv in (ticker_scored or [])
-                if lv.type == "support" and lv.price <= cur_price
-            ]
-            if buy_levels:
-                anchor = select_anchor(
-                    buy_levels,
-                    nearby.current_price or 0.0,
-                    max_distance_pct=max_distance_pct,
-                )
-                if anchor is not None:
-                    anchor_price = anchor.price
-                    anchor_method = anchor.method
-                    confidence_at_creation = anchor.confidence
-                    anchor_rationale = anchor.rationale or None
-
-            # --- Phase 2 fallback ---
-            if anchor_price is None:
-                levels = nearby.supports
-                if not levels:
-                    skipped.append(SkippedRow(
-                        ticker=g.ticker, gap_pct=g.gap_pct, side="buy",
-                        reason="no support levels found",
-                    ))
-                    continue
-                level = levels[0]
-                anchor_price = level.price
-                anchor_method = level.method
-
-            distance_pct = (
-                abs(anchor_price / nearby.current_price - 1) * 100
-                if nearby.current_price
-                else 999
+            buy_anchor, skip_reason = _select_buy_anchor(
+                nearby, (scored_levels or {}).get(g.ticker), max_distance_pct
             )
-            if distance_pct > max_distance_pct:
-                logger.debug(
-                    "generate_suggestions: %s support %.2f is %.1f%% away — skipping",
-                    g.ticker, anchor_price, distance_pct,
-                )
+            if buy_anchor is None:
                 skipped.append(SkippedRow(
                     ticker=g.ticker, gap_pct=g.gap_pct, side="buy",
-                    reason=(
-                        f"nearest support ({anchor_method} ${anchor_price:,.2f})"
-                        f" is {distance_pct:.1f}% away"
-                        f" — exceeds {max_distance_pct:.0f}% limit"
-                    ),
+                    reason=skip_reason or "no buy anchor",
                 ))
                 continue
+            anchor_price = buy_anchor.price
+            anchor_method = buy_anchor.method
+            confidence_at_creation = buy_anchor.confidence
+            anchor_rationale = buy_anchor.rationale
 
             dollars = g.gap_usd * sizing_rule.fraction
             if sizing_rule.max_dollars is not None:
@@ -429,6 +441,8 @@ def persist_suggestions(
                 existing.base_qty = r.base_qty
                 existing.size_factor = r.size_factor
                 existing.context_note = r.context_note
+                existing.kind = r.kind
+                existing.is_highlighted = r.is_highlighted
             # accepted/rejected rows are never touched
             ids.append(existing.id)
             continue
@@ -450,9 +464,126 @@ def persist_suggestions(
             base_qty=r.base_qty,
             size_factor=r.size_factor,
             context_note=r.context_note,
+            kind=r.kind,
+            is_highlighted=r.is_highlighted,
         )
         session.add(new_row)
         session.flush()
         ids.append(new_row.id)
 
     return ids
+
+
+# ---------------------------------------------------------------------------
+# Top-up suggestions (plans/topup_suggestions_design.md)
+# ---------------------------------------------------------------------------
+
+
+def topup_size_fraction(vix: float | None, fear_greed: int | None) -> float:
+    """Deterministic sentiment fraction for top-up sizing (contrarian: buy more in fear).
+
+    Fear & Greed is primary; VIX is the fallback when F&G is missing; 0.5 (neutral)
+    when both are missing. Pure Python over AI-supplied metrics — no LLM decision.
+    """
+    if fear_greed is not None:
+        if fear_greed <= 25:
+            return 1.0
+        if fear_greed <= 45:
+            return 0.75
+        if fear_greed <= 55:
+            return 0.5
+        return 0.25
+    if vix is not None:
+        if vix >= 30:
+            return 1.0
+        if vix >= 20:
+            return 0.75
+        return 0.5
+    return 0.5
+
+
+def generate_topup_suggestions(
+    *,
+    gap_rows: list[GapRow],
+    nearby_levels: dict[str, NearbyLevels],
+    account: AccountSnapshot,
+    band_high_by_ticker: dict[str, float],
+    regular_buy_tickers: set[str],
+    sentiment_fraction: float,
+    sentiment_note: str,
+    cash_available: float,
+    scored_levels: dict[str, list[ScoredLevel]] | None = None,
+    cash_floor: float = 100.0,
+    max_distance_pct: float = 15.0,
+) -> list[OrderSuggestionRow]:
+    """Pure function: sentiment-sized near-target buys ("top-ups").
+
+    Eligibility (all must hold — plans/topup_suggestions_design.md):
+      1. current < target (``gap_pct > 0``) — covers in-band-under AND sub-share-gap cases
+      2. no regular buy draft for the ticker this run (mutually exclusive)
+      3. a buy anchor via the SAME selection as regular buys (scored + fallback + 15% guard)
+      4. >= 1 whole share at the anchor keeps the holding <= band_high
+      5. cost fits ``cash_available`` (post-regular-drafts budget) minus the cash floor
+         (qty reduced to fit; skipped if not even 1 share fits)
+
+    Sizing: base = max whole shares under band_high; qty = max(1, floor(base × fraction)).
+    """
+    out: list[OrderSuggestionRow] = []
+    equity = account.equity_usd
+    if equity <= 0:
+        return out
+    cash_remaining = cash_available
+
+    for g in gap_rows:
+        if g.gap_pct <= 0:
+            continue
+        if g.ticker in regular_buy_tickers:
+            continue
+        band_high = band_high_by_ticker.get(g.ticker)
+        if band_high is None:
+            continue
+        nearby = nearby_levels.get(g.ticker)
+        if nearby is None:
+            continue
+
+        anchor, _reason = _select_buy_anchor(
+            nearby, (scored_levels or {}).get(g.ticker), max_distance_pct
+        )
+        if anchor is None:
+            continue
+
+        # base = max whole shares that keep the holding <= band_high at the anchor price
+        headroom_pct = band_high - g.current_pct
+        base_shares = int(headroom_pct / 100.0 * equity / anchor.price)
+        if base_shares < 1:
+            continue  # even one share would breach the upper band
+
+        qty = max(1, int(base_shares * sentiment_fraction))
+        affordable = int((cash_remaining - cash_floor) / anchor.price)
+        qty = min(qty, affordable)
+        if qty < 1:
+            continue
+
+        cash_remaining -= qty * anchor.price
+        conf_str = (
+            f" (conf {anchor.confidence:.2f})" if anchor.confidence is not None else ""
+        )
+        out.append(OrderSuggestionRow(
+            ticker=g.ticker,
+            side="buy",
+            qty=float(qty),
+            limit_price=round(anchor.price, 2),
+            reason=(
+                f"top-up: {g.current_pct:.1f}% vs {g.target_pct:.1f}% target — buy at "
+                f"{anchor.method} ${anchor.price:,.2f}{conf_str};"
+                f" keeps holding ≤ band {band_high:.0f}%"
+            ),
+            expires_at=_next_friday_eod(),
+            confidence_at_creation=anchor.confidence,
+            anchor_method=anchor.method,
+            base_qty=float(base_shares),
+            size_factor=sentiment_fraction,
+            context_note=f"top-up sized ×{sentiment_fraction:g} ({sentiment_note})",
+            kind="topup",
+        ))
+    return out

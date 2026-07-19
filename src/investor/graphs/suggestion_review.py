@@ -243,6 +243,7 @@ def reason_node(
             "base_qty": drafts[i].base_qty,
             "size_factor": drafts[i].size_factor,
             "context_note": drafts[i].context_note,
+            "kind": drafts[i].kind,
         }
         for i in missing
     ]
@@ -487,6 +488,13 @@ def context_adjust_node(
     old_to_new: dict[int, int] = {}
 
     for i, d in enumerate(drafts):
+        if d.kind == "topup":
+            # Top-ups are sentiment-sized at creation (topup_size_fraction) — exempt
+            # from narrative/earnings resize + re-anchor so the same F&G signal isn't
+            # applied twice (plans/topup_suggestions_design.md).
+            old_to_new[i] = len(adjusted)
+            adjusted.append(d)
+            continue
         ef = earnings_factors.get(i, 1.0)
         narrative = narrative_adjustments.get(i)
 
@@ -592,6 +600,7 @@ def critic_node(
             "rationale": rationales.get(i, ""),
             "base_qty": d.base_qty,
             "size_factor": d.size_factor,
+            "kind": d.kind,
             "context_note": d.context_note,
         }
         for i, d in enumerate(drafts)

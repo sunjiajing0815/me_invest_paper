@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -44,6 +45,8 @@ from ..services.suggest import (
     HALF_THE_GAP,
     _next_monday,
     generate_suggestions,
+    generate_topup_suggestions,
+    topup_size_fraction,
 )
 from ..services.targets import targets_path_for_account
 from ..services.ticker_names import names_for
@@ -242,6 +245,57 @@ def run_weekly_suggestions_for_account(
         )
         # NOTE: do NOT call persist_suggestions here — finalize_node does it.
 
+    # Top-up drafts (plans/topup_suggestions_design.md): sentiment-sized near-target buys
+    # for tickers below target that got no regular buy draft. Sized at creation from the
+    # Friday-persisted VIX/F&G (context_adjust exempts kind='topup' — no double-count).
+    if settings.topup_enabled:
+        with session_scope() as session:
+            _ctx = load_latest_weekly_context(
+                session, week_of=week_of, max_age_days=settings.context_max_age_days
+            )
+            _news_7d = load_recent_material_news(session, days=7)
+        bearish_7d = {
+            t for t, items in _news_7d.items()
+            if any(n.is_material and n.sentiment == "bearish" for n in items)
+        }
+        fraction = topup_size_fraction(
+            _ctx.vix if _ctx else None, _ctx.fear_greed_score if _ctx else None
+        )
+        if _ctx and _ctx.fear_greed_score is not None:
+            sentiment_note = f"fear&greed={_ctx.fear_greed_score}"
+        elif _ctx and _ctx.vix is not None:
+            sentiment_note = f"vix={_ctx.vix:.0f}"
+        else:
+            sentiment_note = "no sentiment data"
+        spent = sum(d.qty * d.limit_price for d in drafts if d.side == "buy")
+        topups = generate_topup_suggestions(
+            gap_rows=gap_rows,
+            nearby_levels=nearby,
+            account=account,
+            band_high_by_ticker={t.ticker: t.band_high for t in targets.targets},
+            regular_buy_tickers={d.ticker for d in drafts if d.side == "buy"},
+            sentiment_fraction=fraction,
+            sentiment_note=sentiment_note,
+            cash_available=account.cash_usd - spent,
+            scored_levels=scored,
+        )
+        # Deterministic highlight: strong anchor confidence AND no bearish news in 7d.
+        topups = [
+            dataclasses.replace(t, is_highlighted=(
+                t.confidence_at_creation is not None
+                and t.confidence_at_creation >= settings.topup_highlight_min_conf
+                and t.ticker not in bearish_7d
+            ))
+            for t in topups
+        ]
+        if topups:
+            logger.info(
+                "run_weekly_suggestions: %d top-up draft(s) ×%.2g (%s): %s",
+                len(topups), fraction, sentiment_note,
+                ", ".join(f"{t.ticker} x{t.qty:.0f}" for t in topups),
+            )
+        drafts = drafts + topups
+
     # Load cached LLM rationales for this week_of — keyed by (ticker, side).
     # reason_node will skip drafts whose index already has a rationale in state.
     with session_scope() as session:
@@ -314,6 +368,8 @@ def run_weekly_suggestions_for_account(
                 "size_factor": r.size_factor if r.size_factor is not None else 1.0,
                 "context_note": r.context_note,
                 "llm_rationale": r.llm_rationale,
+                "kind": r.kind,
+                "is_highlighted": r.is_highlighted,
             }
             for sid, r in db_rows.items()
         }
@@ -333,6 +389,9 @@ def run_weekly_suggestions_for_account(
             "accept_token": accept_token,
             "reject_token": reject_token,
         })
+
+    regular_items = [i for i in suggestion_items if i["suggestion"].get("kind") != "topup"]
+    topup_items = [i for i in suggestion_items if i["suggestion"].get("kind") == "topup"]
 
     # Untracked positions + the user-level market context (VIX/F&G) for the email.
     with session_scope() as session:
@@ -354,7 +413,8 @@ def run_weekly_suggestions_for_account(
         account=account,
         account_nickname=acct.nickname,
         account_broker=acct.broker,
-        suggestion_items=suggestion_items,
+        suggestion_items=regular_items,
+        topup_items=topup_items,
         base_url=settings.app_base_url,
         indicators=indicators,
         nearby=nearby,
