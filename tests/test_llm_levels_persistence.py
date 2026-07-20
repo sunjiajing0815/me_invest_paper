@@ -6,6 +6,7 @@ scored sets; (3) _find_level rejects re-anchors beyond the 15% distance guard.
 """
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
@@ -102,3 +103,60 @@ def test_fresh_wins_even_with_stale_history(db_session: Session) -> None:
     _seed_scored(db_session, "MU", _TODAY - timedelta(days=1), 1052.93)
     out = load_latest_scored_levels(db_session)
     assert [lv.price for lv in out["MU"]] == [pytest.approx(1052.93)]
+
+
+# ── step 4: candle history in LLM payloads ──────────────────────────────────
+
+def _write_bars_parquet(tmp_path, ticker: str, rows: list[tuple]) -> None:  # type: ignore[no-untyped-def]
+    """rows: (days_ago, open, high, low, close, volume) from _TODAY, ascending after sort."""
+    import pandas as pd
+    data = [
+        {"symbol": ticker, "timestamp": _TODAY - timedelta(days=ago), "open": o,
+         "high": h, "low": lo, "close": c, "volume": v, "trade_count": 1.0, "vwap": c}
+        for ago, o, h, lo, c, v in rows
+    ]
+    df = pd.DataFrame(sorted(data, key=lambda r: r["timestamp"]))
+    df.to_parquet(tmp_path / f"{ticker}.parquet", index=False)
+
+
+def test_history_payload_present_with_bars(tmp_path, db_session: Session) -> None:  # type: ignore[no-untyped-def]
+    """score_levels_for_ticker's payload carries deterministic history facts per level —
+    touched today, tested count, broken flag — so the LLM has candle facts to weigh."""
+    _write_bars_parquet(tmp_path, "MU", [
+        (0, 100, 101.5, 99.0, 100.5, 5000),
+        *[(d, 105, 106, 104, 105, 1000) for d in range(1, 26)],
+    ])
+    rows = [SRLevelRow(ticker="MU", type="support", price=100.0, method="sma_50",
+                       as_of=_TODAY)]
+    llm = MagicMock()
+    parsed = _LevelScoreSchema(levels=[
+        _ScoredLevelOut(method="sma_50", confidence=0.7, rationale="t"),
+    ])
+    llm.call.return_value = (_resp(), parsed)
+
+    score_levels_for_ticker(
+        llm=llm, session=db_session, ticker="MU", computed_levels=rows,
+        bars_dir=str(tmp_path),
+    )
+    payload = json.loads(llm.call.call_args.kwargs["user"])
+    level = payload["computed_levels"][0]
+    assert level["history"]["touched_today"] is True
+    assert level["history"]["closed_through_recently"] is False
+
+
+def test_history_payload_none_without_bars(db_session: Session) -> None:
+    """No bars_dir data → history is None per level, not a crash."""
+    rows = [SRLevelRow(ticker="ZZZZ", type="support", price=100.0, method="sma_50",
+                       as_of=_TODAY)]
+    llm = MagicMock()
+    parsed = _LevelScoreSchema(levels=[
+        _ScoredLevelOut(method="sma_50", confidence=0.7, rationale="t"),
+    ])
+    llm.call.return_value = (_resp(), parsed)
+
+    score_levels_for_ticker(
+        llm=llm, session=db_session, ticker="ZZZZ", computed_levels=rows,
+        bars_dir="data/bars_does_not_exist",
+    )
+    payload = json.loads(llm.call.call_args.kwargs["user"])
+    assert payload["computed_levels"][0]["history"] is None

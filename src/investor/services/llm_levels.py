@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..models import SRLevel as SRLevelORM
 from .analytics import duckdb_conn
-from .levels import SRLevelRow
+from .levels import SRLevelRow, compute_level_stats
 from .llm import SONNET, LLMClient, LLMResponse, load_prompt, persist_llm_call_log
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,22 @@ class _LevelScoreSchema(BaseModel):
 # Public API
 # ---------------------------------------------------------------------------
 
+def _history_payload(bars_df: pd.DataFrame | None, lv: SRLevelRow) -> dict[str, object] | None:
+    """Candle-history facts for one level (None when bars are unavailable)."""
+    if bars_df is None:
+        return None
+    st = compute_level_stats(bars_df, lv.price, lv.type)
+    return {
+        "touch_count_30d": st.touch_count,
+        "touched_today": st.touched_today,
+        "closed_through_recently": st.closed_through_recently,
+        "touch_volume_ratio": (
+            round(st.touch_volume_ratio, 2) if st.touch_volume_ratio is not None else None
+        ),
+        "last_touch": str(st.last_touch) if st.last_touch else None,
+    }
+
+
 def score_levels_for_ticker(
     *,
     llm: LLMClient,
@@ -68,6 +84,7 @@ def score_levels_for_ticker(
 
     # --- Build OHLCV context (last 60 bars) ---
     recent_bars: list[dict[str, object]] = []
+    bars_df: pd.DataFrame | None = None
     try:
         with duckdb_conn(bars_dir) as con:
             df: pd.DataFrame = con.execute(
@@ -76,7 +93,9 @@ def score_levels_for_ticker(
                 [ticker],
             ).df()
         if not df.empty:
-            df = df.sort_values("date")
+            df = df.sort_values("date").reset_index(drop=True)
+            df["date"] = pd.to_datetime(df["date"])
+            bars_df = df
             recent_bars = df.to_dict(orient="records")
     except Exception as exc:
         logger.warning("score_levels_for_ticker: bar fetch failed for %s: %s", ticker, exc)
@@ -101,6 +120,9 @@ def score_levels_for_ticker(
                 "price": lv.price,
                 "type": lv.type,
                 "as_of": str(lv.as_of),
+                # Deterministic candle history (plans/ohlcv_decision_design.md step 4):
+                # facts computed in Python from the bars, for the model to weigh.
+                "history": _history_payload(bars_df, lv),
             }
             for lv in nearby_levels
         ],

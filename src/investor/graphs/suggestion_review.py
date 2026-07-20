@@ -244,6 +244,9 @@ def reason_node(
             "size_factor": drafts[i].size_factor,
             "context_note": drafts[i].context_note,
             "kind": drafts[i].kind,
+            # Mechanical rationale incl. deterministic candle history ("tested 3× in
+            # 30d (1.4× vol), touched today") — facts for the prose to cite.
+            "reason": drafts[i].reason,
         }
         for i in missing
     ]

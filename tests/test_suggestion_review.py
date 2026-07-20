@@ -88,13 +88,14 @@ def _make_draft(
     limit_price: float = 150.0,
     qty: float = 3.0,
     anchor_method: str | None = "sma_50",
+    reason: str = "test",
 ) -> OrderSuggestionRow:
     return OrderSuggestionRow(
         ticker=ticker,
         side="buy",
         qty=qty,
         limit_price=limit_price,
-        reason="test",
+        reason=reason,
         expires_at=_next_friday_eod(),
         anchor_method=anchor_method,
     )
@@ -431,6 +432,36 @@ class TestReasonNode:
         assert d0["size_factor"] == pytest.approx(0.75)
         assert d0["base_qty"] == pytest.approx(69.0)
         assert d0["context_note"]  # present
+
+    def test_reason_payload_carries_mechanical_reason_with_candle_history(self) -> None:
+        """OHLCV design step 4: the draft's mechanical `reason` (which may include
+        deterministic candle history, e.g. 'tested 3x in 30d, touched today') is passed
+        to the Sonnet payload so the prose can cite those facts."""
+        import json as _json
+
+        from investor.graphs.suggestion_review import DraftRationale
+        draft = _make_draft(
+            ticker="QQQ",
+            reason="underweight +5.0% — buy at sma_50 $500.00, tested 3x in 30d "
+                   "(1.4x vol), touched today, closes ~50% of gap",
+        )
+        parsed = DraftRationales(items=[
+            DraftRationale(draft_index=0, rationale="Test rationale."),
+        ])
+        mock_llm = MagicMock()
+        mock_llm.call.return_value = (_make_llm_response(parsed.model_dump_json()), parsed)
+
+        @contextmanager
+        def mock_factory() -> Generator[MagicMock, None, None]:
+            yield _make_mock_session()
+
+        with patch("investor.graphs.suggestion_review.load_prompt", return_value="sys"):
+            reason_node(_make_state(drafts=[draft]), mock_llm, mock_factory)
+
+        d0 = _json.loads(mock_llm.call.call_args.kwargs["user"])["drafts"][0]
+        assert "tested 3x in 30d" in d0["reason"]
+        assert "touched today" in d0["reason"]
+        assert d0["kind"] == "regular"
 
     def test_graph_runs_context_adjust_before_reason(self) -> None:
         """Regression: the compiled graph must run context_adjust before reason."""

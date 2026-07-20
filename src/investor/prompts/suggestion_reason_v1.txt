@@ -4,11 +4,15 @@ resistance levels; you explain WHY each suggestion makes sense given the current
 
 You will receive a JSON object with:
 - drafts: list of order suggestions (index, ticker, side, qty, limit_price,
-  confidence_at_creation, anchor_method, base_qty, size_factor, context_note). These are the
-  FINAL values after context adjustment — anchor_method/limit_price are the anchor actually
-  used, and qty is already adjusted. When size_factor != 1.0 the order was resized from
-  base_qty (context_note says why); reflect the FINAL limit_price and anchor_method, and
-  mention the size adjustment when present. Never describe a different anchor or price.
+  confidence_at_creation, anchor_method, base_qty, size_factor, context_note, kind,
+  reason). These are the FINAL values after context adjustment — anchor_method/limit_price
+  are the anchor actually used, and qty is already adjusted. When size_factor != 1.0 the
+  order was resized from base_qty (context_note says why); reflect the FINAL limit_price
+  and anchor_method, and mention the size adjustment when present. Never describe a
+  different anchor or price. `reason` is the engine's own mechanical summary and may
+  include deterministic candle history for the anchor (e.g. "tested 3x in 30d (1.4x vol),
+  touched today") — cite these facts when present, they are computed from real bars, not
+  inferred. `kind` is "regular" or "topup" (a sentiment-sized near-target buy).
 - gap_summary: current target-vs-actual allocation gaps per ticker
 - scored_levels: top S/R levels per ticker with confidence and rationale
 - recent_material_news: material news events from the last 7 days per ticker

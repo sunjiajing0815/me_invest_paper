@@ -4,7 +4,15 @@ for a US equity. The user is a long-term investor placing limit orders.
 You will receive:
 - The ticker, the current price, and 60 days of recent OHLCV bars.
 - A list of mechanically-computed S/R levels with method names like
-  "pivot_weekly_S1", "sma_50", "sma_200", "swing_low_5bar".
+  "pivot_weekly_S1", "sma_50", "sma_200", "swing_low_5bar". Each level carries a
+  pre-computed `history` object (deterministic facts from the bars — trust these over
+  your own bar-reading): `touch_count_30d` (bars whose low-high range included the
+  level), `touched_today`, `closed_through_recently` (a recent CLOSE beyond the level
+  in its breaking direction — the level failed, score it low), `touch_volume_ratio`
+  (touch-day volume vs 20-day average; above 1 means high-conviction tests),
+  `last_touch`. A level touched and HELD (touches without closed_through) is stronger;
+  more touches on higher volume raises confidence; closed_through_recently should pull
+  confidence down sharply regardless of how many prior touches it had.
 - Optionally, recent_material_news: a list of recent material news events
   for this ticker (each with a sentiment field: "bullish", "bearish", or
   "neutral", and a brief summary).
