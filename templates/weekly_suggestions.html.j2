@@ -44,6 +44,7 @@
     {% set s = item.suggestion %}
     {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
     {% set current = ind.close if ind else 0 %}
+    {% set nb = nearby.get(s.ticker) if nearby is defined else None %}
     {% set cost = s.qty * s.limit_price %}
     {% if s.side == 'buy' %}{% set total_buy_usd.v = total_buy_usd.v + cost %}{% set buy_count.n = buy_count.n + 1 %}{% endif %}
     {% if s.side == 'sell' %}{% set total_sell_usd.v = total_sell_usd.v + cost %}{% set sell_count.n = sell_count.n + 1 %}{% endif %}
@@ -61,7 +62,7 @@
         {% endif %}
       </td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(s.limit_price) }}</td>
-      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">{{ ui.price_range(current, nb.current if nb else None) if current else '—' }}</td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
       <td style="padding:8px 10px 3px 10px; white-space:nowrap;">
         <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}" style="background:{{ ui.POS }}; color:#ffffff; padding:5px 11px; text-decoration:none; border-radius:4px; font-size:11px; font-weight:bold; margin-right:4px;">Accept</a>
@@ -117,6 +118,7 @@
     {% set s = item.suggestion %}
     {% set ind = indicators | selectattr('ticker', 'equalto', s.ticker) | first | default(None) %}
     {% set current = ind.close if ind else 0 %}
+    {% set nb = nearby.get(s.ticker) if nearby is defined else None %}
     {% set cost = s.qty * s.limit_price %}
     {% set hl = s.is_highlighted is defined and s.is_highlighted %}
     {% set row_bg = ui.HL_BG if hl else ui.ROWALT %}
@@ -132,7 +134,7 @@
         {% endif %}
       </td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(s.limit_price) }}</td>
-      <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.2f}".format(current) if current else '—' }}</td>
+      <td style="padding:8px 10px 3px 10px; text-align:right;">{{ ui.price_range(current, nb.current if nb else None) if current else '—' }}</td>
       <td style="padding:8px 10px 3px 10px; text-align:right;">${{ "{:,.0f}".format(cost) }}</td>
       <td style="padding:8px 10px 3px 10px; white-space:nowrap;">
         <a href="{{ base_url }}/suggestions/{{ item.sid }}/accept?token={{ item.accept_token }}" style="background:{{ ui.POS }}; color:#ffffff; padding:5px 11px; text-decoration:none; border-radius:4px; font-size:11px; font-weight:bold; margin-right:4px;">Accept</a>

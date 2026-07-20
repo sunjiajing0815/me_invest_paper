@@ -255,3 +255,103 @@ def test_high_confidence_scales_up_vs_low() -> None:
     assert hi.qty > lo.qty
     assert hi.size_factor == pytest.approx(0.9)
     assert lo.size_factor == pytest.approx(0.5)
+
+
+# ── step 5: OHLCV range display + touch markers in emails ────────────────────
+
+def _ind_with_candle(ticker: str, close: float, low: float, high: float):  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+    return SimpleNamespace(ticker=ticker, close=close, sma_50=close * 0.97,
+                           sma_200=close * 0.9, pct_from_sma_50=3.0,
+                           pct_from_sma_200=10.0, rsi_14=52.0)
+
+
+def test_regular_table_shows_day_range() -> None:
+    from investor.services.levels import Candle, NearbyLevels
+    from investor.services.render import render_template
+    ind = _ind_with_candle("TQQQ", 73.30, 71.10, 74.50)
+    nb = NearbyLevels(ticker="TQQQ", current_price=73.30, supports=[], resistances=[],
+                      current=Candle(as_of=date(2026, 7, 20), open=72.0, high=74.50,
+                                     low=71.10, close=73.30, volume=1000.0))
+    item = {
+        "sid": 90, "suggestion": {
+            "ticker": "TQQQ", "side": "buy", "qty": 22.0, "limit_price": 66.79,
+            "reason": "underweight +10%", "base_qty": None, "size_factor": 1.0,
+            "context_note": None, "kind": "regular", "is_highlighted": False,
+            "llm_rationale": None,
+        },
+        "rationale": "r", "accept_token": "t1", "reject_token": "t2",
+    }
+    html = render_template(
+        "weekly_suggestions.html.j2", week_of=date(2026, 7, 20),
+        account=_account(), account_nickname="A", account_broker="alpaca",
+        indicators=[ind], nearby={"TQQQ": nb}, untracked=[], skipped=[],
+        scoring_failures=[], market_context=None, etf_tickers=set(),
+        suggestion_items=[item], topup_items=[], base_url="http://localhost",
+    )
+    assert "71.10" in html and "74.50" in html   # day range shown
+    assert "73.30" in html                        # close still shown
+
+
+def test_current_cell_falls_back_without_candle() -> None:
+    # 217.61/234.88 chosen so they don't collide with the SMA50/SMA200 values that
+    # "Levels at a Glance" also renders from the same fabricated close (100.0).
+    from investor.services.render import render_template
+    ind = _ind_with_candle("TQQQ", 100.00, 217.61, 234.88)
+    item = {
+        "sid": 90, "suggestion": {
+            "ticker": "TQQQ", "side": "buy", "qty": 22.0, "limit_price": 66.79,
+            "reason": "r", "base_qty": None, "size_factor": 1.0, "context_note": None,
+            "kind": "regular", "is_highlighted": False, "llm_rationale": None,
+        },
+        "rationale": "r", "accept_token": "t1", "reject_token": "t2",
+    }
+    html = render_template(
+        "weekly_suggestions.html.j2", week_of=date(2026, 7, 20),
+        account=_account(), account_nickname="A", account_broker="alpaca",
+        indicators=[ind], nearby={}, untracked=[], skipped=[], scoring_failures=[],
+        market_context=None, etf_tickers=set(), suggestion_items=[item], topup_items=[],
+        base_url="http://localhost",
+    )
+    assert "100.00" in html
+    assert "217.61" not in html and "234.88" not in html  # no candle -> no range shown
+
+
+def test_levels_table_shows_touched_today_marker() -> None:
+    from investor.services.levels import LevelStats, NearbyLevels, SRLevelRow
+    from investor.services.render import render_template
+    ind = _ind_with_candle("QQQ", 695.31, 686.78, 702.24)
+    sup = SRLevelRow(ticker="QQQ", type="support", price=692.25, method="pivot_weekly_S2",
+                     as_of=date(2026, 7, 17))
+    nb = NearbyLevels(
+        ticker="QQQ", current_price=695.31, supports=[sup], resistances=[],
+        stats={("pivot_weekly_S2", 692.25): LevelStats(
+            last_touch=date(2026, 7, 17), touch_count=1, touched_today=True,
+            closed_through_recently=False, touch_volume_ratio=1.2,
+        )},
+    )
+    html = render_template(
+        "weekly_suggestions.html.j2", week_of=date(2026, 7, 20),
+        account=_account(), account_nickname="A", account_broker="alpaca",
+        indicators=[ind], nearby={"QQQ": nb}, untracked=[], skipped=[],
+        scoring_failures=[], market_context=None, etf_tickers=None,
+        suggestion_items=[], topup_items=[], base_url="http://localhost",
+    )
+    assert "touched today" in html.lower()
+
+
+def test_levels_table_no_marker_without_stats() -> None:
+    from investor.services.levels import NearbyLevels, SRLevelRow
+    from investor.services.render import render_template
+    ind = _ind_with_candle("QQQ", 695.31, 686.78, 702.24)
+    sup = SRLevelRow(ticker="QQQ", type="support", price=692.25, method="pivot_weekly_S2",
+                     as_of=date(2026, 7, 17))
+    nb = NearbyLevels(ticker="QQQ", current_price=695.31, supports=[sup], resistances=[])
+    html = render_template(
+        "weekly_suggestions.html.j2", week_of=date(2026, 7, 20),
+        account=_account(), account_nickname="A", account_broker="alpaca",
+        indicators=[ind], nearby={"QQQ": nb}, untracked=[], skipped=[],
+        scoring_failures=[], market_context=None, etf_tickers=None,
+        suggestion_items=[], topup_items=[], base_url="http://localhost",
+    )
+    assert "touched today" not in html.lower()

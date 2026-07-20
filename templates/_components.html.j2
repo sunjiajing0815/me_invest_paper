@@ -152,6 +152,20 @@
 
 {# ---- "Levels at a glance" table (shared by daily report + weekly suggestions).
         etf_tickers: optional set; when given, SMA200 / %Δ200 show for ETFs only. ---- #}
+{%- macro price_range(close, candle) -%}
+{%- if candle -%}
+${{ "{:,.2f}".format(close) }}<span style="color:{{ MUTED }}; font-size:10px;"> ({{ "{:,.2f}".format(candle.low) }}&ndash;{{ "{:,.2f}".format(candle.high) }})</span>
+{%- else -%}
+{{ "${:,.2f}".format(close) if close else "&mdash;" }}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro touch_marker(stats) -%}
+{%- if stats and stats.touch_count > 0 -%}
+<br><span style="font-size:10px; color:{{ MUTED }};">{{ stats.touch_count }}&times;/30d{% if stats.touched_today %}, touched today{% endif %}</span>
+{%- endif -%}
+{%- endmacro -%}
+
 {%- macro levels_table(indicators, nearby, etf_tickers=None) -%}
 {%- if indicators %}
 <div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
@@ -184,8 +198,8 @@
       <td style="padding:6px 10px; text-align:right;">{{ ("${:,.2f}".format(ind.sma_200) if ind.sma_200 else '—') if is_etf else '—' }}</td>
       <td style="padding:6px 10px; text-align:right; color:{{ (POS if (ind.pct_from_sma_200 or 0) > 0 else NEG) if is_etf else MUTED }};">{{ ("{:+.1f}%".format(ind.pct_from_sma_200) if ind.pct_from_sma_200 is not none else '—') if is_etf else '—' }}</td>
       <td style="padding:6px 10px; text-align:right; color:{{ rsi_color }};">{{ "{:.0f}".format(ind.rsi_14) if ind.rsi_14 else '—' }}</td>
-      <td style="padding:6px 10px; font-size:11px; color:{{ MUTED }};">{% if sup %}${{ "{:,.2f}".format(sup.price) }} ({{ sup.method }}){% else %}&mdash;{% endif %}</td>
-      <td style="padding:6px 10px; font-size:11px; color:{{ MUTED }};">{% if res %}${{ "{:,.2f}".format(res.price) }} ({{ res.method }}){% else %}&mdash;{% endif %}</td>
+      <td style="padding:6px 10px; font-size:11px; color:{{ MUTED }};">{% if sup %}${{ "{:,.2f}".format(sup.price) }} ({{ sup.method }}){{ touch_marker(lvl.stats_for(sup) if lvl else None) }}{% else %}&mdash;{% endif %}</td>
+      <td style="padding:6px 10px; font-size:11px; color:{{ MUTED }};">{% if res %}${{ "{:,.2f}".format(res.price) }} ({{ res.method }}){{ touch_marker(lvl.stats_for(res) if lvl else None) }}{% else %}&mdash;{% endif %}</td>
     </tr>
     {%- endfor %}
   </tbody>
