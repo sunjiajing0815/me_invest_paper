@@ -145,6 +145,31 @@ def select_anchor(
 # Core engine
 # ---------------------------------------------------------------------------
 
+def _is_broken_level(nearby: NearbyLevels, method: str, price: float) -> bool:
+    """True when candle stats say the level was recently closed through (broken).
+
+    Fail-open: no stats for the level (bars unavailable, or the level wasn't in the
+    nearby set) → not broken. See plans/ohlcv_decision_design.md."""
+    st = nearby.stats.get((method, round(price, 4)))
+    return bool(st is not None and st.closed_through_recently)
+
+
+def _level_history_note(nearby: NearbyLevels | None, method: str, price: float) -> str:
+    """Candle-history suffix for reason strings: ', tested 3× in 30d (1.4× vol), touched
+    today'. Empty when stats are unavailable or the level was never touched."""
+    if nearby is None:
+        return ""
+    st = nearby.stats.get((method, round(price, 4)))
+    if st is None or st.touch_count == 0:
+        return ""
+    note = f", tested {st.touch_count}× in 30d"
+    if st.touch_volume_ratio is not None:
+        note += f" ({st.touch_volume_ratio:.1f}× vol)"
+    if st.touched_today:
+        note += ", touched today"
+    return note
+
+
 @dataclass(frozen=True)
 class _BuyAnchor:
     price: float
@@ -172,7 +197,12 @@ def _select_buy_anchor(
     # "support" can sit above current once price drops through it, and anchoring there
     # puts the limit above market (fills immediately, not the intended pullback).
     buy_levels = [
-        lv for lv in (ticker_scored or []) if lv.type == "support" and lv.price <= cur
+        lv for lv in (ticker_scored or [])
+        if lv.type == "support"
+        and lv.price <= cur
+        # OHLCV guard: a support with a recent close below it is broken, not a
+        # pullback target (plans/ohlcv_decision_design.md step 3).
+        and not _is_broken_level(nearby, lv.method, lv.price)
     ]
     if buy_levels:
         anchor = select_anchor(buy_levels, cur, max_distance_pct=max_distance_pct)
@@ -184,7 +214,15 @@ def _select_buy_anchor(
     if price is None:
         if not nearby.supports:
             return None, "no support levels found"
-        level = nearby.supports[0]
+        valid = [
+            lv for lv in nearby.supports
+            if not _is_broken_level(nearby, lv.method, lv.price)
+        ]
+        if not valid:
+            return None, (
+                "support level(s) recently broken (closed below) — no valid buy anchor"
+            )
+        level = valid[0]
         price = level.price
         method = level.method
     distance_pct = (
@@ -289,6 +327,7 @@ def generate_suggestions(
                 else ""
             )
             rationale_str = f" {anchor_rationale}" if anchor_rationale else ""
+            history = _level_history_note(nearby, anchor_method, anchor_price)
             out.append(OrderSuggestionRow(
                 ticker=g.ticker,
                 side="buy",
@@ -296,7 +335,7 @@ def generate_suggestions(
                 limit_price=round(anchor_price, 2),
                 reason=(
                     f"underweight {g.gap_pct:+.1f}% — buy at {anchor_method} "
-                    f"${anchor_price:,.2f}{conf_str},{rationale_str}"
+                    f"${anchor_price:,.2f}{conf_str}{history},{rationale_str}"
                     f" closes ~{gap_closed_pct:.0f}% of gap"
                 ),
                 expires_at=_next_friday_eod(),
@@ -596,7 +635,8 @@ def generate_topup_suggestions(
             reason=(
                 f"top-up: {g.current_pct:.1f}% vs {g.target_pct:.1f}% target "
                 f"(~${g.gap_usd:,.0f} gap) — buy at "
-                f"{anchor.method} ${anchor.price:,.2f}{conf_str};"
+                f"{anchor.method} ${anchor.price:,.2f}{conf_str}"
+                f"{_level_history_note(nearby, anchor.method, anchor.price)};"
                 f" fills the gap, stays ≤ band {band_high:.0f}%"
             ),
             expires_at=_next_friday_eod(),
