@@ -43,6 +43,7 @@ from ..services.render import render_template
 from ..services.snapshot import take_snapshot
 from ..services.suggest import (
     HALF_THE_GAP,
+    SkippedRow,
     _next_monday,
     generate_suggestions,
     generate_topup_suggestions,
@@ -345,6 +346,18 @@ def run_weekly_suggestions_for_account(
 
     rationales: dict[int, str] = result["rationales"]
     suggestion_ids: list[int] = result["suggestion_ids"]
+
+    # Surface critic-rejected drafts in the "Not Suggested" section so the email explains
+    # why a ticker wasn't recommended (e.g. NFLX vetoed on bearish news). Reuse SkippedRow;
+    # gap_pct comes from this run's gap_rows.
+    gap_by_ticker = {g.ticker: g.gap_pct for g in gap_rows}
+    for rej in result.get("rejections", []):
+        skipped.append(SkippedRow(
+            ticker=rej["ticker"],
+            gap_pct=gap_by_ticker.get(rej["ticker"], 0.0),
+            side=rej["side"],
+            reason=f"review declined — {rej['reason']}",
+        ))
 
     # Re-read persisted rows so the email always reflects what is in the DB.
     # state["finals"] can diverge for already-accepted suggestions (persist_suggestions

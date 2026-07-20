@@ -280,6 +280,55 @@ class TestReviseNode:
 
         assert len(result["finals"]) == 0
 
+    def test_revise_node_rekeys_rationales_after_middle_reject(self) -> None:
+        """Regression (Moomoo rationale shift): when the critic rejects a MIDDLE draft,
+        rationales must be re-keyed to the finals positions so every surviving row keeps
+        ITS OWN rationale — not the rejected ticker's neighbour's."""
+        drafts = [
+            _make_draft(ticker="TQQQ"),   # 0 approve
+            _make_draft(ticker="NFLX"),   # 1 REJECT (bearish news)
+            _make_draft(ticker="AMZN"),   # 2 approve
+            _make_draft(ticker="ETH"),    # 3 approve
+        ]
+        rationales = {0: "TQQQ text", 1: "NFLX text", 2: "AMZN text", 3: "ETH text"}
+        decisions = {
+            1: CriticDecision(verdict="reject", reason="bearish news", suggested_changes=None),
+        }
+        state = _make_state(drafts=drafts, critic_decisions=decisions, rationales=rationales)
+
+        result = revise_node(state)
+
+        finals = result["finals"]
+        rk = result["rationales"]
+        assert [d.ticker for d in finals] == ["TQQQ", "AMZN", "ETH"]
+        # each surviving final's rationale (by new index) matches its OWN ticker
+        assert rk[0] == "TQQQ text"
+        assert rk[1] == "AMZN text"   # was rationales[2] — NOT "NFLX text"
+        assert rk[2] == "ETH text"
+        assert "NFLX text" not in rk.values()
+
+    def test_revise_node_surfaces_rejections(self) -> None:
+        """Rejected drafts are reported (ticker + critic reason) so the email can explain
+        why they weren't recommended."""
+        drafts = [_make_draft(ticker="TQQQ"), _make_draft(ticker="NFLX")]
+        decisions = {
+            1: CriticDecision(verdict="reject", reason="Netflix -12% on weak guidance",
+                              suggested_changes=None),
+        }
+        state = _make_state(drafts=drafts, critic_decisions=decisions)
+
+        result = revise_node(state)
+
+        assert result["rejections"] == [
+            {"ticker": "NFLX", "side": "buy", "reason": "Netflix -12% on weak guidance"}
+        ]
+
+    def test_skip_revise_reports_no_rejections(self) -> None:
+        state = _make_state(drafts=[_make_draft(ticker="TQQQ")])
+        result = skip_revise_node(state)
+        assert result["rejections"] == []
+        assert [d.ticker for d in result["finals"]] == ["TQQQ"]
+
     def test_revise_node_applies_known_anchor_method_via_state(self) -> None:
         """verdict=revise with anchor_method in scored_levels → finals updated."""
         sma50_level = _make_level(method="sma_50", price=155.0)

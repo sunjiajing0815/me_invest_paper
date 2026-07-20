@@ -76,6 +76,7 @@ class SuggestionReviewState(TypedDict):
     critic_decisions: dict[int, CriticDecision]        # draft_index -> verdict
     finals: list[OrderSuggestionRow]
     suggestion_ids: list[int]                          # IDs from persist_suggestions
+    rejections: list[dict[str, Any]]                   # critic-rejected drafts (ticker/side/reason)
     telemetry: dict  # type: ignore[type-arg]
     targets_id: int | None
 
@@ -700,7 +701,8 @@ def route_after_critic(
 
 def skip_revise_node(state: SuggestionReviewState) -> SuggestionReviewState:
     """All drafts approved — copy drafts straight to finals."""
-    return {**state, "finals": list(state["drafts"])}
+    # No drop → drafts and rationales already align 1:1; no rejections on this path.
+    return {**state, "finals": list(state["drafts"]), "rejections": []}
 
 
 def _apply_changes(
@@ -757,19 +759,38 @@ def _apply_changes(
 
 
 def revise_node(state: SuggestionReviewState) -> SuggestionReviewState:
-    """Apply critic decisions. Pure Python, no LLM calls."""
+    """Apply critic decisions. Pure Python, no LLM calls.
+
+    Rejecting a draft removes it from ``finals``, which shifts every later position.
+    ``rationales`` is keyed by draft index, and ``finalize_node`` pairs rationales to
+    persisted rows BY POSITION — so we must re-key rationales onto the new finals
+    indices here, or each surviving row inherits the previous ticker's rationale (the
+    Moomoo NFLX-reject shift). Rejections are also collected so the email can explain
+    why a ticker wasn't recommended.
+    """
     decisions = state["critic_decisions"]
     ctx = state["context"]
+    rationales = state.get("rationales", {})
     finals: list[OrderSuggestionRow] = []
+    final_rationales: dict[int, str] = {}
+    rejections: list[dict[str, Any]] = []
+
+    def _keep(row: OrderSuggestionRow, old_index: int) -> None:
+        if old_index in rationales:
+            final_rationales[len(finals)] = rationales[old_index]
+        finals.append(row)
 
     for i, draft in enumerate(state["drafts"]):
         dec = decisions.get(i)
         if dec is None or dec.verdict == "approve":
-            finals.append(draft)
+            _keep(draft, i)
             continue
 
         if dec.verdict == "reject":
             log.info("critic rejected draft %s/%s: %s", i, draft.ticker, dec.reason)
+            rejections.append(
+                {"ticker": draft.ticker, "side": draft.side, "reason": dec.reason}
+            )
             continue
 
         # revise: apply suggested_changes
@@ -781,12 +802,13 @@ def revise_node(state: SuggestionReviewState) -> SuggestionReviewState:
                 i,
                 changes,
             )
-            finals.append(draft)  # keep original on bad changes
+            _keep(draft, i)  # keep original on bad changes
             continue
 
-        finals.append(revised)
+        _keep(revised, i)
 
-    return {**state, "finals": finals}
+    return {**state, "finals": finals, "rationales": final_rationales,
+            "rejections": rejections}
 
 
 # ---------------------------------------------------------------------------
