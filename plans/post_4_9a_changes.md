@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 07-19)
+# Post-4.9a changes (2026-06-03 → 07-21)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -458,6 +458,44 @@ the 1-share-floor case. Regression tests added; this week's pending top-ups rege
 **Per-ticker scaling (07-20, same day):** the sentiment fraction is now modulated by each
 anchor's LLM confidence (`effective = fraction × conf`, unscored fallback = 0.5) so sizing
 differentiates per ticker within a week; `size_factor`/`context_note` record the effective value.
+
+## 18. OHLCV-aware decision logic — candle semantics replace close-only (07-21)
+
+**Feature** (`plans/ohlcv_decision_design.md`): the bar store already held full OHLCV and
+S/R *computation* already used highs/lows, but every *decision* consulted only the daily
+close. Now the decision layer is candle-aware — **daily bars kept, no data migration**
+(all new metrics are deterministic Python from the existing bars at runtime).
+
+Five steps, one branch each:
+1–2. `Candle` dataclass + `IndicatorRow` carries the last bar's O/H/L/V; `LevelStats`
+   (`last_touch`, `touch_count` 30d, `touched_today`, `closed_through_recently` 10d,
+   `touch_volume_ratio` vs 20-bar avg) computed per nearby level in `build_nearby_levels`
+   from the last 60 bars. Pure `compute_level_stats(bars_df, …)`; fail-soft (no bars → no
+   stats, never a failed run). `NearbyLevels` gains `current: Candle` + `stats` +
+   `stats_for(level)`. Semantics matrix: touch = bar range included the level;
+   tested-and-held = touch with close reclaimed; **broken = a close beyond the level in
+   its breaking direction** (below a support / above a resistance).
+3. **Broken-level guard** in `_select_buy_anchor`: a support recently closed through is
+   excluded from both the scored path and the nearest-support fallback (all-broken →
+   explicit skip). Reason strings gain deterministic history ("tested 3× in 30d (1.4×
+   vol), touched today"). Regular buys + top-ups inherit via the shared helper.
+4. **LLM payloads**: `score_levels_for_ticker`'s `computed_levels` entries carry a
+   `history` object; `score_levels_v2.txt` documents it and tells the model to trust it
+   over its own bar-reading and to penalize `closed_through_recently`. `reason_node`
+   payload gains the mechanical `reason` (with the history suffix) + `kind`;
+   `suggestion_reason_v1.txt` documents both. No new LLM *output* surface.
+5. **Email**: `_components.html.j2` `price_range` macro shows `$73.30 (70.90–74.24)` in the
+   "Current" column (regular + top-up tables); `touch_marker` shows "3×/30d, touched today"
+   under each Nearest Support/Resistance in `levels_table`. Plain-text kept as-is (the
+   mechanical `reason` already carries the same facts; fixed-width columns can't absorb
+   variable text). Both fail open.
+
+Config knobs (defaults, optional): `LEVEL_TOUCH_WINDOW_DAYS=30`,
+`LEVEL_BROKEN_LOOKBACK_DAYS=10`. Explicitly unchanged: bar backfill, indicator math,
+pivots/swings, auto-trade, reconciliation, top-up sizing, the persisted `sr_level` schema.
+39 new tests across the five steps (566 → 605 passed). Live smoke (QQQ): the Friday
+candle's low correctly marked pivot_weekly_S2 $692.25 "touched today" while swing_low
+$686.43 (35¢ below the low) was untouched — a distinction close-only logic can't see.
 
 ## Candidate ADRs / gotchas (not yet written)
 
