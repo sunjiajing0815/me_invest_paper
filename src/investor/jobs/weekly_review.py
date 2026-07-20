@@ -424,7 +424,7 @@ def run_weekly_review_for_account(
                 )
                 if orm_acct else AccountSnapshot("unknown", "unknown", 0.0, 0.0)
             )
-            nearby = build_nearby_levels(tickers, sr_rows, indicators)
+            nearby = build_nearby_levels(tickers, sr_rows, indicators, bars_dir=settings.bars_dir)
         drafts, _ = generate_suggestions(
             gap_rows=gap_rows_fresh,
             nearby_levels=nearby,

@@ -255,7 +255,7 @@ def compose_daily_report(
 
             indicators = compute_indicators(watchlist, bars_dir)
             sr_rows = compute_levels(watchlist, indicators, bars_dir)
-            nearby_levels = build_nearby_levels(watchlist, sr_rows, indicators)
+            nearby_levels = build_nearby_levels(watchlist, sr_rows, indicators, bars_dir=bars_dir)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(

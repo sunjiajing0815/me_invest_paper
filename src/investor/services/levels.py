@@ -12,6 +12,7 @@ price for each ticker.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..models import SRLevel
 from .analytics import duckdb_conn
-from .indicators import IndicatorRow
+from .indicators import Candle, IndicatorRow
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,22 @@ class SRLevelRow:
 
 
 @dataclass(frozen=True)
+class LevelStats:
+    """Candle-derived history for one nearby level (plans/ohlcv_decision_design.md).
+
+    A *touch* is a bar whose low–high range included the level (the market traded
+    there). ``closed_through_recently`` means a close beyond the level in its breaking
+    direction (below a support / above a resistance) within the lookback — a broken,
+    not tested, level."""
+
+    last_touch: date | None
+    touch_count: int
+    touched_today: bool
+    closed_through_recently: bool
+    touch_volume_ratio: float | None  # mean volume on touch bars ÷ 20-bar mean volume
+
+
+@dataclass(frozen=True)
 class NearbyLevels:
     """Nearest support and resistance levels for a single ticker."""
 
@@ -50,6 +67,12 @@ class NearbyLevels:
     current_price: float
     supports: list[SRLevelRow]      # up to 3 nearest below current price
     resistances: list[SRLevelRow]   # up to 3 nearest above current price
+    # OHLCV decision layer (optional — None/{} when bars unavailable):
+    current: Candle | None = None                                  # last full bar
+    stats: dict[tuple[str, float], LevelStats] = dataclasses.field(default_factory=dict)
+
+    def stats_for(self, level: SRLevelRow) -> LevelStats | None:
+        return self.stats.get((level.method, round(level.price, 4)))
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +267,90 @@ def persist_levels(session: Session, rows: list[SRLevelRow]) -> None:
     session.flush()
 
 
+def compute_level_stats(
+    bars: pd.DataFrame,
+    level_price: float,
+    level_type: str,
+    *,
+    touch_window_days: int = 30,
+    broken_lookback_days: int = 10,
+    volume_window: int = 20,
+) -> LevelStats:
+    """Candle-derived stats for one level over a bars frame (date/open/high/low/close/volume,
+    ascending). Pure — see plans/ohlcv_decision_design.md for the semantics matrix."""
+    if bars.empty:
+        return LevelStats(None, 0, False, False, None)
+
+    last_date = bars["date"].iloc[-1]
+    touch_cutoff = last_date - pd.Timedelta(days=touch_window_days)
+    broken_cutoff = last_date - pd.Timedelta(days=broken_lookback_days)
+
+    touched = (bars["low"] <= level_price) & (bars["high"] >= level_price)
+    in_window = bars["date"] >= touch_cutoff
+    touch_bars = bars[touched & in_window]
+
+    last_touch = None
+    if not touch_bars.empty:
+        lt = touch_bars["date"].iloc[-1]
+        last_touch = lt.date() if hasattr(lt, "date") else lt
+
+    last_bar = bars.iloc[-1]
+    touched_today = bool(last_bar["low"] <= level_price <= last_bar["high"])
+
+    recent = bars[bars["date"] >= broken_cutoff]
+    if level_type == "support":
+        closed_through = bool((recent["close"] < level_price).any())
+    else:
+        closed_through = bool((recent["close"] > level_price).any())
+
+    ratio: float | None = None
+    if not touch_bars.empty:
+        base_vol = float(bars["volume"].tail(volume_window).mean())
+        if base_vol > 0:
+            ratio = float(touch_bars["volume"].mean()) / base_vol
+
+    return LevelStats(
+        last_touch=last_touch,
+        touch_count=int(len(touch_bars)),
+        touched_today=touched_today,
+        closed_through_recently=closed_through,
+        touch_volume_ratio=ratio,
+    )
+
+
+def _recent_bars_by_ticker(
+    bars_dir: str, tickers: list[str], n: int = 60
+) -> dict[str, pd.DataFrame]:
+    """Last ``n`` bars per ticker (date asc) from the price_bar view. Empty dict on failure
+    — level stats are an enhancement, never a reason to fail a run."""
+    out: dict[str, pd.DataFrame] = {}
+    try:
+        with duckdb_conn(bars_dir) as con:
+            for t in tickers:
+                df = con.execute(
+                    "SELECT date, open, high, low, close, volume FROM price_bar"
+                    " WHERE ticker = ? ORDER BY date DESC LIMIT ?",
+                    [t, n],
+                ).df()
+                if not df.empty:
+                    df = df.sort_values("date").reset_index(drop=True)
+                    df["date"] = pd.to_datetime(df["date"])
+                    out[t] = df
+    except Exception as exc:
+        logger.warning("level stats: bar fetch failed (%s) — stats skipped", exc)
+        return {}
+    return out
+
+
 def build_nearby_levels(
     tickers: list[str],
     sr_rows: list[SRLevelRow],
     indicators: list[IndicatorRow],
     n: int = 3,
     max_distance_pct: float = 0.50,
+    bars_dir: str | None = None,
+    touch_window_days: int = 30,
+    broken_lookback_days: int = 10,
 ) -> dict[str, NearbyLevels]:
     """Return NearbyLevels for each ticker: up to n supports below, n resistances above.
 
@@ -260,6 +361,7 @@ def build_nearby_levels(
     """
     ind_map = {r.ticker: r for r in indicators}
     result: dict[str, NearbyLevels] = {}
+    bars_map = _recent_bars_by_ticker(bars_dir, tickers) if bars_dir else {}
 
     by_ticker: dict[str, list[SRLevelRow]] = {}
     for row in sr_rows:
@@ -291,11 +393,26 @@ def build_nearby_levels(
             key=lambda lv: lv.price - current_price,
         )[:n]
 
+        # OHLCV layer: last full candle (from the indicator row) + per-level candle
+        # stats for the levels that survived filtering (≤ 2n per ticker — cheap).
+        candle = ind.candle if ind else None
+        stats: dict[tuple[str, float], LevelStats] = {}
+        t_bars = bars_map.get(ticker)
+        if t_bars is not None:
+            for lv in supports + resistances:
+                stats[(lv.method, round(lv.price, 4))] = compute_level_stats(
+                    t_bars, lv.price, lv.type,
+                    touch_window_days=touch_window_days,
+                    broken_lookback_days=broken_lookback_days,
+                )
+
         result[ticker] = NearbyLevels(
             ticker=ticker,
             current_price=current_price,
             supports=supports,
             resistances=resistances,
+            current=candle,
+            stats=stats,
         )
 
     return result

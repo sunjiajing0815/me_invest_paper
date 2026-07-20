@@ -235,7 +235,7 @@ def run_weekly_suggestions_for_account(
 
         targets_id = get_active_targets_id(session)
 
-        nearby = build_nearby_levels(tickers, sr_rows, indicators)
+        nearby = build_nearby_levels(tickers, sr_rows, indicators, bars_dir=settings.bars_dir)
         drafts, skipped = generate_suggestions(
             gap_rows=gap_rows,
             nearby_levels=nearby,

@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class Candle:
+    """One daily OHLCV bar — the decision layer's view of 'current price' with its full
+    range (plans/ohlcv_decision_design.md)."""
+
+    as_of: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+@dataclass(frozen=True)
 class IndicatorRow:
     ticker: str
     as_of: date
@@ -31,6 +44,20 @@ class IndicatorRow:
     macd_signal: float | None
     pct_from_sma_50: float | None
     pct_from_sma_200: float | None
+    # Last bar's full candle (OHLCV decision logic). Optional so fabricated rows in
+    # tests and older callers keep working; None = candle unavailable.
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    volume: float | None = None
+
+    @property
+    def candle(self) -> Candle | None:
+        """The last bar as a Candle, when the OHLV fields are populated."""
+        if self.open is None or self.high is None or self.low is None or self.volume is None:
+            return None
+        return Candle(as_of=self.as_of, open=self.open, high=self.high, low=self.low,
+                      close=self.close, volume=self.volume)
 
 
 def _nan_to_none(value: object) -> float | None:
@@ -59,7 +86,7 @@ def compute_indicators(tickers: list[str], bars_dir: str = "data/bars") -> list[
         sma_sql = """
             WITH augmented AS (
                 SELECT
-                    ticker, date, close,
+                    ticker, date, open, high, low, close, volume,
                     AVG(close) OVER (
                         PARTITION BY ticker ORDER BY date
                         ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)  AS sma_20,
@@ -74,7 +101,7 @@ def compute_indicators(tickers: list[str], bars_dir: str = "data/bars") -> list[
                 FROM price_bar
                 WHERE ticker = ANY(?)
             )
-            SELECT ticker, date, close, sma_20, sma_50, sma_200
+            SELECT ticker, date, open, high, low, close, volume, sma_20, sma_50, sma_200
             FROM augmented
             WHERE rn = 1
         """
@@ -88,7 +115,7 @@ def compute_indicators(tickers: list[str], bars_dir: str = "data/bars") -> list[
             logger.warning("compute_indicators: no bar data found for %s", tickers)
             return []
 
-        for ticker, as_of, close, sma_20, sma_50, sma_200 in sma_rows:
+        for ticker, as_of, open_, high, low, close, volume, sma_20, sma_50, sma_200 in sma_rows:
             try:
                 df: pd.DataFrame = con.execute(
                     "SELECT date, close FROM price_bar WHERE ticker = ? ORDER BY date",
@@ -128,6 +155,10 @@ def compute_indicators(tickers: list[str], bars_dir: str = "data/bars") -> list[
                 macd_signal=macd_sig,
                 pct_from_sma_50=(close_f / sma_50_f - 1) * 100 if sma_50_f else None,
                 pct_from_sma_200=(close_f / sma_200_f - 1) * 100 if sma_200_f else None,
+                open=_nan_to_none(open_),
+                high=_nan_to_none(high),
+                low=_nan_to_none(low),
+                volume=_nan_to_none(volume),
             ))
 
     return rows

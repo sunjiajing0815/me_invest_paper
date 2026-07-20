@@ -999,7 +999,7 @@ def admin_resend_weekly_email(request: Request) -> dict[str, Any]:
 
     indicators = compute_indicators(tickers, settings.bars_dir)
     sr_rows = compute_levels(tickers, indicators, settings.bars_dir)
-    nearby = build_nearby_levels(tickers, sr_rows, indicators)
+    nearby = build_nearby_levels(tickers, sr_rows, indicators, bars_dir=settings.bars_dir)
 
     with session_scope() as session:
         ref = resolve_primary_account_ref(session)
