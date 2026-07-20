@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 07-21)
+# Post-4.9a changes (2026-06-03 → 07-21b)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -496,6 +496,28 @@ pivots/swings, auto-trade, reconciliation, top-up sizing, the persisted `sr_leve
 39 new tests across the five steps (566 → 605 passed). Live smoke (QQQ): the Friday
 candle's low correctly marked pivot_weekly_S2 $692.25 "touched today" while swing_low
 $686.43 (35¢ below the low) was untouched — a distinction close-only logic can't see.
+
+## 19. Rationale misattribution after critic reject + rejected tickers surfaced — (07-21)
+
+**Symptom (Moomoo only):** in the weekly email each top-up's prose rationale described
+the ticker in the row *above* it — AMZN's row showed NFLX's text, ETH's showed AMZN's,
+etc. Ticker/limit/qty were all correct; only the LLM rationale was shifted.
+
+**Root cause:** `revise_node` drops critic-**rejected** drafts from `finals` with a bare
+`continue` but never re-keyed the `rationales` dict (keyed by draft index). `finalize_node`
+pairs rationales to persisted rows BY POSITION, so every row after the drop inherited the
+previous ticker's rationale. Account 62's watchlist includes NFLX, which had bearish news
+this week; the critic correctly rejected the NFLX buy (index 1), shifting all later
+rationales by one. Account 61 had no rejected draft, so it was unaffected.
+
+**Fix:** `revise_node` re-keys rationales onto the new `finals` indices (mirroring the
+`old_to_new` re-key `context_adjust` already does for its sub-1-share drops) and collects
+`rejections` (ticker/side/reason) on a new state key; `skip_revise_node` reports none.
+The weekly job appends rejections to the "Not Suggested This Week" section as
+"review declined — <critic reason>", so the email now explains why a ticker like NFLX
+wasn't recommended (previously rejects vanished silently). 4 new tests; 608 passed.
+Verified live: acct-62 regenerated, all rationales match their own ticker, NFLX surfaced
+with its bearish-news reason.
 
 ## Candidate ADRs / gotchas (not yet written)
 
