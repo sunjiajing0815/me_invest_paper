@@ -150,6 +150,40 @@
 {%- endif %}
 {%- endmacro -%}
 
+{# ---- Upcoming-earnings warning box (weekly suggestions). warnings: list of
+        EarningsWarning (ticker/name/earnings_date/days_away/this_week/has_suggestion). ---- #}
+{%- macro earnings_box(warnings) -%}
+{%- if warnings %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ WARN_BG }}; border:1px solid {{ WARN_BORDER }}; border-radius:8px; margin:0 0 20px 0;">
+  <tr><td style="padding:12px 16px;">
+    <strong style="font-family:{{ FONT }}; font-size:13px; color:{{ BODY }};">&#9888; Earnings this week &amp; next &mdash; {{ warnings|length }} ticker(s)</strong>
+    <p style="margin:4px 0 8px 0; font-family:{{ FONT }}; font-size:11px; color:{{ MUTED }};">
+      A report between now and the end of next week can move price sharply. Consider whether to wait until after the call before buying.
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:{{ FONT }}; font-size:12px; border-collapse:collapse;">
+      {%- for w in warnings %}
+      <tr style="color:{{ BODY }};">
+        <td style="padding:3px 8px; font-weight:bold; white-space:nowrap;">
+          {{ w.ticker }}{% if w.has_suggestion %}<span style="color:{{ POS }}; font-weight:bold;">&nbsp;&#9733;</span>{% endif %}
+        </td>
+        <td style="padding:3px 8px; color:{{ MUTED }};">{{ w.name if w.name != w.ticker else '' }}</td>
+        <td style="padding:3px 8px; text-align:right; white-space:nowrap;">{{ w.earnings_date.strftime('%a %b %-d') }}</td>
+        <td style="padding:3px 8px; text-align:right; color:{{ MUTED }}; white-space:nowrap;">
+          {{ 'this week' if w.this_week else 'next week' }} &middot; {{ w.days_away }}d
+        </td>
+      </tr>
+      {%- endfor %}
+    </table>
+    {%- if warnings | selectattr('has_suggestion') | list %}
+    <p style="margin:8px 0 0 0; font-family:{{ FONT }}; font-size:11px; color:{{ MUTED }};">
+      <span style="color:{{ POS }}; font-weight:bold;">&#9733;</span> = this ticker also has a suggestion below.
+    </p>
+    {%- endif %}
+  </td></tr>
+</table>
+{%- endif %}
+{%- endmacro -%}
+
 {# ---- "Levels at a glance" table (shared by daily report + weekly suggestions).
         etf_tickers: optional set; when given, SMA200 / %Δ200 show for ETFs only. ---- #}
 {%- macro price_range(close, candle) -%}

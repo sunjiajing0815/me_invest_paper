@@ -7,6 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pydantic
@@ -25,6 +26,7 @@ from ..services.accounts import (
 )
 from ..services.bars import update_bars
 from ..services.daily_report import AccountSnapshot, _account_currency
+from ..services.earnings import EarningsWarning, build_earnings_warnings
 from ..services.email import EmailSender
 from ..services.gap import compute_gap, get_untracked_positions
 from ..services.indicators import compute_indicators
@@ -406,6 +408,31 @@ def run_weekly_suggestions_for_account(
     regular_items = [i for i in suggestion_items if i["suggestion"].get("kind") != "topup"]
     topup_items = [i for i in suggestion_items if i["suggestion"].get("kind") == "topup"]
 
+    # Earnings warnings: any watchlist ticker reporting this week or next. Reuses the
+    # Finnhub earnings client (empty FINNHUB_API_KEY → no-op → no warning box).
+    earnings_warnings: list[EarningsWarning] = []
+    try:
+        today = datetime.now(UTC).date()
+        earnings_map = earnings_client.upcoming_earnings(
+            tickers, start=today, end=week_of + timedelta(days=13)
+        )
+        suggested_now = {i["suggestion"]["ticker"] for i in suggestion_items}
+        earnings_warnings = build_earnings_warnings(
+            earnings_map,
+            week_of=week_of,
+            suggested_tickers=suggested_now,
+            names=names_for(tickers),
+            today=today,
+        )
+        if earnings_warnings:
+            logger.info(
+                "run_weekly_suggestions: %d earnings warning(s): %s",
+                len(earnings_warnings),
+                ", ".join(f"{w.ticker} {w.earnings_date}" for w in earnings_warnings),
+            )
+    except Exception as exc:  # never let an earnings-feed hiccup block the email
+        logger.warning("run_weekly_suggestions: earnings warnings skipped: %s", exc)
+
     # Untracked positions + the user-level market context (VIX/F&G) for the email.
     with session_scope() as session:
         untracked = get_untracked_positions(session, bid)
@@ -428,6 +455,7 @@ def run_weekly_suggestions_for_account(
         account_broker=acct.broker,
         suggestion_items=regular_items,
         topup_items=topup_items,
+        earnings_warnings=earnings_warnings,
         base_url=settings.app_base_url,
         indicators=indicators,
         nearby=nearby,
@@ -445,6 +473,7 @@ def run_weekly_suggestions_for_account(
         account_nickname=acct.nickname,
         account_broker=acct.broker,
         suggestions=list(db_values.values()),
+        earnings_warnings=earnings_warnings,
         indicators=indicators,
         nearby=nearby,
         untracked=untracked,

@@ -5,6 +5,14 @@ Orders for the week of {{ week_of.strftime('%b %-d, %Y') }}
 Market sentiment: {% if market_context.vix is not none %}VIX {{ "%.1f"|format(market_context.vix) }}{% endif %}{% if market_context.vix is not none and market_context.fear_greed_score is not none %}  ·  {% endif %}{% if market_context.fear_greed_score is not none %}Fear & Greed {{ market_context.fear_greed_score }}{% if market_context.fear_greed_label %} ({{ market_context.fear_greed_label }}){% endif %}{% endif %}
 {% endif %}
 
+{% if earnings_warnings is defined and earnings_warnings %}
+=== EARNINGS THIS WEEK & NEXT ({{ earnings_warnings|length }}) ===
+A report between now and the end of next week can move price sharply.
+{% for w in earnings_warnings %}
+  {{ '*' if w.has_suggestion else ' ' }} {{ w.ticker | ljust(6) }} {{ w.earnings_date.strftime('%a %b %-d') }}  ({{ 'this week' if w.this_week else 'next week' }}, {{ w.days_away }}d){% if w.has_suggestion %}  [has suggestion]{% endif %}
+{% endfor %}
+
+{% endif %}
 {% if untracked %}
 === UNTRACKED POSITIONS — NO TARGET ALLOCATION ===
 {% for p in untracked %}

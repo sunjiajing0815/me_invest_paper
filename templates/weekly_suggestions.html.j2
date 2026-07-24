@@ -17,6 +17,8 @@
 
 {{ sentiment.sentiment_box(market_context if market_context is defined else None) }}
 
+{{ ui.earnings_box(earnings_warnings if earnings_warnings is defined else None) }}
+
 {{ ui.untracked_box(untracked) }}
 
 {# ---- Suggested orders ---- #}

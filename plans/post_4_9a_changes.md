@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 07-21b)
+# Post-4.9a changes (2026-06-03 → 07-24)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -518,6 +518,22 @@ The weekly job appends rejections to the "Not Suggested This Week" section as
 wasn't recommended (previously rejects vanished silently). 4 new tests; 608 passed.
 Verified live: acct-62 regenerated, all rationales match their own ticker, NFLX surfaced
 with its bearish-news reason.
+
+## 20. Upcoming-earnings warning in the weekly suggestions email — (07-24)
+
+**Feature:** the weekly suggestions email now shows an amber warning box listing any
+**watchlist** ticker with a scheduled earnings report **this week or next** (rolling
+14-day window from send date through the end of next week). Each row shows the date,
+this-week/next-week label, and days-away; tickers that also have a suggestion in the same
+email are flagged with a ★ (you're about to place an order into the event). Reuses the
+existing Finnhub `EarningsClient` the context_adjust earnings gate already uses — empty
+`FINNHUB_API_KEY` → no-op → no box; any feed hiccup is caught and the email still sends.
+
+New: `EarningsWarning` + pure `build_earnings_warnings()` in `services/earnings.py`
+(sorted suggested-first then soonest); `_components.html.j2` `earnings_box` macro (WARN
+palette) placed above the untracked box; plain-text mirror. The context_adjust earnings
+GATE (size cut / re-anchor within `earnings_lookahead_days=7`) is unchanged — this is a
+separate, wider-window display warning. 10 new tests; 618 passed.
 
 ## Candidate ADRs / gotchas (not yet written)
 
