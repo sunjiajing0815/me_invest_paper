@@ -20,3 +20,6 @@ data/
 
 # Local Claude Code settings
 .claude/
+
+# Local scratch / preview artifacts (email previews, throwaway renders)
+tmp/
