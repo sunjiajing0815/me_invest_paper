@@ -4,7 +4,7 @@ Revision ID: d4e5f6a7b8c9
 Revises: c3d4e5f6a7b8
 Create Date: 2026-07-19 00:00:00.000000
 
-Top-up suggestions (plans/topup_suggestions_design.md): kind partitions regular
+Top-up suggestions (plans/pre_phase5_features_design.md): kind partitions regular
 rebalancing suggestions from sentiment-sized near-target top-ups; is_highlighted marks
 the deterministic strong-entry flag. Existing rows backfill to ('regular', 0).
 """

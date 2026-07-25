@@ -120,7 +120,7 @@ def score_levels_for_ticker(
                 "price": lv.price,
                 "type": lv.type,
                 "as_of": str(lv.as_of),
-                # Deterministic candle history (plans/ohlcv_decision_design.md step 4):
+                # Deterministic candle history (plans/pre_phase5_features_design.md step 4):
                 # facts computed in Python from the bars, for the model to weigh.
                 "history": _history_payload(bars_df, lv),
             }

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Candle:
     """One daily OHLCV bar — the decision layer's view of 'current price' with its full
-    range (plans/ohlcv_decision_design.md)."""
+    range (plans/pre_phase5_features_design.md)."""
 
     as_of: date
     open: float

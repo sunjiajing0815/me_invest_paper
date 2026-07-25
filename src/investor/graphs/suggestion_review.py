@@ -495,7 +495,7 @@ def context_adjust_node(
         if d.kind == "topup":
             # Top-ups are sentiment-sized at creation (topup_size_fraction) — exempt
             # from narrative/earnings resize + re-anchor so the same F&G signal isn't
-            # applied twice (plans/topup_suggestions_design.md).
+            # applied twice (plans/pre_phase5_features_design.md).
             old_to_new[i] = len(adjusted)
             adjusted.append(d)
             continue

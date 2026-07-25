@@ -248,7 +248,7 @@ def run_weekly_suggestions_for_account(
         )
         # NOTE: do NOT call persist_suggestions here — finalize_node does it.
 
-    # Top-up drafts (plans/topup_suggestions_design.md): sentiment-sized near-target buys
+    # Top-up drafts (plans/pre_phase5_features_design.md): sentiment-sized near-target buys
     # for tickers below target that got no regular buy draft. Sized at creation from the
     # Friday-persisted VIX/F&G (context_adjust exempts kind='topup' — no double-count).
     if settings.topup_enabled:

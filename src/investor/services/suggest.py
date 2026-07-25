@@ -43,7 +43,7 @@ class OrderSuggestionRow:
     base_qty: float | None = None
     size_factor: float = 1.0
     context_note: str | None = None
-    # "regular" | "topup" (plans/topup_suggestions_design.md)
+    # "regular" | "topup" (plans/pre_phase5_features_design.md)
     kind: str = "regular"
     is_highlighted: bool = False
 
@@ -149,7 +149,7 @@ def _is_broken_level(nearby: NearbyLevels, method: str, price: float) -> bool:
     """True when candle stats say the level was recently closed through (broken).
 
     Fail-open: no stats for the level (bars unavailable, or the level wasn't in the
-    nearby set) → not broken. See plans/ohlcv_decision_design.md."""
+    nearby set) → not broken. See plans/pre_phase5_features_design.md."""
     st = nearby.stats.get((method, round(price, 4)))
     return bool(st is not None and st.closed_through_recently)
 
@@ -201,7 +201,7 @@ def _select_buy_anchor(
         if lv.type == "support"
         and lv.price <= cur
         # OHLCV guard: a support with a recent close below it is broken, not a
-        # pullback target (plans/ohlcv_decision_design.md step 3).
+        # pullback target (plans/pre_phase5_features_design.md step 3).
         and not _is_broken_level(nearby, lv.method, lv.price)
     ]
     if buy_levels:
@@ -514,7 +514,7 @@ def persist_suggestions(
 
 
 # ---------------------------------------------------------------------------
-# Top-up suggestions (plans/topup_suggestions_design.md)
+# Top-up suggestions (plans/pre_phase5_features_design.md)
 # ---------------------------------------------------------------------------
 
 
@@ -557,7 +557,7 @@ def generate_topup_suggestions(
 ) -> list[OrderSuggestionRow]:
     """Pure function: sentiment-sized near-target buys ("top-ups").
 
-    Eligibility (all must hold — plans/topup_suggestions_design.md):
+    Eligibility (all must hold — plans/pre_phase5_features_design.md):
       1. current < target (``gap_pct > 0``) — covers in-band-under AND sub-share-gap cases
       2. no regular buy draft for the ticker this run (mutually exclusive)
       3. a buy anchor via the SAME selection as regular buys (scored + fallback + 15% guard)

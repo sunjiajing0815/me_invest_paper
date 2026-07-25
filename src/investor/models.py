@@ -236,7 +236,7 @@ class OrderSuggestion(Base):
     context_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "regular" rebalancing suggestion | "topup" sentiment-sized near-target buy
-    # (plans/topup_suggestions_design.md)
+    # (plans/pre_phase5_features_design.md)
     kind: Mapped[str] = mapped_column(
         String, nullable=False, default="regular", server_default="regular"
     )

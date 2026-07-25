@@ -45,7 +45,7 @@ class SRLevelRow:
 
 @dataclass(frozen=True)
 class LevelStats:
-    """Candle-derived history for one nearby level (plans/ohlcv_decision_design.md).
+    """Candle-derived history for one nearby level (plans/pre_phase5_features_design.md).
 
     A *touch* is a bar whose low–high range included the level (the market traded
     there). ``closed_through_recently`` means a close beyond the level in its breaking
@@ -277,7 +277,7 @@ def compute_level_stats(
     volume_window: int = 20,
 ) -> LevelStats:
     """Candle-derived stats for one level over a bars frame (date/open/high/low/close/volume,
-    ascending). Pure — see plans/ohlcv_decision_design.md for the semantics matrix."""
+    ascending). Pure — see plans/pre_phase5_features_design.md for the semantics matrix."""
     if bars.empty:
         return LevelStats(None, 0, False, False, None)
 

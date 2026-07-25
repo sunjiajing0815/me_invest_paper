@@ -1,4 +1,4 @@
-"""OHLCV candle semantics for levels (plans/ohlcv_decision_design.md, steps 1–2).
+"""OHLCV candle semantics for levels (plans/pre_phase5_features_design.md, steps 1–2).
 
 Touch / tested-and-held / broken / reclaimed matrix on synthetic bars, plus the
 Candle plumbing through IndicatorRow and NearbyLevels.

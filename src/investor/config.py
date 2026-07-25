@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     target_edit_warn_threshold_pct: float = 10.0
     funds_detection_threshold_usd: float = 500.0
 
-    # Top-up suggestions (plans/topup_suggestions_design.md)
+    # Top-up suggestions (plans/pre_phase5_features_design.md)
     topup_enabled: bool = True
     topup_highlight_min_conf: float = 0.75
 

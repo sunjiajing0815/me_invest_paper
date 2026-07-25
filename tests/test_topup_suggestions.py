@@ -1,4 +1,4 @@
-"""Top-up suggestions engine (plans/topup_suggestions_design.md).
+"""Top-up suggestions engine (plans/pre_phase5_features_design.md).
 
 Sentiment fraction table, eligibility matrix, band-ceiling sizing, cash budget.
 """

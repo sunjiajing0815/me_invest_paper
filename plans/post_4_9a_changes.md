@@ -439,7 +439,7 @@ excluded / fresh served) + `test_suggestion_review.py` distance-guard cases (23%
 
 ## 17. Top-up suggestions — sentiment-sized near-target buys — (07-19)
 
-**Feature** (`plans/topup_suggestions_design.md`): tickers below target that get no regular
+**Feature** (`plans/pre_phase5_features_design.md`): tickers below target that get no regular
 buy draft now receive a **top-up suggestion** when whole share(s) fit under `band_high`:
 qty = max(1, floor(max-shares-under-band × sentiment fraction)), where the fraction is a
 deterministic F&G/VIX table (fear→buy more; from the Friday-persisted context). First-class
@@ -461,7 +461,7 @@ differentiates per ticker within a week; `size_factor`/`context_note` record the
 
 ## 18. OHLCV-aware decision logic — candle semantics replace close-only (07-21)
 
-**Feature** (`plans/ohlcv_decision_design.md`): the bar store already held full OHLCV and
+**Feature** (`plans/pre_phase5_features_design.md`): the bar store already held full OHLCV and
 S/R *computation* already used highs/lows, but every *decision* consulted only the daily
 close. Now the decision layer is candle-aware — **daily bars kept, no data migration**
 (all new metrics are deterministic Python from the existing bars at runtime).
