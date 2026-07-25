@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     topup_enabled: bool = True
     topup_highlight_min_conf: float = 0.75
 
+    # Weekly-review reflection (plans/pre_phase5_features_design.md §4)
+    reflection_enabled: bool = True
+    reflection_prior_insights_count: int = 8
+    reflection_prompt_version: str = "1"
+
     @field_validator(
         "level_prompt_version", "weekly_context_prompt_version",
         "context_adjust_prompt_version", "critic_prompt_version",

@@ -14,6 +14,7 @@ how it's shaped"; the changelog is the "what landed when". Cross-reference by se
 | 1 | Top-up suggestions (sentiment-sized near-target buys) | §17 | [Top-Up Suggestions](#1-top-up-suggestions) |
 | 2 | OHLCV-aware decision logic (candle semantics) | §18 | [OHLCV-Aware Decision Logic](#2-ohlcv-aware-decision-logic) |
 | 3 | Upcoming-earnings warning (weekly email) | §20 | [Upcoming-Earnings Warning](#3-upcoming-earnings-warning) |
+| 4 | Weekly-review reflection / lessons-learned | §21 | [Reflection / Lessons Learned](#4-weekly-review--reflection--lessons-learned) |
 
 ---
 
@@ -301,7 +302,62 @@ display-only concern with its own wider window.
 
 ---
 
+## 4. Weekly Review — Reflection / Lessons Learned
+
+**Related:** `plans/post_4_9a_changes.md` §21, `services/reflection.py`,
+`prompts/weekly_reflection_v1.txt`, `jobs/weekly_review.py`, table `reflection_insight`.
+
+### Problem
+The weekly review shows "Suggestions vs Fills" but never asks *were the calls any good?* and
+keeps no memory. There's no feedback loop from suggested price → actual fill → current price →
+related news, and no accumulating record of what the process is learning.
+
+### Decisions (user-confirmed)
+1. **Scope:** all *resolved* suggestions for the reviewed week — filled (entry vs current),
+   expired-unfilled / accepted-but-unfilled (missed level?), rejected. Critic-vetoed drafts
+   aren't persisted today → out of v1 scope (follow-up: persist critic rejections first).
+2. **Storage:** one table of **generalized lessons only** (`reflection_insight`).
+3. **Learning loop:** each reflection sees the last ~8 stored insights (confirm/contradict,
+   avoid repetition).
+
+### Hard guardrail
+Methodology/process observations ONLY — never price targets, buy/sell/hold recommendations, or
+fundamental claims beyond the supplied news (CLAUDE.md:170). Same wall as `WeeklyMarketContext`
+(§ ADR-0020): informational, never touches `generate_suggestions` or any broker path. The
+prompt reuses the hard-rule register of `score_levels_v2.txt` / `suggestion_critic_v1.txt`.
+
+### Design
+- **Table `reflection_insight`** (model `ReflectionInsight`, `FundsEvent` shape): `id`,
+  `broker_account_id` (per-account — 61 auto-trade vs 62 manual differ), `week_of` (Date),
+  `category` (`anchor`|`sizing`|`limit_placement`|`news_timing`|`outcome_pattern`), `lesson`
+  (Text), `tickers` (Text JSON), `relation_to_prior` (`confirms`|`contradicts`|None),
+  `created_at`. Plain `op.create_table`; migration after head `d4e5f6a7b8c9`.
+- **Deterministic evidence** (`services/reflection.py`): `SuggestionOutcome` frozen dataclass
+  from `review.suggestion_audits` + per-ticker current close (`compute_indicators`, already in
+  scope) + news sentiment (`review.material_news`); computes `outcome` label +
+  `entry_vs_current_pct`. Feeds the LLM payload AND the email evidence table. Not stored.
+- **LLM reflection** — direct Sonnet call (not a graph), mirrors `build_weekly_market_context`:
+  `reflect_on_week(llm, session, *, outcomes, prior_insights, ...)`. Loads the last N insights,
+  `llm.call(SONNET, weekly_reflection_v{ver}.txt, response_schema=_ReflectionOutput,
+  temperature=0.3)`, `persist_llm_call_log(purpose="weekly_reflection")`. Parsed None/[] →
+  `[]` → section skipped, email still sends. No outcomes this week → skip.
+- **Wiring:** `run_weekly_review_for_account` gains `llm`; build outcomes after indicators,
+  reflect in a short session scope (llm_call_log), persist insights in a separate scope
+  (write-lock discipline — mirror `_build_and_persist_context`); try/except → `[]` on failure.
+  `WeeklyReview` gains `reflection` + `outcomes` (threaded through the frozen rebuild).
+- **Email:** "Reflection — Lessons from This Week" after "Suggestions vs Fills" — an evidence
+  table (suggested/fill/current/entry-vs-current%/news/outcome) + a lessons list (category chip
+  + lesson + tickers + confirm/contradict note). HTML + txt; preview before deploy.
+- **Config:** `reflection_enabled=True`, `reflection_prior_insights_count=8`,
+  `reflection_prompt_version="1"`.
+
+### Explicitly unchanged
+Suggestion/execution engine, auto-trade, reconciliation. Insights never flow back into the
+engine — read-only + writes only to `reflection_insight`.
+
+---
+
 ## Future features
 
-Append the next pre-Phase-5 feature as `## 4. <name>` here, following the same shape
+Append the next pre-Phase-5 feature as `## 5. <name>` here, following the same shape
 (Problem → Decision → Design → Explicitly unchanged / Risks), and add a changelog row.

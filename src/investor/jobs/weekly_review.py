@@ -30,6 +30,14 @@ from ..services.indicators import compute_indicators
 from ..services.levels import build_nearby_levels, compute_levels
 from ..services.llm import LLMClient
 from ..services.news import load_recent_material_news
+from ..services.reflection import (
+    ReflectionInsightRow,
+    SuggestionOutcome,
+    build_outcomes,
+    load_recent_insights,
+    persist_insights,
+    reflect_on_week,
+)
 from ..services.render import render_template
 from ..services.sentiment import SentimentClient
 from ..services.snapshot import take_snapshot
@@ -105,6 +113,8 @@ class WeeklyReview:
     breakdown_rows: list[PerTickerWeekRow] | None = None
     trend_rows: list[WeekTrendRow] | None = None
     etf_trend: list[EtfTrendRow] | None = None         # 200-day MA for ETF holdings (display)
+    reflection: list[ReflectionInsightRow] | None = None  # §4 lessons-learned
+    outcomes: list[SuggestionOutcome] | None = None       # §4 evidence rows
 
 
 def _week_start(ref: date | None = None) -> datetime:
@@ -357,6 +367,7 @@ def run_weekly_review_for_account(
     settings: Settings,
     adapter: BrokerAdapter,
     emailer: EmailSender,
+    llm: LLMClient,
     *,
     account: AccountInfo,
     primary_ref: int | None,
@@ -447,6 +458,41 @@ def run_weekly_review_for_account(
         )
         preview_suggestions = []
 
+    # Reflection — review this week's resolved suggestions vs fills/news/current price and
+    # extract generalizable methodology lessons (§4). Read-only + writes only its own table;
+    # any failure leaves reflection empty and never blocks the email.
+    reflection: list[ReflectionInsightRow] = []
+    outcomes: list[SuggestionOutcome] = []
+    if settings.reflection_enabled:
+        try:
+            current_close = {ind.ticker: ind.close for ind in indicators}
+            news_sentiment = {
+                ticker: (items[0].get("sentiment") if items else None)
+                for ticker, items in review.material_news.items()
+            }
+            outcomes = build_outcomes(
+                review.suggestion_audits,
+                current_close=current_close,
+                news_sentiment=news_sentiment,
+            )
+            if outcomes:
+                with session_scope() as rsession:
+                    prior = load_recent_insights(
+                        rsession, bid, limit=settings.reflection_prior_insights_count
+                    )
+                    reflection = reflect_on_week(
+                        llm, rsession, outcomes=outcomes, prior_insights=prior,
+                        prompt_version=settings.reflection_prompt_version,
+                    )
+                if reflection:
+                    with session_scope() as psession:
+                        persist_insights(
+                            psession, reflection, broker_account_id=bid, week_of=week_of
+                        )
+        except Exception as exc:
+            logger.warning("weekly_review reflection failed for %s: %s", account.nickname, exc)
+            reflection, outcomes = [], []
+
     # Rebuild review with preview + market_context (frozen dataclass — new instance)
     review = WeeklyReview(
         week_of=review.week_of,
@@ -468,6 +514,8 @@ def run_weekly_review_for_account(
         breakdown_rows=review.breakdown_rows,
         trend_rows=review.trend_rows,
         etf_trend=etf_trend,
+        reflection=reflection or None,
+        outcomes=outcomes or None,
     )
 
     subject = f"[{account.nickname}] Weekly review: {week_of:%b %d, %Y}"
@@ -519,7 +567,7 @@ def run_weekly_review(
         settings, llm, tavily, tickers, week_of, sentiment_client
     )
     run_weekly_review_for_account(
-        settings, adapter, emailer,
+        settings, adapter, emailer, llm,
         account=account, primary_ref=primary_ref, week_of=week_of,
         market_context=market_context,
     )
@@ -580,7 +628,7 @@ def run_weekly_review_all_brokers(
             continue
         try:
             run_weekly_review_for_account(
-                settings, adapter, emailer,
+                settings, adapter, emailer, llm,
                 account=account, primary_ref=primary_ref, week_of=week_of,
                 market_context=market_context,
             )

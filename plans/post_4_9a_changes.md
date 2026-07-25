@@ -1,4 +1,4 @@
-# Post-4.9a changes (2026-06-03 → 07-24)
+# Post-4.9a changes (2026-06-03 → 07-25)
 
 Changes landed after `plans/phase_4_9a_completion.md` / `phase_4_9a_post_review_fixes.md`
 (which stop at 2026-06-02) and after the per-broker weekly review (already documented in
@@ -534,6 +534,28 @@ New: `EarningsWarning` + pure `build_earnings_warnings()` in `services/earnings.
 palette) placed above the untracked box; plain-text mirror. The context_adjust earnings
 GATE (size cut / re-anchor within `earnings_lookahead_days=7`) is unchanged — this is a
 separate, wider-window display warning. 10 new tests; 618 passed.
+
+## 21. Weekly-review reflection / lessons-learned — (07-25)
+
+**Feature** (`plans/pre_phase5_features_design.md` §4): a new **Reflection** section in the
+Friday weekly-review email. Each week it reviews every *resolved* suggestion (filled /
+expired-unfilled / accepted-unfilled / rejected) against its fill, current price, and news
+sentiment, and a single Sonnet call extracts up to 5 **generalizable methodology lessons**
+(anchor / sizing / limit_placement / news_timing / outcome_pattern). Lessons persist to a new
+`reflection_insight` table (migration `e5f6a7b8c9d0`) — an accumulating "wisdom log" — and the
+last 8 feed back into the next reflection (confirm/contradict, avoid repetition).
+
+**Guardrail:** methodology observations ONLY — the prompt (`weekly_reflection_v1.txt`, hard-rule
+register of `score_levels_v2`) forbids price targets, buy/sell/hold recommendations, and
+fundamental claims beyond the supplied news. Same wall as `WeeklyMarketContext`: read-only +
+writes only its own table; never flows into `generate_suggestions` or any broker path.
+
+Pure `build_outcomes()` evidence rows (deterministic, no LLM) feed both the LLM payload and the
+email's "How the calls played out" table. `reflect_on_week()` mirrors `build_weekly_market_context`
+(direct Sonnet call, not a graph; `persist_llm_call_log(purpose="weekly_reflection")`; empty on
+no-outcomes / schema failure → section skipped, email still sends). Critic-vetoed drafts aren't
+persisted today → out of v1 scope (noted follow-up). Config: `reflection_enabled=True`,
+`reflection_prior_insights_count=8`, `reflection_prompt_version="1"`. 15 new tests; 633 passed.
 
 ## Candidate ADRs / gotchas (not yet written)
 

@@ -103,6 +103,29 @@ class FundsEvent(Base):
     )
 
 
+class ReflectionInsight(Base):
+    """A generalized methodology lesson extracted by the weekly-review reflection —
+    the accumulating "wisdom log" (plans/pre_phase5_features_design.md §4).
+
+    Methodology observations ONLY (no price targets / trade recommendations) — the
+    reflection never flows back into the suggestion engine."""
+
+    __tablename__ = "reflection_insight"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    broker_account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    week_of: Mapped[date] = mapped_column(Date, nullable=False)  # reviewed week's Monday
+    category: Mapped[str] = mapped_column(String, nullable=False)  # anchor | sizing | ...
+    lesson: Mapped[str] = mapped_column(Text, nullable=False)
+    tickers: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list of supporting tickers
+    relation_to_prior: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )  # confirms | contradicts | None
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
 class PositionsSnapshot(Base):
     """One row per ticker per sync. Weight is computed at write time."""
 

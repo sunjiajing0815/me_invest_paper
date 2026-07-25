@@ -399,6 +399,7 @@ Fires Sunday at 18:00 America/New_York. Contains:
 | Top-Up Opportunities | Sentiment-sized near-target buys (kind=topup) with band-headroom qty; ★ STRONG ENTRY highlight when anchor conf ≥ 0.75 and no bearish news |
 | Candle-aware levels | "Current" shows the day's range (close + low–high); Nearest Support/Resistance show touch history (Nx/30d, touched today); supports recently closed-through are excluded as buy anchors |
 | Earnings warning | Amber box lists watchlist tickers reporting this week or next (Finnhub); ★ marks those that also have a suggestion in the email |
+| Reflection / lessons | Weekly-review section reviews resolved suggestions vs fills/news/current price; Sonnet extracts methodology lessons (no trade advice) into a reflection_insight table that feeds forward |
 | Levels at a glance | SMA-50/200 distance, nearest support and resistance per watchlist ticker |
 | Footer | Reminder that execution is manual |
 

@@ -16,6 +16,21 @@ Market sentiment: {% if review.market_context.vix is not none %}VIX {{ "%.1f"|fo
 {% else %}
   No suggestions were generated for this week.
 {% endif %}
+{% if review.reflection %}
+
+=== REFLECTION — LESSONS FROM THIS WEEK ===
+{% if review.outcomes %}
+{{ "Ticker" | ljust(6) }}  {{ "Suggested" | rjust(10) }}  {{ "Fill" | rjust(10) }}  {{ "Current" | rjust(10) }}  {{ "vs now" | rjust(7) }}  {{ "News" | ljust(8) }}  Outcome
+{{ "-" * 78 }}
+{% for o in review.outcomes %}
+{{ o.ticker | ljust(6) }}  {{ "${:,.2f}".format(o.limit_price) | rjust(10) }}  {{ (("$" + "{:,.2f}".format(o.filled_price)) if o.filled_price else "—") | rjust(10) }}  {{ (("$" + "{:,.2f}".format(o.current_close)) if o.current_close else "—") | rjust(10) }}  {{ ("{:+.1f}%".format(o.entry_vs_current_pct) if o.entry_vs_current_pct is not none else "—") | rjust(7) }}  {{ (o.news_sentiment or "—") | ljust(8) }}  {{ o.outcome | replace('_', ' ') }}
+{% endfor %}
+{% endif %}
+Lessons (methodology only — not trade advice; stored for reference):
+{% for ins in review.reflection %}
+  [{{ ins.category }}] {{ ins.lesson }}{% if ins.tickers %} ({{ ins.tickers | join(', ') }}){% endif %}{% if ins.relation_to_prior %} — {{ ins.relation_to_prior }} a prior week{% endif %}
+{% endfor %}
+{% endif %}
 
 === DRIFT STATE ===
 {% if review.gap_rows %}

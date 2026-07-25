@@ -66,6 +66,56 @@
 <p style="padding:16px; background:{{ ui.ROWALT }}; border:1px solid {{ ui.LINE }}; border-radius:8px; color:{{ ui.MUTED }}; font-size:13px; margin:0 0 20px 0;">No suggestions were generated for this week.</p>
 {% endif %}
 
+{# ---- Reflection / Lessons learned (§4) ---- #}
+{% if review.reflection %}
+{{ ui.section("Reflection — Lessons from This Week") }}
+{% if review.outcomes %}
+{{ ui.subsection("How the calls played out") }}
+<div class="sscroll" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:12px; margin:0 0 16px 0;">
+  <thead>
+    <tr style="background:{{ ui.HEADBG }}; color:{{ ui.MUTED }};">
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Ticker</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Suggested</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Fill</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Current</th>
+      <th style="padding:6px 10px; text-align:right; border-bottom:2px solid {{ ui.LINE2 }};">Entry vs now</th>
+      <th style="padding:6px 10px; text-align:center; border-bottom:2px solid {{ ui.LINE2 }};">News</th>
+      <th style="padding:6px 10px; text-align:left; border-bottom:2px solid {{ ui.LINE2 }};">Outcome</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for o in review.outcomes %}
+    <tr style="border-bottom:1px solid {{ ui.LINE }}; color:{{ ui.BODY }};">
+      <td style="padding:6px 10px; font-weight:bold;">{{ o.ticker }}</td>
+      <td style="padding:6px 10px; text-align:right;">${{ "{:,.2f}".format(o.limit_price) }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ ("$" + "{:,.2f}".format(o.filled_price)) if o.filled_price else '—' }}</td>
+      <td style="padding:6px 10px; text-align:right;">{{ ("$" + "{:,.2f}".format(o.current_close)) if o.current_close else '—' }}</td>
+      <td style="padding:6px 10px; text-align:right; color:{{ ui.MUTED }};">{{ "{:+.1f}%".format(o.entry_vs_current_pct) if o.entry_vs_current_pct is not none else '—' }}</td>
+      <td style="padding:6px 10px; text-align:center; color:{{ ui.POS if o.news_sentiment == 'bullish' else (ui.NEG if o.news_sentiment == 'bearish' else ui.MUTED) }};">{{ o.news_sentiment or '—' }}</td>
+      <td style="padding:6px 10px; font-size:11px; color:{{ ui.MUTED }};">{{ o.outcome | replace('_', ' ') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{{ ui.subsection("Lessons (methodology only)") }}
+{% for ins in review.reflection %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 8px 0;">
+  <tr>
+    <td style="padding:10px 14px; background:{{ ui.ROWALT }}; border:1px solid {{ ui.LINE }}; border-radius:8px; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.BODY }};">
+      <span style="display:inline-block; background:{{ ui.HEADBG }}; color:{{ ui.MUTED }}; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:bold; text-transform:uppercase; margin-right:6px;">{{ ins.category }}</span>
+      {{ ins.lesson }}
+      {% if ins.tickers %}<span style="color:{{ ui.MUTED }}; font-size:11px;"> &middot; {{ ins.tickers | join(', ') }}</span>{% endif %}
+      {% if ins.relation_to_prior %}<div style="margin-top:3px; font-size:11px; color:{{ ui.MUTED }};">&#8627; {{ ins.relation_to_prior }} a prior week's lesson</div>{% endif %}
+    </td>
+  </tr>
+</table>
+{% endfor %}
+<p style="font-family:Arial,Helvetica,sans-serif; font-size:11px; color:{{ ui.MUTED }}; margin:6px 0 20px 0;">These are process observations to inform future suggestions — not trade advice. Stored for reference.</p>
+{% endif %}
+
 {# ---- Drift state ---- #}
 {{ ui.section("Drift State") }}
 {% if review.gap_rows %}

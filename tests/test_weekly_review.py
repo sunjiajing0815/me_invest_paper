@@ -245,6 +245,7 @@ def test_run_weekly_review_for_account_uses_nickname_subject(
         _settings(tmp_path),
         _mock_adapter(),
         emailer,
+        MagicMock(),                   # llm — unused here (no resolved outcomes)
         account=AccountInfo(account_ref=2, nickname="Moomoo", broker="moomoo"),
         primary_ref=1,                 # account 2 is NOT primary → no config/targets fallback
         week_of=date(2026, 5, 25),
