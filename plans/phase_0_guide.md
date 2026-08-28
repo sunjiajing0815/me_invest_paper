@@ -634,9 +634,13 @@ You now have a working spine. Phase 1 (recurring schedule + email + drift bands 
 
 ---
 
-## 14. ADR-0001 — Rebalance bands
+## 14. ADR-0001 — Rebalance bands *(superseded: shipped as ADR-0008)*
 
-Before Phase 1 starts, write `docs/adr/0001-rebalance-bands.md` with one decision: *absolute bands* (e.g., target ±5 percentage points) **or** *relative bands* (e.g., target ±25% of target). Pick one, write three sentences explaining why. The `band_low_pct` / `band_high_pct` columns already exist; you're just locking the formula that populates them.
+> **Outcome.** This was written up as `docs/adr/0008-rebalance-bands.md`, not 0001 —
+> the number 0001 ended up meaning the broker-adapter decision in every later
+> citation. The choice made was **absolute per-ticker bands**.
+
+Before Phase 1 starts, write an ADR with one decision: *absolute bands* (e.g., target ±5 percentage points) **or** *relative bands* (e.g., target ±25% of target). Pick one, write three sentences explaining why. The `band_low_pct` / `band_high_pct` columns already exist; you're just locking the formula that populates them.
 
 This is the only ADR Phase 0 demands. Defer the rest until they actually block work.
 

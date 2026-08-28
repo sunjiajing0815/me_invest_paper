@@ -1027,13 +1027,15 @@ tests/
   test_fresh_schema.py                  Regression: fresh `alembic upgrade head` builds every model table (Alembic is sole schema source) (1 test) (Phase 4.9a)
   test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
-  (numbers 0001, 0008 and 0034 were never written — the sequence has gaps)
+  (0034 is reserved for an unbuilt Wave B feature — household target allocation)
+  0001-broker-adapter-abstraction.md    BrokerAdapter is the only door to a broker SDK; market data separable from execution; domain IDs ≠ broker IDs (retroactive)
   0002-schema-migrations.md             Three-Tier Storage Architecture — SQLite OLTP / DuckDB analytics / Parquet bars
   0003-sqlite-oltp-duckdb-analytics.md  Schema Migrations with Alembic + SQLite (batch mode for ALTER/DROP COLUMN)
   0004-bar-storage.md
   0005-email-failure-policy.md
   0006-sr-methodology.md      S/R methodology; Phase 3a scoring pass; Phase 3c news-augmented scoring + anchor audit trail
   0007-position-sizing.md     Position sizing; Phase 3a confidence-weighted anchor; Phase 3c anchor_method field + critic refinement
+  0008-rebalance-bands.md               Absolute per-ticker bands in targets.yaml over relative bands; band_high doubles as the order-size ceiling; loader enforces band_low ≤ pct ≤ band_high (retroactive)
   0009-llm-guardrails.md      Hard rules for LLM output in the suggestion pipeline
   0010-magic-link-auth.md     HMAC magic-link auth for Accept/Reject email buttons
   0011-news-source-priority.md  Alpaca-primary / Finnhub-fallback; URL normalization dedup

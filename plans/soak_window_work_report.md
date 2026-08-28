@@ -90,12 +90,13 @@ interpret.
 
 - Written: ADR-0033 (snapshot one-ts, P0.4), ADR-0035 (funds detection, P2.3); ADR-0029 updated
   (dividend decision, P1.6).
-- Reserved for Wave B: ADR-0034 (household target), ADR-0036 (email aggregation).
+- Reserved for Wave B: ADR-0034 (household target), ADR-0037 (email aggregation).
+  (ADR-0036 was taken by the paper-only public build; email aggregation moves to 0037.)
 
 ## Outstanding follow-ups
 
 - **Wave B (household), deferred:** P2.4 `household_target_allocation` + `services/household_summary.py`
-  (ADR-0034); P2.5 consolidated emails + `email_aggregation` toggle (ADR-0036).
+  (ADR-0034); P2.5 consolidated emails + `email_aggregation` toggle (ADR-0037).
 - **Account-61 historical snapshot backfill** (from P0.2): deferred to P3.2; low impact.
 - **P1.5 email-footer UX** ("sentiment temporarily unavailable" line): deferred to P5.3.
 - **Priority 3+ not started:** calendar prompts (quarterly/annual/tax-year-end), structured logs /
