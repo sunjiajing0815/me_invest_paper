@@ -44,10 +44,17 @@ Newest first. Each row links both views for that week.
 | 4 | Jun 15–19 | $100,762 | +$500 | [stats](week_04_stats_card.png) · [allocation](week_04_current_vs_target.png) | 6 suggested, 6 accepted, **0 filled** — Fed held and a ceasefire rally lifted prices past every limit. |
 | 3 | Jun 8–12 | $100,262 | +$168 | [stats](week_03_stats_card.png) · [allocation](week_03_current_vs_target.png) | First realised PnL: $10.36. Limits set deep at support; markets bounced and 4 of 6 didn't fill. |
 | 2 | Jun 1–5 | $100,094 | −$1,806 | [stats](week_02_stats_card.png) · [allocation](week_02_current_vs_target.png) | Building positions through a selloff — 8 suggested → 6 accepted → 4 filled, the highest fill count of the series. |
-| 1 | May 25–29 | $101,900 | — | [stats](week_01_stats_card.png) · [allocation](week_01_current_vs_target.png) | Day 0 baseline. 69% cash, VOO and MU at 0.0%, every holding under target. The "before" picture. |
+| 1 | May 25–29 | $101,900 | — | [stats](week_01_stats_card.png) · [allocation](week_01_current_vs_target.png) | Day 0 baseline. 69% cash, VOO and MU at 0.0%, every holding under target. The "before" picture — and the positions already there are test-order residue, not choices (see notes). |
 
 ## Notes on reading these
 
+- **Nothing held at week 1 was an allocation decision.** Every position already on the
+  books when the series starts — QQQ at 14.5%, MSFT at 4.4%, and the small BRK.B, AMZN,
+  ISRG, BTC and GOOG holdings — was placed and filled while testing the app during
+  development. Those are test orders, not choices. Week 1 is simply the first week the
+  system ran as intended; it is a starting *state*, not a designed portfolio, and the
+  drift shown against target in that first chart is mostly an artifact of how testing
+  happened to leave things.
 - **"auto-trade LIVE"** on the week 1–8 cards means the auto-trade *mode* is `LIVE` rather
   than `OFF` or `DRY_RUN` — the third rung of the promotion ladder in
   [ADR-0014](../adr/0014-auto-trade-mode-discipline.md). It is a paper account throughout.
