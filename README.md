@@ -288,15 +288,25 @@ Manually trigger one auto-trade pass (respects the current mode — no-ops if `O
 
 ### `POST /admin/auto-trade/promote` *(requires X-Promotion-Token)*
 
-Promote (or demote) the auto-trade mode. Enforces soak-window requirements:
+Promote (or demote) the auto-trade mode. `broker_scope` accepts only `alpaca_paper` in
+this build (`Literal["alpaca_paper"]` on `AutoTradePromoteRequest`; any other value is
+rejected with 422 before the soak-window check ever runs) — the private build's
+`alpaca_live` and `moomoo` scopes are not reachable here:
 
 | `broker_scope` | `to_mode` | Min days in current mode |
 |---|---|---|
 | `alpaca_paper` | `DRY_RUN` | 0 (first promotion) |
-| `alpaca_paper` | `LIVE` | 14 |
-| `alpaca_live` | `LIVE` | 28 |
+| `alpaca_paper` | `LIVE` | 0 |
 
-Demotion to `OFF` is always immediate. Returns 409 with `days_remaining` if the soak window is not met.
+Both windows are `0` because `alpaca_paper` has no real money — this build cannot
+promote beyond paper regardless of soak time (`SOAK_WINDOWS` in `main.py`; see
+[ADR-0036](docs/adr/0036-paper-only-public-build.md)). The promotion machinery itself —
+mode transitions, the promotion-log audit trail, the demotion path — is unchanged from
+ADR-0014 and still runs; only the private build's non-zero windows (`alpaca_paper` →
+`LIVE`: 14 days, `alpaca_live` → `LIVE`: 28 days) are absent here. Demotion to `OFF` is
+always immediate. The endpoint still returns 409 with `days_remaining` when a
+configured window is unmet, but with both windows at `0` that path is unreachable in
+this build.
 
 ```bash
 curl -X POST localhost:8000/admin/auto-trade/promote \
@@ -706,7 +716,7 @@ Append-only audit log of every auto-trade mode change.
 | `ts` | timestamptz | When the promotion occurred |
 | `from_mode` | varchar | Previous mode (`OFF`, `DRY_RUN`, `LIVE`) |
 | `to_mode` | varchar | New mode |
-| `broker_scope` | varchar | `alpaca_paper`, `alpaca_live`, or `moomoo` (only `alpaca_paper` is reachable in this build — `alpaca_live` and `moomoo` are rejected by `config.VALID_BROKERS`; see [ADR-0036](docs/adr/0036-paper-only-public-build.md)) |
+| `broker_scope` | varchar | `alpaca_paper`, `alpaca_live`, or `moomoo` in the private build; this build's `POST /admin/auto-trade/promote` accepts only `alpaca_paper` (`Literal["alpaca_paper"]` on `AutoTradePromoteRequest` in `main.py`, backed by `config.VALID_BROKERS` at startup) — see [ADR-0036](docs/adr/0036-paper-only-public-build.md) |
 | `reason` | varchar | Human-supplied reason |
 | `actor` | varchar | Always `admin` in Phase 4 (single-user) |
 

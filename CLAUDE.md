@@ -20,7 +20,9 @@ Phase 4 code is complete — tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a (
 
 Active phases: 0 (foundation), 1 (daily email + bar backfill), 2 (indicators, S/R levels, weekly order suggestions), 3 (LLM-scored levels, news triage, suggestion review pipeline), 4 (reconciliation, Moomoo adapter, weekly review, opt-in auto-trade).
 
-Phase 4 promotion soak stages (all require manual promotion via `POST /admin/auto-trade/promote`):
+Phase 4 promotion soak stages — private-build history (all required manual promotion via
+`POST /admin/auto-trade/promote`; `alpaca_live` and `moomoo` are not reachable in this
+public build, see ADR-0036 and the "Paper-only build" note above):
 - `v0.4.1-paper-dry-run` — DRY_RUN on Alpaca paper, clean for 2 weeks
 - `v0.4.2-paper-live` — LIVE on Alpaca paper, clean for 4 weeks
 - `v0.4.3-alpaca-live` — LIVE on real Alpaca, clean for 4 weeks
