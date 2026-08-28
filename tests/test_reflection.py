@@ -192,7 +192,7 @@ def _weekly_review(reflection, outcomes):  # type: ignore[no-untyped-def]
         week_of=_WEEK, account=AccountSnapshot("alpaca", "paper", 1000.0, 5000.0),
         realized_pnl_usd=0.0, suggestion_audits=[], gap_rows=[], material_news={},
         auto_trade_mode="OFF", promotions_this_week=[], kill_switches_this_week=[],
-        executions_this_week=0, preview_suggestions=[], moomoo_status="unavailable",
+        executions_this_week=0, preview_suggestions=[],
         reflection=reflection, outcomes=outcomes,
     )
 

@@ -187,14 +187,5 @@ Sources:
   Weekly market context unavailable (Tavily not configured or capped).
 {% endif %}
 
-=== MOOMOO STATUS ===
-{% if review.moomoo_status == 'primary' %}
-Moomoo is the PRIMARY broker — live trading enabled.
-{% elif review.moomoo_status == 'parallel_running' %}
-Moomoo OpenD is running in PARALLEL — data sync active, not primary broker.
-{% else %}
-Moomoo OpenD is UNAVAILABLE — not configured or not reachable.
-{% endif %}
-
 ---
 No orders are placed automatically. Log into your broker to act on any suggestion.

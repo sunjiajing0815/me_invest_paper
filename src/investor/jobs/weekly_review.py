@@ -105,7 +105,6 @@ class WeeklyReview:
     kill_switches_this_week: list[dict[str, Any]]
     executions_this_week: int
     preview_suggestions: list[dict[str, Any]]  # simplified dicts from generate_suggestions()
-    moomoo_status: str  # "parallel_running" | "primary" | "unavailable"
     market_context: WeeklyMarketContext | None = None  # Phase 4.5: Tavily weekly digest
     order_funnel: OrderFunnel | None = None            # Phase 4.8: order activity metrics
     order_flow: OrderFlow | None = None
@@ -237,13 +236,6 @@ def _build_review(
         OrderExecution.filled_at >= week_start,
     ).count()
 
-    # Moomoo status
-    moomoo_status = "unavailable"
-    if settings.broker == "moomoo":
-        moomoo_status = "primary"
-    elif settings.opend_host:
-        moomoo_status = "parallel_running"
-
     # Phase 4.8: order activity metrics
     fri = week_of + timedelta(days=4)
     order_funnel: OrderFunnel | None = None
@@ -289,7 +281,6 @@ def _build_review(
         kill_switches_this_week=kill_switches_this_week,
         executions_this_week=executions_this_week,
         preview_suggestions=[],  # populated below outside session scope
-        moomoo_status=moomoo_status,
         order_funnel=order_funnel,
         order_flow=order_flow,
         drift_rows=drift_rows,
@@ -506,7 +497,6 @@ def run_weekly_review_for_account(
         kill_switches_this_week=review.kill_switches_this_week,
         executions_this_week=review.executions_this_week,
         preview_suggestions=preview_suggestions,
-        moomoo_status=review.moomoo_status,
         market_context=acct_context,
         order_funnel=review.order_funnel,
         order_flow=review.order_flow,

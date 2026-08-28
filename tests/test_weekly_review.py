@@ -92,7 +92,6 @@ def _make_review(**overrides: Any) -> WeeklyReview:
         kill_switches_this_week=[],
         executions_this_week=0,
         preview_suggestions=[],
-        moomoo_status="unavailable",
     )
     defaults.update(overrides)
     return WeeklyReview(**defaults)
@@ -115,7 +114,6 @@ def test_weekly_review_empty_state_no_crash() -> None:
     wr = _make_review()
     assert wr.week_of == date(2026, 5, 11)
     assert wr.executions_this_week == 0
-    assert wr.moomoo_status == "unavailable"
 
 
 # ── SuggestionAudit dataclass ─────────────────────────────────────────────────
@@ -174,7 +172,6 @@ def _mock_adapter() -> MagicMock:
 def _mock_settings() -> MagicMock:
     settings = MagicMock()
     settings.broker = "alpaca_paper"
-    settings.opend_host = None
     settings.weekly_review_breakdown_top_n = 5
     settings.weekly_review_trend_weeks = 4
     return settings

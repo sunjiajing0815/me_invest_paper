@@ -444,22 +444,6 @@
 {% endif %}
 {% endif %}
 
-{# ---- Moomoo status ---- #}
-{{ ui.section("Moomoo Status") }}
-{% if review.moomoo_status == 'primary' %}
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef4fb; border:1px solid #b6d4ea; border-radius:8px; margin:0 0 20px 0;">
-  <tr><td style="padding:12px 16px; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:#1a5276;">Moomoo is the <strong>primary broker</strong> — live trading enabled.</td></tr>
-</table>
-{% elif review.moomoo_status == 'parallel_running' %}
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1faf3; border:1px solid #bfe3cb; border-radius:8px; margin:0 0 20px 0;">
-  <tr><td style="padding:12px 16px; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.POS }};">Moomoo OpenD is <strong>running in parallel</strong> — data sync active, not primary broker.</td></tr>
-</table>
-{% else %}
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ ui.ROWALT }}; border:1px solid {{ ui.LINE }}; border-radius:8px; margin:0 0 20px 0;">
-  <tr><td style="padding:12px 16px; font-family:Arial,Helvetica,sans-serif; font-size:13px; color:{{ ui.MUTED }};">Moomoo OpenD is <strong>unavailable</strong> — not configured or not reachable.</td></tr>
-</table>
-{% endif %}
-
 {{ ui.holdings_glossary(ticker_names if ticker_names is defined else {}) }}
 
 {{ ui.footer("No orders are placed automatically. Log into your broker to act on any suggestion.",
