@@ -2,7 +2,7 @@
 
 Converts Alpaca SDK types to domain dataclasses at the boundary.
 alpaca-py returns numeric fields as strings — every numeric is wrapped in float().
-Paper/live routing is via paper=True only; URL override is not supported.
+This build is paper-only — see src/investor/safety.py.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from alpaca.trading.models import Position as AlpacaPosition
 from alpaca.trading.models import TradeAccount
 from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest
 
+from ..safety import assert_paper_flag
 from ..services.suggest import _ceil2dp, _floor2dp
 from .base import (
     Account,
@@ -33,9 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class AlpacaAdapter:
-    def __init__(self, api_key: str, secret_key: str, *, paper: bool) -> None:
+    def __init__(self, api_key: str, secret_key: str, *, paper: bool = True) -> None:
+        # L0 of the paper-only invariant. The `paper` parameter is kept rather than
+        # removed so the adapter still reads as a general design that has been
+        # deliberately narrowed. See src/investor/safety.py.
+        assert_paper_flag(paper, source="AlpacaAdapter")
+        self.paper = paper
         self._client = TradingClient(api_key, secret_key, paper=paper)
-        logger.info("AlpacaAdapter initialised in %s mode", "paper" if paper else "live")
+        logger.info("AlpacaAdapter initialised in paper mode")
 
     def get_account(self) -> Account:
         # alpaca-py types this as TradeAccount | dict (dict only with raw_data=True,

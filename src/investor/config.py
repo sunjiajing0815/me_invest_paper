@@ -15,7 +15,9 @@ from .services.llm import HAIKU, SONNET
 
 logger = logging.getLogger(__name__)
 
-VALID_BROKERS = {"alpaca_paper", "alpaca_live", "moomoo"}
+# Paper-only public build: alpaca_live and moomoo are deliberately absent.
+# See src/investor/safety.py and docs/adr/0036-paper-only-public-build.md.
+VALID_BROKERS = {"alpaca_paper"}
 _VALID_ASSET_CLASSES = {"index_etf", "leveraged_etf", "equity"}
 
 

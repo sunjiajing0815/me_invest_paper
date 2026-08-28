@@ -22,32 +22,19 @@ logger = logging.getLogger(__name__)
 
 
 def make_adapter(settings: Settings) -> BrokerAdapter:
-    """Return the correct adapter for the configured broker."""
+    """Return the correct adapter for the configured broker.
+
+    Paper-only build: `alpaca_paper` is the only accepted broker (enforced again
+    in config.VALID_BROKERS). See src/investor/safety.py.
+    """
     if settings.broker == "alpaca_paper":
         return AlpacaAdapter(
             api_key=settings.alpaca_api_key,
             secret_key=settings.alpaca_secret_key,
             paper=True,
         )
-    if settings.broker == "alpaca_live":
-        return AlpacaAdapter(
-            api_key=settings.alpaca_api_key,
-            secret_key=settings.alpaca_secret_key,
-            paper=False,
-        )
-    if settings.broker == "moomoo":
-        from .moomoo import MoomooAdapter
-
-        return MoomooAdapter(
-            host=settings.opend_host,
-            port=settings.opend_port,
-            paper=False,
-            security_firm=settings.opend_security_firm,
-            rsa_key_path=settings.opend_rsa_key_path or None,
-            currency=settings.opend_currency,
-        )
     raise NotImplementedError(
-        f"Broker {settings.broker!r} not yet implemented."
+        f"Broker {settings.broker!r} is not available in this paper-only build."
     )
 
 
@@ -57,36 +44,25 @@ def make_account_adapter(
     """Build the adapter for one broker account from its broker + connection_config.
 
     Unlike ``make_adapter`` (which keys on ``settings.broker``), this builds from a
-    ``broker_account`` row: ``broker`` is the bare adapter family ("alpaca" / "moomoo")
+    ``broker_account`` row: ``broker`` is the bare adapter family ("alpaca")
     and ``connection_config`` is the JSON blob naming credentials / connection params.
     Env-var names in the config are resolved via ``os.environ``, falling back to the
     matching ``settings`` value so Jane's existing single-broker setup keeps working.
     """
     if broker == "alpaca":
-        paper = bool(connection_config.get("paper", True))
+        # L2: `connection_config["paper"]` is deliberately ignored. The admin API
+        # (POST /admin/broker-accounts) is a second door into adapter construction,
+        # and it must not be able to request a live account. See src/investor/safety.py.
         api_key = os.environ.get(
             connection_config.get("api_key_env", ""), settings.alpaca_api_key
         )
         secret = os.environ.get(
             connection_config.get("secret_env", ""), settings.alpaca_secret_key
         )
-        return AlpacaAdapter(api_key=api_key, secret_key=secret, paper=paper)
-    if broker == "moomoo":
-        from .moomoo import MoomooAdapter
-
-        return MoomooAdapter(
-            host=connection_config.get("opend_host", settings.opend_host),
-            port=int(connection_config.get("opend_port", settings.opend_port)),
-            paper=bool(connection_config.get("paper", False)),
-            security_firm=connection_config.get(
-                "security_firm", settings.opend_security_firm
-            ),
-            rsa_key_path=connection_config.get("rsa_key_path")
-            or settings.opend_rsa_key_path
-            or None,
-            currency=connection_config.get("currency", settings.opend_currency),
-        )
-    raise NotImplementedError(f"Broker {broker!r} not yet implemented for per-account adapters.")
+        return AlpacaAdapter(api_key=api_key, secret_key=secret, paper=True)
+    raise NotImplementedError(
+        f"Broker {broker!r} is not available in this paper-only build."
+    )
 
 
 def build_account_adapters(

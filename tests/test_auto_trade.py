@@ -113,6 +113,7 @@ def _mock_adapter(
     get_order_return: OrderConfirmation | Exception | None = None,
 ) -> MagicMock:
     adapter = MagicMock()
+    adapter.paper = True  # L3 of the paper-only invariant reads this; see safety.py
     adapter.get_account.return_value = Account(
         account_id="test",
         cash_usd=buying_power,
@@ -514,6 +515,7 @@ def test_validation_error_skips_suggestion_stays_live(db_session: Session) -> No
     )
     # First call raises BrokerValidationError; second call succeeds
     adapter = MagicMock()
+    adapter.paper = True  # L3 of the paper-only invariant reads this; see safety.py
     adapter.get_account.return_value = Account(
         account_id="test",
         cash_usd=100_000.0,

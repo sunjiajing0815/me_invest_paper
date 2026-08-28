@@ -57,6 +57,8 @@ class _PlacingAdapter:
     """Adapter stub that accepts every order and reads it back cleanly (passes the
     LIVE readback: get_order().client_order_id == the submitted client_order_id)."""
 
+    paper = True  # L3 of the paper-only invariant reads this; see safety.py
+
     def __init__(self, order_id: str = "b-1") -> None:
         self._order_id = order_id
         self._last_client_oid: str | None = None

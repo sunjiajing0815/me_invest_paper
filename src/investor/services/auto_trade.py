@@ -25,6 +25,7 @@ from ..models import (
     OrderExecution,
     OrderSuggestion,
 )
+from ..safety import assert_paper_only
 from ..services.accounts import (
     resolve_active_account_refs,
     resolve_primary_account_ref,
@@ -597,6 +598,9 @@ def run_auto_trade_pass(
                 time_in_force="gtc",
             )
             try:
+                # L3 of the paper-only invariant — the last gate before real money
+                # could move. See src/investor/safety.py.
+                assert_paper_only(adapter)
                 conf = adapter.submit_order(req)
             except BrokerValidationError as val_exc:
                 logger.warning(

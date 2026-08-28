@@ -28,7 +28,11 @@ def _fake_settings() -> SimpleNamespace:
     )
 
 
-def test_make_account_adapter_alpaca_paper_vs_live() -> None:
+def test_make_account_adapter_alpaca_ignores_live_connection_config() -> None:
+    """Paper-only build (L2): connection_config["paper"] is always ignored.
+
+    See src/investor/safety.py.
+    """
     with patch("investor.brokers.alpaca.TradingClient") as mock_tc:
         paper_adapter = make_account_adapter(
             broker="alpaca", connection_config={"paper": True}, settings=_fake_settings()
@@ -36,10 +40,11 @@ def test_make_account_adapter_alpaca_paper_vs_live() -> None:
         assert isinstance(paper_adapter, AlpacaAdapter)
         assert mock_tc.call_args.kwargs["paper"] is True
 
-        make_account_adapter(
+        live_requested_adapter = make_account_adapter(
             broker="alpaca", connection_config={"paper": False}, settings=_fake_settings()
         )
-        assert mock_tc.call_args.kwargs["paper"] is False
+        assert mock_tc.call_args.kwargs["paper"] is True
+        assert live_requested_adapter.paper is True
 
 
 def test_make_account_adapter_resolves_env_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
