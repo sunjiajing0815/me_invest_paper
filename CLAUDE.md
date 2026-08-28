@@ -4,11 +4,17 @@ This file orients Claude Code (and any future LLM agents) to this repository. Re
 
 ## Mission
 
-A self-hosted, suggest-only assistant for a long-term US-equities investor. The system pulls positions from one or more broker accounts per user (Alpaca + Moomoo as of Phase 4.9a; IBKR + Tiger are deferred follow-ons), compares against a YAML-defined target allocation, identifies support/resistance levels, suggests weekly orders, and emails daily/weekly reports **per broker account**. **The system never places orders.** Order execution is always manual, in the broker's own UI.
+A self-hosted, suggest-only assistant for a long-term US-equities investor. The system pulls positions from one or more broker accounts per user (Alpaca + Moomoo as of Phase 4.9a in the private build; IBKR + Tiger are deferred follow-ons) — **this public build ships Alpaca paper only**, see below — compares against a YAML-defined target allocation, identifies support/resistance levels, suggests weekly orders, and emails daily/weekly reports **per broker account**. **The system never places orders.** Order execution is always manual, in the broker's own UI.
 
 Owner: Jane (solo developer, primary user). Multi-tenant productization is Phase 5 — until then, treat this as a single-user app.
 
 ## Current phase
+
+**Paper-only build.** This repository is the public build of a private multi-broker
+system. A four-layer invariant in `src/investor/safety.py` makes it structurally
+impossible to reach a live brokerage account — the Moomoo adapter is removed, and
+`BROKER=alpaca_live` is rejected at startup. See ADR-0036. The private build is not
+paper-only; do not assume the constraint applies there.
 
 Phase 4 code is complete — tagged `v0.4.8-phase-4-code-complete`. Phase 4.9a (multi-broker plumbing + per-broker reports) Stage A–C is code-complete on `main`; remaining before the `v0.4.9a.0` tag: the 2-broker smoke test. See `plans/phase_4_9a_guide.md` and `plans/phase_4_9a_completion.md`.
 
@@ -46,11 +52,11 @@ src/investor/
   db.py               SQLite engine + session factory
   models.py           SQLAlchemy ORM models
   scheduler.py        APScheduler bootstrap
+  safety.py           paper-only invariant (L0–L3) — see ADR-0036
   brokers/
     __init__.py       make_adapter(settings) [primary] + make_account_adapter(broker, connection_config) + build_account_adapters(session) → {account_ref: adapter} (Phase 4.9a)
     base.py           BrokerAdapter Protocol + dataclasses
     alpaca.py         AlpacaAdapter
-    moomoo.py         MoomooAdapter — talks to OpenD on host (Phase 4)
   services/
     accounts.py       AccountInfo + list_active_accounts / resolve_primary_account_ref / resolve_active_account_refs (Phase 4.9a multi-broker)
     snapshot.py       position + account ingestion (per broker_account_id)
@@ -73,7 +79,6 @@ src/investor/
     daily_report.py   Mon-Fri 16:15 ET — sync, compose (orders recap + allocation donut), email
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, suggestions, email
     reconciliation.py Mon-Fri 16:45 ET — match broker fills to suggestions
-    moomoo_parallel.py  Mon-Fri 16:50 ET — compare Moomoo vs Alpaca (parallel-run soak)
     weekly_review.py  Fri 17:00 ET — 8-section reflection email (section 7 = Tavily market context)
     auto_trade.py     Mon-Fri 09:35 ET — place orders for accepted suggestions
   graphs/           LangGraph graph definitions and node helpers
@@ -178,13 +183,13 @@ uv run mypy src/
 - **Never make the `revise_node` LLM-driven — LLMs propose changes, Python applies them.** The `revise_node` in `graphs/suggestion_review.py` is intentionally deterministic Python: `_apply_changes()` validates every critic-proposed change against known scored levels and rejects invented prices or unknown methods. A second LLM-driven revision would add hallucination risk, create loop risk (the critic might then revise its own revision), and add cost with no benefit. See ADR-0013.
 - **Never extend `LLM_BACKEND=agent_sdk` consumer-OAuth login into multi-user deployment.** The current single-user setup is personal automation (permitted by Anthropic's ToS). A shared consumer OAuth session across multiple users violates ToS. Phase 5 multi-tenant must use individual API keys per user.
 - **Never feed Tavily results into the suggestion engine or order-execution path — with one bounded exception.** Tavily output flows into `WeeklyMarketContext` and from there into the email template AND the `context_adjust_node` size multiplier (Phase 4.7). The exception is strictly bounded: `context_adjust_node` may scale suggestion *quantities* only, within Python-clamped `[context_size_min, context_size_max]`, using only existing scored S/R level anchors. It must never reach `generate_suggestions()`, `run_auto_trade_pass()`, or any broker adapter. See ADR-0020, ADR-0021.
+- **Never remove or weaken a layer of the paper-only invariant.** See `src/investor/safety.py` and ADR-0036.
 
 ## Common gotchas
 
 1. **SQLite write contention.** SQLite serialises writes; if you run a CLI script while uvicorn is up, they share the same file and will queue (not deadlock). Avoid running both simultaneously for heavy writes.
 2. **Alpaca paper account is initially empty.** Place a few paper trades in the Alpaca dashboard before testing the gap query — otherwise every ticker shows 100% gap and you can't tell if the math works.
 3. **Cash buffer creates a permanent under-target.** If your YAML targets sum to 100 but you keep a 5% cash buffer, every ticker will look 0.5% under-target. Either set targets to sum to 95 (and accept they show "on target" against equity-only weights), or scale the gap by `equity / (equity - cash_buffer)` in the SQL. Document the choice in an ADR.
-4. **Moomoo OpenD is a host-side dependency, not a containerised service.** OpenD runs on macOS/Windows; in Docker the app reaches it via `host.docker.internal:11111`. Do not try to install OpenD inside the app image.
 5. **`alpaca-py` returns strings for numeric fields.** Wrap in `float()` at the adapter boundary.
 6. **APScheduler timezones.** `BackgroundScheduler(timezone="America/New_York")` is the right default for cron triggers, but `DateTrigger(run_date=...)` interprets naive datetimes in scheduler-local time — pass `datetime.now(UTC)` explicitly to avoid surprises.
 7. **Alembic batch mode for SQLite column changes.** SQLite can't `ALTER COLUMN` or `DROP COLUMN` directly. Use `render_as_batch=True` (already set in `migrations/env.py`) — Alembic recreates the table transparently.
@@ -195,9 +200,6 @@ uv run mypy src/
 12. **LangGraph checkpointer is `MemorySaver`, not `SqliteSaver`.** Phase 3b discovered that `SqliteSaver` causes `database is locked` errors: when a graph node calls `session.flush()` for `llm_call_log`, SQLAlchemy starts a write transaction; `SqliteSaver`'s separate `sqlite3` connection then can't acquire the write lock to checkpoint between nodes. `MemorySaver` (in-memory, per-`graph.invoke()`) eliminates the contention entirely. Graph checkpoint state is ephemeral — one `invoke()` per ticker per run — so disk persistence is not needed. Do not revert to `SqliteSaver`. `langgraph --thread-id` trace inspection does not work with `MemorySaver`; use logging inside nodes instead. **Pragma-audit corollary:** if you ever swap a SQLite-touching library, audit the pragmas it sets and unwind them explicitly — a code-level swap does NOT revert engine-level state. This is exactly how WAL mode persisted from Phase 3b → 2026-06-18 after the `SqliteSaver` → `MemorySaver` migration (it reverted the code path but not the `journal_mode=WAL` the library had set), causing the ADR-0026 silent data loss. The same applies to `synchronous`, `cache_size`, `temp_store`, `foreign_keys`. The `init_db` fail-fast WAL check guards this one case; the lesson is general.
 13. **`AgentSDKClient.call()` uses `asyncio.run()` — APScheduler-safe, async-route-unsafe.** The sync bridge is fine in APScheduler job threads (each has no live event loop). Do NOT call `llm.call()` on an `AgentSDKClient` from inside an `async def` FastAPI route — it will raise `RuntimeError: This event loop is already running`.
 14. **`LLM_BACKEND` env var defaults to `anthropic_api`.** Set to `agent_sdk` to route LLM calls through `claude-agent-sdk`. Unknown values fall back to `anthropic_api` with a warning log. `LLMClient` is now a Protocol (`services/llm.py`); use `make_llm_client(settings)` factory, not `LLMClient(...)` directly. See ADR-0016.
-16. **Moomoo OpenD bind address must be `0.0.0.0:11111`, not `127.0.0.1`.** A loopback-bound OpenD is unreachable from Docker. Verify with `lsof -i :11111` on the host.
-17. **Moomoo ticker prefix stripping is enforced at the adapter boundary.** `_strip_market_prefix()` in `brokers/moomoo.py` converts `US.AAPL` → `AAPL`. No ticker with a market prefix should ever appear outside that file. Similarly, `submit_order()` adds `US.` internally — callers always use bare tickers.
-18. **`client_order_id` ↔ `remark` mapping in Moomoo.** Moomoo has no native `client_order_id` field. The adapter stores it in the `remark` field on `place_order()` and reads it back from `remark` in `deal_list_query()` and `order_list_query()`. Callers see `Activity.client_order_id` — the `remark` mapping is invisible outside the adapter (per ADR-0018).
 19. **Wash-sale window is 30 calendar days, not trading days.** The guard checks `filled_at >= now - timedelta(days=30)`. It only applies to real fills (`dry_run=False`). A `dry_run=True` simulated loss sell does NOT trigger the wash-sale guard for subsequent real buys — the `dry_run.is_(False)` filter in `_check_wash_sale()` is intentional and critical.
 20. **`dry_run=False` filter is mandatory in every reconciliation and auto-trade query.** Simulated losses from `DRY_RUN` mode must never interfere with real PnL accounting, wash-sale guards, or cap calculations. If you add a new query that touches `order_execution`, include `OrderExecution.dry_run.is_(False)` unless you explicitly want DRY_RUN rows too.
 15. **Phase 3c adds three new prompt files** under `src/investor/prompts/`: `suggestion_reason_v1.txt` (Sonnet per-draft rationale system prompt), `suggestion_critic_v1.txt` (Sonnet cross-suggestion critic system prompt with five severity-ordered criteria), and `score_levels_v2.txt` (news-augmented copy of `score_levels_v1.txt`). The `level_prompt_version` setting (default `"v2"`) selects the scoring prompt. The reason/critic prompts are always `v1` (no version setting). All prompts live in the `prompts/` directory and are loaded via `load_prompt()` in `services/prompts.py`.
@@ -228,7 +230,7 @@ Phase 3a adds: `ANTHROPIC_API_KEY` (Sonnet scoring), `MAGIC_LINK_SECRET` (HMAC f
 
 Phase 3b adds: `FINNHUB_API_KEY` (Finnhub free tier; optional but needed as Alpaca fallback). `LLM_DAILY_COST_CAP_USD=3.0` (updated from 1.0 in Phase 3a). `LLM_BACKEND=anthropic_api` (or `agent_sdk` to route through `claude-agent-sdk`; see ADR-0016).
 
-Phase 4 adds: `OPEND_HOST=host.docker.internal`, `OPEND_PORT=11111`, `OPEND_SECURITY_FIRM=FUTUSECURITIES` (Moomoo/Futu OpenD daemon settings — only needed when `BROKER=moomoo`). `AUTO_TRADE_PROMOTION_TOKEN` — separate from `ADMIN_TOKEN`; required for auto-trade mode promotions.
+Phase 4 adds: `AUTO_TRADE_PROMOTION_TOKEN` — separate from `ADMIN_TOKEN`; required for auto-trade mode promotions. (The private build also adds `OPEND_HOST`/`OPEND_PORT`/`OPEND_SECURITY_FIRM` for the Moomoo/Futu OpenD daemon; those settings and the Moomoo adapter are absent from this paper-only build — see ADR-0036.)
 
 Phase 4.9a (multi-broker) adds no required env vars. Per-broker credentials/connection params live in each `broker_account.connection_config` JSON blob (which names env-var keys for the adapter factory to resolve). Targets are now per broker account: `data/targets/<broker_account_id>.yaml`, with the primary account falling back to `TARGETS_PATH` (`config/targets.yaml`) for one release. Connect a broker with `POST /admin/broker-accounts`; account-scoped endpoints take an optional `?broker_account_id` (default: primary for reads, all-active for job triggers/bulk mutations).
 

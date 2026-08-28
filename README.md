@@ -1,10 +1,16 @@
-# Investor Assistant — Phase 4.9a (soak window)
+# Investor Assistant — Phase 4.9a (paper-only public build)
 
-A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca (or Moomoo), compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a **weekly review email** covers realised PnL, suggestion outcomes, an **Order Activity summary** (funnel counts, dollar flow, allocation drift Mon→Fri, per-ticker breakdown, 4-week trend), auto-trade status, and a Tavily-powered market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
+> ⚠️ **Paper trading only.** This build cannot connect to a live brokerage
+> account. A four-layer invariant in [`src/investor/safety.py`](src/investor/safety.py)
+> blocks live trading at the adapter, the config, both factories, and the
+> order-submission chokepoint. See [ADR-0036](docs/adr/0036-paper-only-public-build.md).
+> Nothing here is financial advice.
+
+A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a **weekly review email** covers realised PnL, suggestion outcomes, an **Order Activity summary** (funnel counts, dollar flow, allocation drift Mon→Fri, per-ticker breakdown, 4-week trend), auto-trade status, and a Tavily-powered market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
 
 **By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
 
-**Current phase:** 4.9a shipped (2 live brokers: Alpaca paper + Moomoo real, suggest-only) — now in the **post-4.9a soak window** (tag `v0.4.9a-hardened`).  
+**Current phase:** this is the **paper-only public build** of a private multi-broker system — see [ADR-0036](docs/adr/0036-paper-only-public-build.md). The private build supports a second live broker (Moomoo) and real order execution; this build ships **Alpaca paper only**, enforced by the four-layer invariant in `src/investor/safety.py`. The multi-broker data model, jobs, and API scoping (ADR-0024) are retained unchanged — connecting a second broker account still works end-to-end, it just can never be a live one.  
 **Status:** the app is fully multi-broker across the data model, jobs, scheduler, and API; the post-4.9a hardening batch (ADR-0025–0033) plus soak-window P0/P1/P2-Wave-A work (backup job, integrity audit, funds detection, target-change audit) are live. See `plans/soak_window_work_report.md` for the running completion record. Phase 4.9b (household view), 4.9c (IBKR + Tiger), and Phase 5 (multi-tenant) are parked pending the soak.
 >
 > The **foundation-hardening commit** (env.py + f2680 fixes, the `adopt_legacy_create_all_tables` migration, and the `init_db` reorder making Alembic the single source of truth) carries **no** auto-trade gate — it is a no-op on the existing DB and is safe to deploy independently.
@@ -50,9 +56,6 @@ Required variables (see `.env.example` for the full list):
 | `LLM_BACKEND` | `anthropic_api` (default) or `agent_sdk` (routes calls through `claude-agent-sdk`) |
 | `LLM_CLI_PATH` | Path to system `claude` CLI for `agent_sdk` backend; empty = use SDK-bundled binary |
 | `AUTO_TRADE_PROMOTION_TOKEN` | Separate token required for auto-trade mode promotions (`openssl rand -hex 32`) |
-| `OPEND_HOST` | Moomoo OpenD host (default `host.docker.internal`) — only needed when `BROKER=moomoo` |
-| `OPEND_PORT` | Moomoo OpenD port (default `11111`) |
-| `OPEND_SECURITY_FIRM` | Moomoo security firm (default `FUTUSECURITIES`) |
 | `TAVILY_API_KEY` | Tavily search API key ([free tier](https://tavily.com), 1 000 searches/month); empty = weekly market context section omitted |
 | `TAVILY_MONTHLY_CAP` | Monthly search cap (default `200`; prevents accidental overuse) |
 | `EARNINGS_SIZE_FACTOR` | Qty multiplier for tickers with earnings this week (default `0.5`; Phase 4.7) |
@@ -112,7 +115,6 @@ The scheduler starts automatically with the server and fires:
 | 16:15 | Mon–Fri | **Daily report** — sync, indicators, compose, email |
 | 16:30 | Mon–Fri | **Movers email** — threshold crossings + AI-triaged news |
 | 16:45 | Mon–Fri | **Daily reconciliation** — match broker fills to suggestions, FIFO PnL; polls broker for broker-cancelled executions |
-| 16:50 | Mon–Fri | **Moomoo parallel-run** — compare Moomoo vs Alpaca positions (soak stage) |
 | 17:00 | Friday | **Weekly review email** — suggestion outcomes, Order Activity summary (funnel/flow/drift), auto-trade status, market context narrative; persists context to DB for Sunday sizing |
 | 18:00 | Sunday | **Weekly suggestions** — indicators, levels, LLM scoring, review graph, email |
 
@@ -161,7 +163,7 @@ Returns service status and a per-broker-account summary: for each active account
 
 ### Broker accounts (Phase 4.9a)
 
-- `POST /admin/broker-accounts` *(X-Admin-Token)* — onboard a broker. Body `{"broker": "moomoo", "nickname": "Long-term", "connection_config": {...}}`. Builds the adapter (400 on bad config), creates the identity row with a fresh `account_ref`, seeds `auto_trade_state` at `OFF`, and registers the adapter live (no restart). Returns the new `broker_account_id`.
+- `POST /admin/broker-accounts` *(X-Admin-Token)* — onboard a broker. Body `{"broker": "alpaca", "nickname": "Long-term", "connection_config": {...}}`. Builds the adapter (400 on bad config), creates the identity row with a fresh `account_ref`, seeds `auto_trade_state` at `OFF`, and registers the adapter live (no restart). Returns the new `broker_account_id`. `connection_config.paper` is deliberately ignored — every adapter this endpoint can build is forced to `paper=True` (L2 of the paper-only invariant, [ADR-0036](docs/adr/0036-paper-only-public-build.md)).
 - `GET /admin/broker-accounts` *(X-Admin-Token)* — list all accounts (active + soft-deleted).
 - `DELETE /admin/broker-accounts/{broker_account_id}` *(X-Admin-Token)* — soft-delete (`is_active=False`); history stays queryable, cron loops skip it.
 
@@ -293,7 +295,6 @@ Promote (or demote) the auto-trade mode. Enforces soak-window requirements:
 | `alpaca_paper` | `DRY_RUN` | 0 (first promotion) |
 | `alpaca_paper` | `LIVE` | 14 |
 | `alpaca_live` | `LIVE` | 28 |
-| `moomoo` | `LIVE` | 28 |
 
 Demotion to `OFF` is always immediate. Returns 409 with `days_remaining` if the soak window is not met.
 
@@ -485,7 +486,9 @@ Fires Friday at 17:00 America/New_York. A backward-looking reflection on the wee
 | 6. Auto-trade activity | Mode changes, placements, cap spend, kill-switch events if any |
 | 7. **Order Activity** *(Phase 4.8)* | Suggestion funnel (suggested→accepted→routed→filled, DRY_RUN labelled separately), dollar flow (buy/sell routed vs filled), allocation drift table (Mon→Fri per ticker, "→ closer/farther"), per-ticker breakdown, 4-week trend strip |
 | 8. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. **Persisted to `weekly_market_context` table** (keyed to the upcoming Monday) so Sunday's suggestion graph can read it. |
-| 9. Moomoo parallel status | Position/account divergences vs Alpaca (green ✓ if clean; section removed post-flip) |
+
+A ninth section, Moomoo parallel-run status, existed in the private build's email while the
+Moomoo adapter was soaking (ADR-0018); it does not ship in this build (ADR-0036).
 
 Subject: `Weekly Review — week of MMM DD`
 
@@ -683,7 +686,7 @@ One row per broker fill. Written by the reconciliation engine (for manual trades
 | `filled_qty` | double | Shares actually filled |
 | `filled_price` | double | Average fill price |
 | `filled_at` | timestamptz | Fill timestamp (UTC) |
-| `broker` | varchar | `alpaca`, `moomoo`, or `dry_run` |
+| `broker` | varchar | `alpaca`, `moomoo`, or `dry_run` (`moomoo` does not ship in this build — see [ADR-0036](docs/adr/0036-paper-only-public-build.md)) |
 | `broker_order_id` | varchar | Broker-assigned order ID (NULL for dry-run rows) |
 | `client_order_id` | varchar | `sug-N` for auto-trade rows; NULL or custom for manual fills |
 | `dry_run` | bool | `true` for simulated DRY_RUN orders; `false` for real fills |
@@ -703,7 +706,7 @@ Append-only audit log of every auto-trade mode change.
 | `ts` | timestamptz | When the promotion occurred |
 | `from_mode` | varchar | Previous mode (`OFF`, `DRY_RUN`, `LIVE`) |
 | `to_mode` | varchar | New mode |
-| `broker_scope` | varchar | `alpaca_paper`, `alpaca_live`, or `moomoo` |
+| `broker_scope` | varchar | `alpaca_paper`, `alpaca_live`, or `moomoo` (only `alpaca_paper` is reachable in this build — `alpaca_live` and `moomoo` are rejected by `config.VALID_BROKERS`; see [ADR-0036](docs/adr/0036-paper-only-public-build.md)) |
 | `reason` | varchar | Human-supplied reason |
 | `actor` | varchar | Always `admin` in Phase 4 (single-user) |
 
@@ -735,7 +738,7 @@ Time-versioned spending caps. Only one row has `effective_to = NULL` (the active
 
 ### `auto_trade_state` (Phase 4.9a)
 
-Per-broker auto-trade mode + optional cap overrides. One row per broker account (keyed by `broker_account.account_ref`). Replaces the single `meta.auto_trade_mode` key, so each broker runs its own OFF → DRY_RUN → LIVE soak ladder independently — promoting Alpaca does not promote Moomoo. Cap-override columns are nullable; when NULL the engine falls back to the global `auto_trade_caps` row. The mode read/write path (`_get_mode` / `set_mode` / promote / kill switch) is wired to this table.
+Per-broker auto-trade mode + optional cap overrides. One row per broker account (keyed by `broker_account.account_ref`). Replaces the single `meta.auto_trade_mode` key, so each broker runs its own OFF → DRY_RUN → LIVE soak ladder independently — promoting Alpaca does not promote Moomoo (Moomoo does not ship in this build; see [ADR-0036](docs/adr/0036-paper-only-public-build.md)). Cap-override columns are nullable; when NULL the engine falls back to the global `auto_trade_caps` row. The mode read/write path (`_get_mode` / `set_mode` / promote / kill switch) is wired to this table.
 
 | Column | Type | Description |
 |---|---|---|
@@ -890,10 +893,10 @@ src/investor/
   db.py               SQLite engine + session factory
   models.py           SQLAlchemy ORM models (Phase 3b: NewsEvent, MoverState; Phase 3c: anchor_method; Phase 4: OrderExecution, AutoTradePromotionLog, KillSwitchLog, AutoTradeCaps; Phase 4.7: WeeklyMarketContextRow, OrderSuggestion.base_qty/size_factor/context_note; Phase 4.9a: AutoTradeState, broker_account_id partition key on 4 tables, broker_account.account_ref/nickname/is_active/connection_config)
   scheduler.py        APScheduler bootstrap
+  safety.py           paper-only invariant (L0–L3) — see ADR-0036
   brokers/
     base.py           BrokerAdapter Protocol + dataclasses (Activity, OrderRequest, OrderConfirmation)
     alpaca.py         AlpacaAdapter
-    moomoo.py         MoomooAdapter — talks to OpenD on host (Phase 4; futu-api)
   graphs/
     __init__.py           make_checkpointer() — MemorySaver (in-memory, avoids SQLite write contention)
     _nodes.py             llm_node_call() — generic LLM node helper (Phase 3a lessons applied)
@@ -938,7 +941,6 @@ src/investor/
     suggestion_expiry.py   Mon-Fri 09:00 ET — cancel stale GTC orders + expire suggestions (pre-market, before auto-trade)
     movers.py              Mon-Fri 16:30 ET — tiered threshold detection, news triage, email
     reconciliation.py      Mon-Fri 16:45 ET — match broker fills to suggestions, FIFO PnL, sync broker-cancelled executions (Phase 4)
-    moomoo_parallel.py     Mon-Fri 16:50 ET — compare Moomoo vs Alpaca positions (Phase 4)
     weekly_review.py       Fri 17:00 ET — reflection email + Order Activity metrics (Phase 4.8); persists WeeklyMarketContext to DB with week_of=_next_monday() (Phase 4.7)
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
     auto_trade.py          Mon-Fri 09:35 ET — place orders for accepted suggestions (Phase 4)
@@ -990,9 +992,10 @@ tests/
   test_weekly_suggestions.py            Parallel scoring wall-clock + failure fallback (2 tests)
   test_reconciliation.py                Reconciliation rules, FIFO PnL, idempotency, dry-run isolation, sug-N-rN Rule 1, sync_open_order_statuses, partial-fill guard (20 tests) (Phase 4 + 4.8)
   test_auto_trade.py                    OFF/DRY_RUN/LIVE modes, all guards, kill-switch triggers, promotion soak (20 tests) (Phase 4)
-  test_moomoo.py                        Prefix stripping, positions/activities mapping, remark→client_order_id, get_bars guard (11 tests) (Phase 4)
   test_weekly_review.py                 WeeklyReview + SuggestionAudit frozen dataclasses, pending-past-expiry display (8 tests) (Phase 4 + 4.8)
   test_no_unauthorized_submit_order.py  Grep CI gate: submit_order single-call-site enforcement (1 test) (Phase 4)
+  test_paper_only.py                    L0–L3 of the paper-only invariant: adapter, config, both factories, submit-order chokepoint (13 tests)
+  test_no_live_trading.py               Grep CI gate: no `paper=False` / `alpaca_live` / `MoomooAdapter` reappears in src/ (3 tests)
   test_tavily.py                        FakeTavilyClient, TavilyConcreteClient, factory, cap enforcement (11 tests) (Phase 4.5)
   test_weekly_context.py                build_weekly_market_context: happy path, empty→None, LLM failure, dedup, cap (5 tests) (Phase 4.5)
   test_earnings.py                      FakeEarningsClient, FinnhubEarningsClient, factory, SDK exception fallback (5 tests) (Phase 4.7)
@@ -1027,6 +1030,7 @@ docs/adr/
   0022-sentiment-client-and-etf-classification.md  SentimentClient Protocol; CNN F&G fragility contract; ETF classification in targets.yaml
   0023-weekly-order-activity-metrics.md  Allocation drift over fill-rate fiction; live queries over materialised cache; honest manual-placement bucket
   0024-multi-broker-single-user-data-model.md  Dual-purpose broker_account + account_ref partition key; per-broker auto_trade_state + soak ladder; per-broker guard scoping; user-level news/levels/context
+  0036-paper-only-public-build.md      Four-layer paper-only invariant (L0–L3); Moomoo adapter removed from this build; ADR-0018/ADR-0024 retained as design record; private build not so constrained
 ```
 
 ---
@@ -1035,7 +1039,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 364 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 630 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/
