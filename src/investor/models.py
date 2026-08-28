@@ -359,7 +359,8 @@ class OrderExecution(Base):
     limit_price: Mapped[float | None] = mapped_column(Double, nullable=True)
     filled_price: Mapped[float | None] = mapped_column(Double, nullable=True)
     filled_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    broker: Mapped[str] = mapped_column(String, nullable=False)  # "alpaca" | "moomoo"
+    # "alpaca" | "dry_run" (multi-broker by design; only Alpaca ships in this build)
+    broker: Mapped[str] = mapped_column(String, nullable=False)
     # NULL for DRY_RUN rows
     broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # "sug-N" for auto-trade
@@ -392,7 +393,7 @@ class AutoTradePromotionLog(Base):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     from_mode: Mapped[str] = mapped_column(String, nullable=False)
     to_mode: Mapped[str] = mapped_column(String, nullable=False)
-    # alpaca_paper|alpaca_live|moomoo
+    # alpaca_paper (paper-only build; the column stays broad by design)
     broker_scope: Mapped[str] = mapped_column(String, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "admin" | "kill_switch" | "guard_failure"

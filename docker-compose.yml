@@ -14,11 +14,6 @@ services:
       - dbdata:/app/db
       - ./data:/app/data
       - ./config:/app/config:ro
-    # Lets the container reach a host-side daemon (Moomoo OpenD) at
-    # host.docker.internal:11111. Required on Linux (VPS); no-op on macOS/Windows
-    # Docker Desktop, which provide this hostname automatically.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test:

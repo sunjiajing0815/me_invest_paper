@@ -49,7 +49,6 @@ from .jobs.daily_report import (
     run_daily_report_for_account,
 )
 from .jobs.funds_detection import run_funds_detection_all_brokers
-from .jobs.moomoo_parallel import run_moomoo_parallel
 from .jobs.movers import run_movers_email
 from .jobs.reconciliation import (
     run_daily_reconciliation_all_brokers,
@@ -244,8 +243,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sentiment = sentiment
 
     # Per-broker cron loops fan out over app.state.adapters (B8). Movers stays global
-    # (watchlist price moves), weekly_review stays primary-scoped (4.9a), moomoo_parallel
-    # is the soak comparison and is unchanged.
+    # (watchlist price moves), weekly_review stays primary-scoped (4.9a).
     daily_fn = partial(run_daily_report_all_brokers, _settings, emailer, adapters)
     weekly_fn = partial(
         run_weekly_suggestions_all_brokers, _settings, emailer, llm, earnings, adapters
@@ -253,7 +251,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     movers_fn = partial(run_movers_email, _settings, adapter, emailer, llm, tavily)
     expiry_fn = partial(sweep_expired_suggestions_all_brokers, adapters)
     recon_fn = partial(run_daily_reconciliation_all_brokers, _settings, adapters)
-    moomoo_parallel_fn = partial(run_moomoo_parallel, _settings, adapter)
     weekly_review_fn = partial(
         run_weekly_review_all_brokers, _settings, emailer, llm, tavily, adapters, sentiment
     )
@@ -266,7 +263,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         movers_fn,
         expiry_fn,
         recon_fn,
-        moomoo_parallel_fn,
         weekly_review_fn,
         auto_trade_fn,
         backup_func=backup_fn,
@@ -320,7 +316,7 @@ def health() -> dict[str, Any]:
 class BrokerAccountCreateRequest(BaseModel):
     """Request body for POST /admin/broker-accounts."""
 
-    broker: str  # "alpaca" | "moomoo" | …
+    broker: str  # "alpaca" (paper-only build; see safety.py)
     nickname: str
     currency: str = "USD"  # base currency for account totals (e.g. USD, AUD)
     connection_config: dict[str, Any] = {}  # creds/host refs; see make_account_adapter
@@ -1245,7 +1241,7 @@ def admin_run_auto_trade(
 
 class AutoTradePromoteRequest(BaseModel):
     to_mode: Literal["OFF", "DRY_RUN", "LIVE"]
-    broker_scope: Literal["alpaca_paper", "alpaca_live", "moomoo"]
+    broker_scope: Literal["alpaca_paper"]
     reason: str | None = None
     broker_account_id: int | None = None  # None → the primary active broker account
 
@@ -1253,9 +1249,7 @@ class AutoTradePromoteRequest(BaseModel):
 SOAK_WINDOWS: dict[tuple[str, str], int] = {
     # (broker_scope, to_mode) → minimum days in previous mode
     ("alpaca_paper", "DRY_RUN"): 0,
-    ("alpaca_paper", "LIVE"): 0,    # paper has no real money; soak only required before alpaca_live
-    ("alpaca_live", "LIVE"): 28,
-    ("moomoo", "LIVE"): 28,
+    ("alpaca_paper", "LIVE"): 0,  # paper has no real money; this build cannot promote beyond paper
 }
 
 

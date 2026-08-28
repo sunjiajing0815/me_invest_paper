@@ -15,7 +15,7 @@ from .services.llm import HAIKU, SONNET
 
 logger = logging.getLogger(__name__)
 
-# Paper-only public build: alpaca_live and moomoo are deliberately absent.
+# Paper-only public build: live brokers (Alpaca live, Moomoo) are deliberately absent.
 # See src/investor/safety.py and docs/adr/0036-paper-only-public-build.md.
 VALID_BROKERS = {"alpaca_paper"}
 _VALID_ASSET_CLASSES = {"index_etf", "leveraged_etf", "equity"}
@@ -81,13 +81,6 @@ class Settings(BaseSettings):
     news_arbitrate_model: str = SONNET
 
     auto_trade_promotion_token: str = ""  # separate from admin_token; required for promotions
-
-    # Moomoo/Futu OpenD daemon settings (used when broker == "moomoo")
-    opend_host: str = ""
-    opend_port: int = 11111
-    opend_security_firm: str = "FUTUSECURITIES"
-    opend_rsa_key_path: str = ""  # in-container path to OpenD's RSA key (empty = unencrypted)
-    opend_currency: str = "USD"  # base currency for Moomoo account totals (accinfo_query)
 
     # Tavily search API (Phase 4.5 weekly market context)
     tavily_api_key: str = ""

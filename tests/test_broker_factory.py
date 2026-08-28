@@ -22,9 +22,6 @@ def _fake_settings() -> SimpleNamespace:
     return SimpleNamespace(
         alpaca_api_key="settings-key",
         alpaca_secret_key="settings-secret",
-        opend_host="host.docker.internal",
-        opend_port=11111,
-        opend_security_firm="FUTUSECURITIES",
     )
 
 
