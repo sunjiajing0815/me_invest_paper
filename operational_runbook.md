@@ -1,5 +1,12 @@
 # Operational Runbook
 
+> **Paper-only public build note:** this runbook predates the paper-only public build. The
+> published build ships **`BROKER=alpaca_paper` only** (`alpaca_live` and `moomoo` are rejected
+> at startup — `src/investor/safety.py`), so the Moomoo/OpenD restart and Moomoo API-key-rotation
+> stub below describes a broker that is not present in this build; it is retained as design
+> history, not as an operable procedure here. See
+> [ADR-0036](docs/adr/0036-paper-only-public-build.md).
+
 Single place for "if X happens, do Y" for the self-hosted deployment. Started for the
 soak-window (P0.3); the CNN-scrape / OpenD-restart / API-key-rotation / structured-logs +
 Sentry sections are **P4.3** (stubs below).
@@ -79,8 +86,10 @@ expected target count. `init_db` fails fast if the restored DB is somehow in WAL
 ## (P4.3 stubs — to fill when those items land)
 - **CNN Fear & Greed scrape failure** (ADR-0030 decision matrix): header refresh / accept NULLs /
   paid feed.
-- **Moomoo OpenD restart**: OpenD must listen on `0.0.0.0:11111`; `lsof -i :11111`; recreate the app
+- **Moomoo OpenD restart** *(not applicable to this build — see the paper-only note at the top of
+  this file)*: OpenD must listen on `0.0.0.0:11111`; `lsof -i :11111`; recreate the app
   (`docker compose up -d --force-recreate`) after OpenD is back — startup currently blocks if OpenD
   is unreachable.
-- **Alpaca / Moomoo API-key rotation**; **Tavily / Anthropic / Finnhub key locations + monthly cost**.
+- **Alpaca API-key rotation**; **Tavily / Anthropic / Finnhub key locations + monthly cost**. (Moomoo
+  API-key rotation is not applicable — this build does not ship the Moomoo adapter.)
 - **Structured-log + Sentry conventions** (P4.1 / P4.2).

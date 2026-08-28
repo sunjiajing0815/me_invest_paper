@@ -76,7 +76,8 @@ qty         = min( max(1, floor(base_shares × effective)), band_cap )
 > `context_note` record the effective per-ticker value.
 
 > **Corrected 2026-07-20:** the first shipped version sized `base` from the band-headroom
-> (`band_cap`) — deploying ~2× the gap (AMZN: \$3,511 vs a \$1,751 gap). The base is the
+> (`band_cap`) — deploying ~2× the gap (illustrative: an AMZN \$4,000 order vs a \$2,000
+> gap — real order size redacted; ratio matches the actual bug). The base is the
 > **gap to target**; `band_cap` only binds in the 1-share-floor case (a whole share may
 > overshoot a tiny gap but must never cross `band_high`). Since the targets loader enforces
 > `target ≤ band_high` (§10), gap-based sizing respects the band by construction.
@@ -100,8 +101,8 @@ scrape. Audit fields: `base_qty = base_shares`, `size_factor = fraction`,
 so the email reuses the familiar `N (base B · ×F)` badge.
 
 #### Worked example (account 62, illustrative)
-NEE: target 5%, band_high 8%, current 4.2%, equity $30.2k, anchor $71.
-Gap to target = (5 − 4.2)% × $30.2k = $242 → gap_shares = 3 → base 3. F&G = 38 (fear)
+NEE: target 5%, band_high 8%, current 4.2%, equity $30k (illustrative, rounded), anchor $71.
+Gap to target = (5 − 4.2)% × $30k = $240 → gap_shares = 3 → base 3. F&G = 38 (fear)
 → ×0.75 → qty = 2 (≈$142, within the gap). Band cap (16 shares) doesn't bind.
 Tiny-gap case: gap $30 < 1 share → base floors to 1 IF one share stays ≤ band_high.
 

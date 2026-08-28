@@ -379,11 +379,14 @@ def admin_create_broker_account(
         raise HTTPException(status_code=400, detail=f"Could not build adapter: {exc}") from exc
 
     now = datetime.now(UTC)
-    paper = bool(connection_config.get("paper", True))
     with session_scope() as session:
         row = BrokerAccount(
             broker=body.broker,
-            mode="paper" if paper else "live",
+            # Always "paper": this build can only ever reach a paper account
+            # (see src/investor/safety.py). Never derive this from the
+            # caller-supplied connection_config — a body containing
+            # {"paper": false} must not make the app claim "live" in emails.
+            mode="paper",
             nickname=body.nickname,
             is_active=True,
             connection_config=json.dumps(connection_config),

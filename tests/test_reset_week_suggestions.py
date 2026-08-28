@@ -381,6 +381,34 @@ class TestBrokerAccounts:
         health = client.get("/health").json()["accounts"]
         assert {_ACCT, new_ref} <= {a["broker_account_id"] for a in health}
 
+    def test_create_always_persists_paper_mode(self, client):
+        """Finding 1 (paper-only public build): the persisted ``mode`` column must
+        always be "paper", even when the caller's connection_config asks for
+        {"paper": False}. Live trading is unreachable in this build (safety.py);
+        the stored mode must not claim otherwise in emails/reports."""
+        resp = client.post(
+            "/admin/broker-accounts",
+            headers=self._hdr,
+            json={
+                "broker": "alpaca",
+                "nickname": "ClaimsLive",
+                "connection_config": {"paper": False},
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        new_ref = resp.json()["broker_account_id"]
+
+        with Session(_TEST_ENGINE) as session:
+            row = (
+                session.query(BrokerAccount)
+                .filter(
+                    BrokerAccount.account_ref == new_ref,
+                    BrokerAccount.effective_to.is_(None),
+                )
+                .one()
+            )
+            assert row.mode == "paper"
+
     def test_create_unsupported_broker_400(self, client):
         resp = client.post(
             "/admin/broker-accounts",

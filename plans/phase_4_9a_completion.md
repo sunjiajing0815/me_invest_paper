@@ -162,8 +162,9 @@ a further batch of bugs, each fixed with a regression test. Grouped by area.
   total_assets/cash came back in HKD. Added a per-account **base currency**, chosen at
   onboarding (`BrokerAccountCreateRequest.currency`, default USD, folded into
   `connection_config`; `Settings.opend_currency` fallback) and passed to
-  `accinfo_query(currency=…)`. Account 62 set to USD; equity corrected from $246,795 (HKD)
-  to ~$31,497 (USD), `mode` corrected to `live`.
+  `accinfo_query(currency=…)`. Account 62 set to USD; equity corrected from an illustrative
+  ~$250,000 (HKD) to ~$32,000 (USD) — real figures redacted, ratio representative of the bug —
+  `mode` corrected to `live`.
 - **Per-position native currency, labeled** (`ba8742f` data layer, `391d062` display).
   Per the design decision (user-chosen), per-position prices stay in each holding's native
   currency (USD for US, AUD for ASX) rather than being FX-converted — but are now

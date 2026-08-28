@@ -1,5 +1,13 @@
 # Long-Term Investor Assistant — Product Plan (v1)
 
+> **Paper-only public build note:** this document predates the paper-only public build and
+> describes the original private, multi-broker design intent. The published build ships
+> **`BROKER=alpaca_paper` only** — `alpaca_live` and `moomoo` are rejected at startup with a
+> validation error — enforced by the four-layer invariant in `src/investor/safety.py`. The
+> Moomoo/OpenD broker-comparison and multi-broker design rationale below is **retained
+> deliberately as design history**, not as operable instructions for this build. See
+> [ADR-0036](docs/adr/0036-paper-only-public-build.md).
+
 **Owner:** Jane · **Date:** 2026-04-24 (last update 2026-05-20) · **Stage:** Building — Phases 0–4.5 code-complete; pre-tag observation window across Phases 3, 4, and 4.5 in progress (manual checklist in `pre_phase_5_manual_testing_checklist.md`); Phase 5 starts once Block A–E checklist items clear and tags `v0.3.0-phase-3`, `v0.4.0-phase-4-code-complete`, `v0.4.5.0` are pushed. Auto-trade promotion tags (`v0.4.1` → `v0.4.4`) run on a separate 14–16-week calendar timeline in parallel with Phase 5 development.
 
 ---
@@ -129,7 +137,7 @@ Key principles:
 
 - **One `BrokerAdapter` interface** (`get_positions`, `get_account`, `get_bars`, `submit_order_draft`, `get_activities`). Alpaca is v1 implementation; Moomoo and IBKR slot in behind the same contract.
 - **Same artifact on Mac and Docker.** One Dockerfile. On Mac you can either `uv run` directly, or run the same image via `docker compose up`. DB and secrets live in a bind-mounted `./data` and `./.env` so the file persists across runs and is identical in both modes.
-- **Broker selection via env var.** `BROKER=alpaca_paper` / `BROKER=alpaca_live` / `BROKER=moomoo` chooses the adapter at startup. No code changes to migrate.
+- **Broker selection via env var.** Original design intent: `BROKER=alpaca_paper` / `BROKER=alpaca_live` / `BROKER=moomoo` chooses the adapter at startup, no code changes to migrate. **In the paper-only public build, only `BROKER=alpaca_paper` is accepted** — `alpaca_live` and `moomoo` fail startup validation (`config.VALID_BROKERS`, ADR-0036).
 - **Moomoo caveat for Mac + Docker:** OpenD is a separate Moomoo-supplied process and is most stable running on the host Mac (not inside the app container). The app talks to it via `host.docker.internal:11111`. Keep it this way — don't try to cram OpenD into your Docker image.
 
 ---

@@ -383,9 +383,10 @@ across all broker accounts — so the `sid`-only lookup + token binding is unamb
 
 ## 15. Moomoo FX — non-USD positions/fills now converted to USD — `4550a41` (07-14)
 
-**Symptom:** a manually-bought HK position (07709, 100 shares, 8,940 HKD ≈ \$1,140) showed as
-**29.6% of the \$30.2k account-62 portfolio** in the daily email's untracked box; account-62
-weights summed to 106.8%.
+**Symptom:** a manually-bought HK position (illustrative figures — real ticker, share count, and
+amounts redacted: HK ticker `01234`, 100 shares, ~9,000 HKD ≈ ~\$1,150) showed as **~30% of a
+~\$30k account-62 portfolio** in the daily email's untracked box; account-62 weights summed to
+over 100%.
 
 **Root cause:** Moomoo's `position_list_query`/`deal_list_query` report values in each
 security's **native traded currency**; the adapter labelled the currency (post-smoke `391d062`)
@@ -398,9 +399,10 @@ unnoticed because every prior position was USD.
 feed). `get_positions` converts `market_value`/`avg_cost`; `get_activities` converts
 `filled_price`; converted rows are labelled `USD`. Rate-derivation failure leaves values
 native with native labels + WARNING (visibly-odd row beats a failed sync); all-USD portfolios
-skip the extra calls. One-time backfill converted the 4 historical 07709 snapshot rows
-(29.6→3.8%, weight = mv×rate since the equity denominator was always USD-correct); no
-HKD-priced `order_execution` rows existed. Verified live: implied FX 0.127576, 07709 at 5.4%.
+skip the extra calls. One-time backfill converted the 4 historical HK-position snapshot rows
+(illustrative: ~30%→~4%, weight = mv×rate since the equity denominator was always USD-correct);
+no HKD-priced `order_execution` rows existed. Verified live: implied FX ~0.128 (illustrative),
+HK position at ~5% (illustrative).
 
 Tests: `test_moomoo.py` — HKD position converts (mv+avg_cost, label→USD), USD-only skips FX
 lookups, rate-failure keeps native value+label, HK fill price converts. 537 passed.
@@ -452,7 +454,8 @@ section. `context_adjust` exempts top-ups (sized at creation — no F&G double-c
 Settings: `TOPUP_ENABLED=true`, `TOPUP_HIGHLIGHT_MIN_CONF=0.75`. 30 new tests (575 total).
 
 **Sizing correction (07-20):** the first live run sized the base from band-headroom, deploying
-~2× the gap (AMZN \$3,511 vs a \$1,751 gap — caught from the real email). Base is now the
+~2× the gap (illustrative: an AMZN \$4,000 order against a \$2,000 gap — real order size
+redacted; ratio matches the actual bug, caught from the real email). Base is now the
 **gap to target** (`floor(gap_usd/price)`, min 1 share); `band_high` is only the safety cap for
 the 1-share-floor case. Regression tests added; this week's pending top-ups regenerated.
 **Per-ticker scaling (07-20, same day):** the sentiment fraction is now modulated by each
