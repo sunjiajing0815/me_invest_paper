@@ -946,6 +946,13 @@ src/investor/
     weekly_context.py WeeklyMarketContext + build_weekly_market_context() — Tavily fanout + Sonnet synthesis (Phase 4.5); persist_weekly_context() / load_latest_weekly_context() (Phase 4.7)
     earnings.py       EarningsClient Protocol + FinnhubEarningsClient + FakeEarningsClient + make_earnings_client() factory (Phase 4.7)
     weekly_review_metrics.py  OrderFunnel / OrderFlow / AllocationDriftRow / PerTickerWeekRow / WeekTrendRow + 5 compute functions; all queries live, no ORM rows cross session boundary (Phase 4.8)
+    accounts.py       AccountInfo + list_active_accounts / resolve_primary_account_ref / resolve_active_account_refs (Phase 4.9a multi-broker)
+    orders.py         Broker-order cancellation helper shared by the expiry sweep and un-accept
+    unaccept.py       Un-accept an accepted suggestion — cancel any working broker order, mark it cancelled (ADR-0032)
+    funds.py          Funds-flow detection via a cash-flow heuristic (ADR-0035)
+    sentiment.py      SentimentClient Protocol — VIX + CNN Fear & Greed from the graphdata payload (ADR-0030)
+    reflection.py     Weekly-review reflection — resolved suggestion outcomes + news into generalizable lessons
+    ticker_names.py   Curated ticker → trading-name map for email annotation
   jobs/
     daily_report.py        Mon-Fri 16:15 ET — sync, compose (orders recap + allocation donut), email
     suggestion_expiry.py   Mon-Fri 09:00 ET — cancel stale GTC orders + expire suggestions (pre-market, before auto-trade)
@@ -954,6 +961,9 @@ src/investor/
     weekly_review.py       Fri 17:00 ET — reflection email + Order Activity metrics (Phase 4.8); persists WeeklyMarketContext to DB with week_of=_next_monday() (Phase 4.7)
     weekly_suggestions.py  Sun 18:00 ET — indicators, levels, LLM scoring, suggestion review graph, email
     auto_trade.py          Mon-Fri 09:35 ET — place orders for accepted suggestions (Phase 4)
+    funds_detection.py     Mon-Fri 18:00 ET — detect deposits/withdrawals from the daily-sync state
+    backup.py              Sun 02:00 ET — SQLite backup (6h misfire grace; off-hours, non-urgent)
+    sync.py                Not scheduled — position/account sync helper called by the cron jobs above
 config/
   targets.yaml        Target allocation (hand-edited)
 templates/
@@ -1017,9 +1027,9 @@ tests/
   test_fresh_schema.py                  Regression: fresh `alembic upgrade head` builds every model table (Alembic is sole schema source) (1 test) (Phase 4.9a)
   test_integration_alpaca.py            Full chain vs live Alpaca paper (1 test, skips without keys)
 docs/adr/
-  0001-broker-adapter-abstraction.md
-  0002-three-tier-storage-architecture.md
-  0003-schema-migrations-alembic-sqlite.md
+  (numbers 0001, 0008 and 0034 were never written — the sequence has gaps)
+  0002-schema-migrations.md             Three-Tier Storage Architecture — SQLite OLTP / DuckDB analytics / Parquet bars
+  0003-sqlite-oltp-duckdb-analytics.md  Schema Migrations with Alembic + SQLite (batch mode for ALTER/DROP COLUMN)
   0004-bar-storage.md
   0005-email-failure-policy.md
   0006-sr-methodology.md      S/R methodology; Phase 3a scoring pass; Phase 3c news-augmented scoring + anchor audit trail
@@ -1040,6 +1050,16 @@ docs/adr/
   0022-sentiment-client-and-etf-classification.md  SentimentClient Protocol; CNN F&G fragility contract; ETF classification in targets.yaml
   0023-weekly-order-activity-metrics.md  Allocation drift over fill-rate fiction; live queries over materialised cache; honest manual-placement bucket
   0024-multi-broker-single-user-data-model.md  Dual-purpose broker_account + account_ref partition key; per-broker auto_trade_state + soak ladder; per-broker guard scoping; user-level news/levels/context
+  0025-inline-email-images.md          Content-ID inline images over SVG/conic-gradient (Gmail); Pillow donut; multipart/related switch
+  0026-sqlite-journaling-and-db-volume.md  WAL is unsafe on Docker bind mounts; journal_mode=DELETE + synchronous=FULL; OLTP db on a named volume
+  0027-tavily-movers-fallback.md       Tavily as third fallback in the movers news pipeline
+  0028-movers-tiers-direction-and-week-reset.md  Direction-aware movers tiers; reset per ISO week
+  0029-split-adjusted-bars.md          Bars stored split-adjusted (Adjustment.SPLIT); SR-level re-backfill procedure
+  0030-cnn-sentiment-headers.md        CNN sentiment endpoint with browser-shaped headers; Phase 5 pre-launch removal
+  0031-shared-email-components.md      Shared email components and the Jinja autoescape trap
+  0032-suggestion-cancelled-status.md  Suggestion status `cancelled` is terminal; auto-trade ignores it
+  0033-snapshot-one-ts-per-batch.md    Snapshot one-ts-per-batch contract (alloc_drift reads ts = MAX(ts))
+  0035-funds-detection.md              Funds-flow detection via a cash-flow heuristic
   0036-paper-only-public-build.md      Four-layer paper-only invariant (L0–L3); Moomoo adapter removed from this build; ADR-0018/ADR-0024 retained as design record; private build not so constrained
 ```
 

@@ -49,6 +49,19 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "B", "UP", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Alembic writes these files; its template predates PEP 604 unions and leaves the
+# unused `sa`/`sqlmodel` imports and unsorted import block that autogenerate emits.
+# Ignore only what the generator produces — every other rule still applies here, so
+# hand-written migration logic is linted normally.
+"migrations/versions/*.py" = [
+    "UP007",   # Optional[X] / Union[X, Y] — Alembic template style
+    "UP035",   # deprecated typing imports — same
+    "I001",    # unsorted import block — generator output
+    "F401",    # unused sa/sqlmodel imports — generator boilerplate
+    "E501",    # long revision identifiers and down_revision chains
+]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
