@@ -1071,7 +1071,7 @@ docs/adr/
 
 ```bash
 uv sync
-uv run pytest                        # 630 unit tests + 1 integration (skipped without API keys)
+uv run pytest                        # 632 unit tests + 1 integration (skipped without API keys)
 uv run pytest -m "not integration"   # unit tests only
 uv run ruff check --fix
 uv run mypy src/
