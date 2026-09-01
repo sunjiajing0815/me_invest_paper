@@ -1,30 +1,35 @@
-# Weekly Outcome — 13 weeks on a paper account
+# Weekly Outcome — 14 weeks on a paper account
 
-Thirteen consecutive weeks of this system running end to end: suggesting orders, placing
+Fourteen consecutive weeks of this system running end to end: suggesting orders, placing
 the accepted ones, and reporting what happened. Two images per week — a **stats card**
 (equity, the suggestion funnel, cash) and a **current vs target allocation** chart.
 
 > **Paper account. Not real money.** Every figure comes from an Alpaca **paper** account,
 > which starts at $100,000 of simulated cash. These images show what the system does and
-> how it behaves, not an investment track record — thirteen weeks is far too short to be
+> how it behaves, not an investment track record — fourteen weeks is far too short to be
 > one either way. Nothing here is financial advice. This build cannot connect to a live
 > brokerage account at all; see [ADR-0036](../adr/0036-paper-only-public-build.md).
 
 ## The arc
 
-Equity ran from $101,900 (week 1) to $102,809 (week 13) — **+2.8% over 13 weeks**, with a
+Equity ran from $101,900 (week 1) to $103,521 (week 14) — **+3.5% over 14 weeks**, with a
 dip to $98,172 in week 9. The more interesting number is the second one: **band coverage
 went from 0/10 holdings inside their target band to 5/10**, peaking at 7/10 in week 12,
-while cash fell from 69% to 34% of equity. The system was built to close allocation gaps,
+while cash fell from 69% to 33% of equity. The system was built to close allocation gaps,
 not to beat the market, and that is the axis the images actually move along.
 
-Two things worth noticing, because they are the parts a demo usually hides:
+Three things worth noticing, because they are the parts a demo usually hides:
 
 - **Weeks 4, 6 and 7 filled nothing at all.** Limits were set at support levels and the
   market drifted up past them. Week 7's card says so plainly: *"3rd zero-fill week in last
   4."* A suggest-only system that places limit orders at support will do this.
-- **The best week of the series had no trades in it.** Week 11 gained $2,820 with cash
-  unchanged — the positions simply appreciated.
+- **The gains have stopped coming from trading.** Cash has sat at $34,556 for four
+  consecutive weeks (11–14) — the system has bought nothing in a month. The +$2,946 since
+  the week-10 close is entirely appreciation on positions already held.
+- **The last five percentage points of drift are the hard ones.** Band coverage has sat at
+  5/10 since week 10 and has not improved. The three largest gaps — TQQQ at 0.7% against a
+  10% target, MU at 0.0% against 5%, VOO 4.5pp light — are exactly the ones a
+  buy-at-support strategy struggles to close in a market that keeps rising.
 
 ## Index
 
@@ -32,9 +37,10 @@ Newest first. Each row links both views for that week.
 
 | Week | Dates | Equity | vs prior | Views | What it shows |
 |---|---|---|---|---|---|
+| 14 | Aug 24–28 | $103,521 | +$712 | [stats](week_14_stats_card.png) · [allocation](week_14_current_vs_target.png) | **New series high.** A fourth straight week with cash unchanged — the gain is all appreciation. Band coverage still 5/10; MSFT drifting further above target at 5.5%. VIX 14.4, F&G 54 (out of greed). |
 | 13 | Aug 17–21 | $102,809 | −$460 | [stats](week_13_stats_card.png) · [allocation](week_13_current_vs_target.png) | Band coverage slipped 7/10 → 5/10; QQQ and ISRG drifted just under their floors. VIX 15.1, F&G 55. |
 | 12 | Aug 10–14 | $103,269 | −$126 | [stats](week_12_stats_card.png) · [allocation](week_12_current_vs_target.png) | **Best band coverage of the series, 7/10.** QQQ crossed into band; ISRG returned after its July earnings drop. VIX 14.2, a series low. |
-| 11 | Aug 3–7 | $103,395 | +$2,820 | [stats](week_11_stats_card.png) · [allocation](week_11_current_vs_target.png) | **Series high — and no trades at all.** Cash unchanged; the gain is pure appreciation. First greed reading (F&G 63) in 11 weeks. |
+| 11 | Aug 3–7 | $103,395 | +$2,820 | [stats](week_11_stats_card.png) · [allocation](week_11_current_vs_target.png) | **Biggest single-week gain of the series — with no trades at all.** Cash unchanged; pure appreciation. First greed reading (F&G 63) in 11 weeks. |
 | 10 | Jul 27–31 | $100,575 | +$2,403 | [stats](week_10_stats_card.png) · [allocation](week_10_current_vs_target.png) | Back above $100K. VOO closed the most ground (17.9% → 20.4%); MSFT first holding to reach target. |
 | 9 | Jul 20–24 | $98,172 | −$1,136 | [stats](week_09_stats_card.png) · [allocation](week_09_current_vs_target.png) | **Series low**, −$1,828 against day 0. VIX 18.5, F&G 39. Card format changes here to invested/cash/band coverage. |
 | 8 | Jul 13–17 | $99,308 | −$1,593 | [stats](week_08_stats_card.png) · [allocation](week_08_current_vs_target.png) | QQQ filled $715, breaking a 3-week zero-fill streak. Top-up feature ships — 5 fear-scaled in-band top-ups queued. |
