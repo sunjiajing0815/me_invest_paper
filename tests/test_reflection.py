@@ -217,3 +217,18 @@ def test_review_email_renders_reflection() -> None:
 
 def test_review_email_no_reflection_section_when_empty() -> None:
     assert "Reflection — Lessons" not in _render_review(None, None)
+
+
+# ── feature gate ──────────────────────────────────────────────────────────────
+
+def test_reflection_is_opt_in_by_default() -> None:
+    """Reflection costs a Sonnet call per account per week and its insights feed only the
+    next reflection — never the suggestion engine. It must stay opt-in so a fresh clone
+    does not incur recurring LLM charges for a self-contained feature."""
+    from investor.config import Settings
+
+    s = Settings(
+        broker="alpaca_paper", alpaca_api_key="k", alpaca_secret_key="s",
+        sqlite_path=":memory:", targets_path="config/targets.yaml",
+    )
+    assert s.reflection_enabled is False

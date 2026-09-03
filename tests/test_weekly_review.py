@@ -304,3 +304,75 @@ def test_all_brokers_weekday_guard(_db_session: Session) -> None:
                 ),
                 FakeEmailer(), MagicMock(), MagicMock(), {}, None,
             )
+
+
+# ── reflection feature gate ───────────────────────────────────────────────────
+
+def _settings_with_reflection(tmp_path: Any, *, enabled: bool) -> Settings:
+    return Settings(
+        broker="alpaca_paper", alpaca_api_key="k", alpaca_secret_key="s",
+        sqlite_path=":memory:", targets_path="config/targets.yaml",
+        bars_dir=str(tmp_path), email_to="t@t.com",
+        reflection_enabled=enabled,
+    )
+
+
+def _seed_resolved_suggestion(session: Session, week_of: date) -> None:
+    """An expired suggestion resolves to 'expired_unfilled', so build_outcomes returns a
+    non-empty list and the reflection LLM call becomes reachable."""
+    session.add(OrderSuggestion(
+        broker_account_id=2,
+        week_of=week_of,
+        ticker="QQQ",
+        side="buy",
+        qty=2.0,
+        limit_price=400.0,
+        reason="test",
+        status="expired",
+        expires_at=datetime(2026, 5, 29, tzinfo=UTC),
+    ))
+    session.flush()
+
+
+def test_reflection_disabled_makes_no_llm_call(_db_session: Session, tmp_path: Any) -> None:
+    """REFLECTION_ENABLED=false must skip the LLM entirely — that is the whole point of
+    the flag. Paired with the enabled-case test below so this cannot pass vacuously."""
+    week_of = date(2026, 5, 25)
+    _seed_resolved_suggestion(_db_session, week_of)
+    llm = MagicMock()
+
+    run_weekly_review_for_account(
+        _settings_with_reflection(tmp_path, enabled=False),
+        _mock_adapter(),
+        FakeEmailer(),
+        llm,
+        account=AccountInfo(account_ref=2, nickname="Paper", broker="alpaca"),
+        primary_ref=1,
+        week_of=week_of,
+        market_context=None,
+    )
+
+    llm.call.assert_not_called()
+
+
+def test_reflection_enabled_reaches_the_llm(_db_session: Session, tmp_path: Any) -> None:
+    """Positive control for the test above: with the same seeded outcome and the flag on,
+    the reflection LLM call IS reached. Without this, assert_not_called would also pass if
+    the fixture simply produced no resolved outcomes."""
+    week_of = date(2026, 5, 25)
+    _seed_resolved_suggestion(_db_session, week_of)
+    llm = MagicMock()
+    llm.call.side_effect = RuntimeError("boom")  # reflect_on_week swallows and returns []
+
+    run_weekly_review_for_account(
+        _settings_with_reflection(tmp_path, enabled=True),
+        _mock_adapter(),
+        FakeEmailer(),
+        llm,
+        account=AccountInfo(account_ref=2, nickname="Paper", broker="alpaca"),
+        primary_ref=1,
+        week_of=week_of,
+        market_context=None,
+    )
+
+    llm.call.assert_called_once()

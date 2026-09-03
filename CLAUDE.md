@@ -240,6 +240,13 @@ Phase 4.5 adds: `TAVILY_API_KEY` (optional; empty = graceful skip of weekly mark
 
 Phase 4.7 adds: `FINNHUB_API_KEY` (already in config since Phase 3b; now also used for the earnings gate in `context_adjust_node`; empty = no-op gate + WARNING). New sizing settings — all have defaults and are optional: `EARNINGS_SIZE_FACTOR=0.5`, `EARNINGS_REANCHOR=true`, `EARNINGS_LOOKAHEAD_DAYS=7`, `CONTEXT_SIZE_MIN=0.25`, `CONTEXT_SIZE_MAX=1.5`, `CONTEXT_MAX_AGE_DAYS=4`, `CONTEXT_ADJUST_PROMPT_VERSION=v1`, `CRITIC_PROMPT_VERSION=v2`.
 
+Weekly reflection (opt-in, **off by default**): `REFLECTION_ENABLED=false`,
+`REFLECTION_PRIOR_INSIGHTS_COUNT=8`, `REFLECTION_PROMPT_VERSION=1`. Enabling it adds a
+lessons-learned section to the Friday email at the cost of one Sonnet call per broker account
+per week. The insights land in `reflection_insight` and are read back **only** by the next
+reflection — nothing in `services/suggest.py`, the review graph, or any order path reads them,
+so toggling this never changes what the system suggests or trades.
+
 Post-4.9a (ADR-0026): in Docker, `SQLITE_PATH` is **overridden to `/app/db/investor.db`** in `docker-compose.yml` so the OLTP db sits on the `dbdata` named volume (not the `./data` bind mount). Locally (non-Docker) `SQLITE_PATH` stays `./data/investor.db` — safe either way now that WAL is disabled. New runtime dep `pillow` (allocation donut, ADR-0025).
 
 ## Where to find more

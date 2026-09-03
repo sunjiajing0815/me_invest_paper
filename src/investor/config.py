@@ -119,8 +119,12 @@ class Settings(BaseSettings):
     topup_enabled: bool = True
     topup_highlight_min_conf: float = 0.75
 
-    # Weekly-review reflection (plans/pre_phase5_features_design.md §4)
-    reflection_enabled: bool = True
+    # Weekly-review reflection (plans/pre_phase5_features_design.md §4).
+    # Opt-in: costs one Sonnet call per broker account per week, and its insights are read
+    # back only by the NEXT reflection — they never reach the suggestion engine. Enabling it
+    # buys a lessons-learned section in the Friday email, nothing more. Off by default so a
+    # fresh clone does not incur recurring LLM charges for a self-contained feature.
+    reflection_enabled: bool = False
     reflection_prior_insights_count: int = 8
     reflection_prompt_version: str = "1"
 

@@ -53,6 +53,7 @@ Required variables (see `.env.example` for the full list):
 | `APP_BASE_URL` | Public base URL for magic links, e.g. `http://localhost:8000` |
 | `FINNHUB_API_KEY` | Finnhub API key — news fallback AND Phase 4.7 earnings gate ([free tier](https://finnhub.io), 60 req/min); empty = earnings gate is a no-op |
 | `LLM_DAILY_COST_CAP_USD` | Daily LLM spend cap in USD (default `3.0`) |
+| `REFLECTION_ENABLED` | Opt-in weekly reflection section in the Friday email (default `false`). Costs one Sonnet call per broker account per week; its insights feed only the next reflection and never reach the suggestion engine |
 | `LLM_BACKEND` | `anthropic_api` (default) or `agent_sdk` (routes calls through `claude-agent-sdk`) |
 | `LLM_CLI_PATH` | Path to system `claude` CLI for `agent_sdk` backend; empty = use SDK-bundled binary |
 | `AUTO_TRADE_PROMOTION_TOKEN` | Separate token required for auto-trade mode promotions (`openssl rand -hex 32`) |
@@ -410,7 +411,7 @@ Fires Sunday at 18:00 America/New_York. Contains:
 | Top-Up Opportunities | Sentiment-sized near-target buys (kind=topup) with band-headroom qty; ★ STRONG ENTRY highlight when anchor conf ≥ 0.75 and no bearish news |
 | Candle-aware levels | "Current" shows the day's range (close + low–high); Nearest Support/Resistance show touch history (Nx/30d, touched today); supports recently closed-through are excluded as buy anchors |
 | Earnings warning | Amber box lists watchlist tickers reporting this week or next (Finnhub); ★ marks those that also have a suggestion in the email |
-| Reflection / lessons | Weekly-review section reviews resolved suggestions vs fills/news/current price; Sonnet extracts methodology lessons (no trade advice) into a reflection_insight table that feeds forward |
+| Reflection / lessons *(opt-in, off by default)* | Weekly-review section reviews resolved suggestions vs fills/news/current price; Sonnet extracts methodology lessons (no trade advice) into a `reflection_insight` table. The lessons are fed back only into the next reflection — they never reach the suggestion engine. Enable with `REFLECTION_ENABLED=true` |
 | Levels at a glance | SMA-50/200 distance, nearest support and resistance per watchlist ticker |
 | Footer | Reminder that execution is manual |
 
@@ -496,9 +497,10 @@ Fires Friday at 17:00 America/New_York. A backward-looking reflection on the wee
 | 6. Auto-trade activity | Mode changes, placements, cap spend, kill-switch events if any |
 | 7. **Order Activity** *(Phase 4.8)* | Suggestion funnel (suggested→accepted→routed→filled, DRY_RUN labelled separately), dollar flow (buy/sell routed vs filled), allocation drift table (Mon→Fri per ticker, "→ closer/farther"), per-ticker breakdown, 4-week trend strip |
 | 8. Weekly market context | Macro/Fed narrative, sector summary, per-ticker catch-up, next-week events; sources cited. Omitted if `TAVILY_API_KEY` not set. **Persisted to `weekly_market_context` table** (keyed to the upcoming Monday) so Sunday's suggestion graph can read it. |
+| 9. Reflection — lessons *(opt-in)* | How this week's resolved calls played out, plus Sonnet-extracted methodology lessons. Omitted entirely unless `REFLECTION_ENABLED=true`; costs one Sonnet call per account per week and does not influence any suggestion. |
 
-A ninth section, Moomoo parallel-run status, existed in the private build's email while the
-Moomoo adapter was soaking (ADR-0018); it does not ship in this build (ADR-0036).
+A further section, Moomoo parallel-run status, existed in the private build's email while
+the Moomoo adapter was soaking (ADR-0018); it does not ship in this build (ADR-0036).
 
 Subject: `Weekly Review — week of MMM DD`
 
