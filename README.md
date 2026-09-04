@@ -8,6 +8,8 @@
 
 📈 **Just want to see what it actually did?** → **[14 weeks of weekly outcomes](docs/weekly-outcome/)** — two charts per week from the paper account (equity, allocation vs target, suggestion funnel), with a captioned index. It includes the weeks that filled nothing at all, and the best week of the series, which had no trades in it.
 
+![Equity and cash across 14 weeks](docs/weekly-outcome/equity-and-cash.svg)
+
 A self-hosted assistant for long-term US-equity investing. You define a target allocation
 in YAML; it watches your broker account against that target and emails you the orders that
 would close the gap. **It never places them for you** — execution is manual, in your

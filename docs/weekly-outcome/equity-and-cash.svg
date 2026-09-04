@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="480" viewBox="0 0 920 480" role="img" aria-label="Equity and cash percentage across 14 weeks on a paper account">
+<rect width="920" height="480" fill="#faf8f3"/>
+<text x="460.0" y="34.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" fill="#2c2c2c" text-anchor="middle" font-weight="bold" font-style="normal">Equity and Cash — 14 Weeks</text>
+<text x="460.0" y="55.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#888888" text-anchor="middle" font-weight="normal" font-style="italic">Paper account · cash fell 69% → 33% as positions were built toward target</text>
+<line x1="80" y1="384.0" x2="842" y2="384.0" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="388.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$97k</text>
+<line x1="80" y1="339.7" x2="842" y2="339.7" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="343.7" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$98k</text>
+<line x1="80" y1="295.4" x2="842" y2="295.4" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="299.4" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$99k</text>
+<line x1="80" y1="251.1" x2="842" y2="251.1" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="255.1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$100k</text>
+<line x1="80" y1="206.9" x2="842" y2="206.9" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="210.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$101k</text>
+<line x1="80" y1="162.6" x2="842" y2="162.6" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="166.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$102k</text>
+<line x1="80" y1="118.3" x2="842" y2="118.3" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="122.3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$103k</text>
+<line x1="80" y1="74.0" x2="842" y2="74.0" stroke="#e6e2d8" stroke-width="1"/>
+<text x="70.0" y="78.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="end" font-weight="normal" font-style="normal">$104k</text>
+<text x="852.0" y="388.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="start" font-weight="normal" font-style="normal">30%</text>
+<text x="852.0" y="314.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="start" font-weight="normal" font-style="normal">40%</text>
+<text x="852.0" y="240.4" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="start" font-weight="normal" font-style="normal">50%</text>
+<text x="852.0" y="166.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="start" font-weight="normal" font-style="normal">60%</text>
+<text x="852.0" y="92.8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#888888" text-anchor="start" font-weight="normal" font-style="normal">70%</text>
+<text x="80.0" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W1</text>
+<text x="80.0" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">May 25</text>
+<text x="138.6" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W2</text>
+<text x="197.2" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W3</text>
+<text x="197.2" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">Jun 8</text>
+<text x="255.8" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W4</text>
+<text x="314.5" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W5</text>
+<text x="314.5" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">Jun 22</text>
+<text x="373.1" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W6</text>
+<text x="431.7" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W7</text>
+<text x="431.7" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">Jul 6</text>
+<text x="490.3" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W8</text>
+<text x="548.9" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W9</text>
+<text x="548.9" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">Jul 20</text>
+<text x="607.5" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W10</text>
+<text x="666.2" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W11</text>
+<text x="666.2" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">Aug 3</text>
+<text x="724.8" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W12</text>
+<text x="783.4" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W13</text>
+<text x="783.4" y="422.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">Aug 17</text>
+<text x="842.0" y="406.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle" font-weight="normal" font-style="normal">W14</text>
+<polyline points="80.0,96.1 138.6,184.7 197.2,206.9 255.8,206.9 314.5,265.9 373.1,265.9 431.7,265.9 490.3,288.0 548.9,317.6 607.5,354.5 666.2,361.9 724.8,361.9 783.4,354.5 842.0,361.9" fill="none" stroke="#adb5bd" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="80.0" cy="96.1" r="3" fill="#adb5bd"/>
+<circle cx="138.6" cy="184.7" r="3" fill="#adb5bd"/>
+<circle cx="197.2" cy="206.9" r="3" fill="#adb5bd"/>
+<circle cx="255.8" cy="206.9" r="3" fill="#adb5bd"/>
+<circle cx="314.5" cy="265.9" r="3" fill="#adb5bd"/>
+<circle cx="373.1" cy="265.9" r="3" fill="#adb5bd"/>
+<circle cx="431.7" cy="265.9" r="3" fill="#adb5bd"/>
+<circle cx="490.3" cy="288.0" r="3" fill="#adb5bd"/>
+<circle cx="548.9" cy="317.6" r="3" fill="#adb5bd"/>
+<circle cx="607.5" cy="354.5" r="3" fill="#adb5bd"/>
+<circle cx="666.2" cy="361.9" r="3" fill="#adb5bd"/>
+<circle cx="724.8" cy="361.9" r="3" fill="#adb5bd"/>
+<circle cx="783.4" cy="354.5" r="3" fill="#adb5bd"/>
+<circle cx="842.0" cy="361.9" r="3" fill="#adb5bd"/>
+<polyline points="80.0,167.0 138.6,247.0 197.2,239.5 255.8,217.4 314.5,292.3 373.1,229.9 431.7,211.2 490.3,281.8 548.9,332.1 607.5,225.7 666.2,100.8 724.8,106.4 783.4,126.7 842.0,95.2" fill="none" stroke="#3f72af" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="80.0" cy="167.0" r="3" fill="#3f72af"/>
+<circle cx="138.6" cy="247.0" r="3" fill="#3f72af"/>
+<circle cx="197.2" cy="239.5" r="3" fill="#3f72af"/>
+<circle cx="255.8" cy="217.4" r="3" fill="#3f72af"/>
+<circle cx="314.5" cy="292.3" r="3" fill="#3f72af"/>
+<circle cx="373.1" cy="229.9" r="3" fill="#3f72af"/>
+<circle cx="431.7" cy="211.2" r="3" fill="#3f72af"/>
+<circle cx="490.3" cy="281.8" r="3" fill="#3f72af"/>
+<circle cx="548.9" cy="332.1" r="3" fill="#3f72af"/>
+<circle cx="607.5" cy="225.7" r="3" fill="#3f72af"/>
+<circle cx="666.2" cy="100.8" r="3" fill="#3f72af"/>
+<circle cx="724.8" cy="106.4" r="3" fill="#3f72af"/>
+<circle cx="783.4" cy="126.7" r="3" fill="#3f72af"/>
+<circle cx="842.0" cy="95.2" r="3" fill="#3f72af"/>
+<line x1="80" y1="251.1" x2="842" y2="251.1" stroke="#888888" stroke-width="1" stroke-dasharray="4 4" opacity="0.55"/>
+<text x="838.0" y="244.1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#888888" text-anchor="end" font-weight="normal" font-style="italic">$100k start</text>
+<text x="548.9" y="352.1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#3f72af" text-anchor="middle" font-weight="normal" font-style="normal">low $98,172</text>
+<text x="835.0" y="84.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="9" fill="#3f72af" text-anchor="end" font-weight="bold" font-style="normal">high $103,521</text>
+<line x1="80" y1="454" x2="102" y2="454" stroke="#3f72af" stroke-width="2.5"/>
+<text x="109.0" y="458.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#2c2c2c" text-anchor="start" font-weight="normal" font-style="normal">Equity (left)</text>
+<line x1="212" y1="454" x2="234" y2="454" stroke="#adb5bd" stroke-width="2.5"/>
+<text x="241.0" y="458.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#2c2c2c" text-anchor="start" font-weight="normal" font-style="normal">Cash % of equity (right)</text>
+<text x="842.0" y="458.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#888888" text-anchor="end" font-weight="normal" font-style="italic">paper account · not real money</text>
+</svg>

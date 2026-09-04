@@ -10,6 +10,8 @@ the accepted ones, and reporting what happened. Two images per week — a **stat
 > one either way. Nothing here is financial advice. This build cannot connect to a live
 > brokerage account at all; see [ADR-0036](../adr/0036-paper-only-public-build.md).
 
+![Equity and cash across 14 weeks](equity-and-cash.svg)
+
 ## The arc
 
 Equity ran from $101,900 (week 1) to $103,521 (week 14) — **+3.5% over 14 weeks**, with a
@@ -74,3 +76,13 @@ Newest first. Each row links both views for that week.
 
 Name files `week_NN_<view>.png` with the week number zero-padded to two digits, so `ls` and
 GitHub's file listing both order them correctly. Then add a row at the top of the table.
+
+To refresh the chart above, append the week's equity and cash % to `WEEKS` in
+[`scripts/plot_weekly_series.py`](../../scripts/plot_weekly_series.py) and re-run it:
+
+```bash
+uv run python scripts/plot_weekly_series.py
+```
+
+It is standard library only — no plotting dependency — and rewrites `equity-and-cash.svg`
+in place. The high/low annotations are derived from the data, so they follow automatically.
