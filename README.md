@@ -8,14 +8,41 @@
 
 📈 **Just want to see what it actually did?** → **[14 weeks of weekly outcomes](docs/weekly-outcome/)** — two charts per week from the paper account (equity, allocation vs target, suggestion funnel), with a captioned index. It includes the weeks that filled nothing at all, and the best week of the series, which had no trades in it.
 
-A self-hosted portfolio assistant for long-term US-equity investors. Pulls positions from Alpaca, compares them against a YAML-defined target allocation, computes technical indicators and support/resistance levels, scores levels with Claude Sonnet 4.6, and suggests weekly limit orders with 2–4 sentence analyst-style rationales. Before suggestions reach your inbox, a LangGraph review pipeline runs: Sonnet writes a per-draft rationale, a **context-adjust node** applies a deterministic earnings gate (Finnhub) and a bounded Sonnet narrative multiplier from Friday's persisted market context, a critic pass reviews all drafts as a set, and deterministic Python applies any changes the critic proposes. When a watchlist ticker moves ≥5% vs. last week, a movers email fires with AI-triaged news. Every Friday a **weekly review email** covers realised PnL, suggestion outcomes, an **Order Activity summary** (funnel counts, dollar flow, allocation drift Mon→Fri, per-ticker breakdown, 4-week trend), auto-trade status, and a Tavily-powered market context narrative — which is also **persisted to the database** so Sunday's sizing can be informed by Friday's macro narrative.
+A self-hosted assistant for long-term US-equity investing. You define a target allocation
+in YAML; it watches your broker account against that target and emails you the orders that
+would close the gap. **It never places them for you** — execution is manual, in your
+broker's own UI.
 
-**By default the system is suggest-only** — execution is always manual in the broker's UI. Phase 4 adds an opt-in **auto-trade mode** (off by default, three-state `OFF` / `DRY_RUN` / `LIVE`, gated behind a promotion token, hard spending caps, and a kill switch) that places already-accepted suggestions through the broker API. After each broker fill, the **reconciliation engine** matches fills back to suggestions, computes FIFO realised PnL, and flags unmatched manual trades for review.
+## What it does
 
-**Current phase:** this is the **paper-only public build** of a private multi-broker system — see [ADR-0036](docs/adr/0036-paper-only-public-build.md). The private build supports a second live broker (Moomoo) and real order execution; this build ships **Alpaca paper only**, enforced by the four-layer invariant in `src/investor/safety.py`. The multi-broker data model, jobs, and API scoping (ADR-0024) are retained unchanged — connecting a second broker account still works end-to-end, it just can never be a live one.  
-**Status:** the app is fully multi-broker across the data model, jobs, scheduler, and API; the post-4.9a hardening batch (ADR-0025–0033) plus soak-window P0/P1/P2-Wave-A work (backup job, integrity audit, funds detection, target-change audit) are live. See `plans/soak_window_work_report.md` for the running completion record. Phase 4.9b (household view), 4.9c (IBKR + Tiger), and Phase 5 (multi-tenant) are parked pending the soak.
->
-> The **foundation-hardening commit** (env.py + f2680 fixes, the `adopt_legacy_create_all_tables` migration, and the `init_db` reorder making Alembic the single source of truth) carries **no** auto-trade gate — it is a no-op on the existing DB and is safe to deploy independently.
+| When | What arrives |
+|---|---|
+| **Sun 18:00 ET** | Suggested limit orders with a 2–4 sentence rationale each. Indicators and S/R levels are computed, Claude Sonnet scores the levels, then a LangGraph pipeline writes rationales, applies an earnings gate (Finnhub) and a bounded sizing multiplier from Friday's market context, and a critic reviews every draft as a set. |
+| **Mon–Fri 16:15 ET** | Daily email — allocation donut, this week's order recap. |
+| **Mon–Fri 16:30 ET** | Movers email, but only when a watchlist ticker moved ≥5% vs last week. News is AI-triaged. |
+| **Fri 17:00 ET** | Weekly review — realised PnL, how each suggestion turned out, allocation drift Mon→Fri, and a Tavily market-context narrative that is persisted so Sunday's sizing can use it. |
+
+## What it deliberately won't do
+
+- **Trade without you.** Suggestions land as rows you accept or reject. Auto-trade exists
+  but ships `OFF`, behind a promotion token, hard spending caps, and a kill switch.
+- **Reach real money.** Not in this build — see the banner above.
+- **Let the LLM give advice.** Its output is restricted to news summaries, "is this
+  material?" classification, and structured labels. Price targets, fundamental claims and
+  trade recommendations are out of scope by design ([ADR-0009](docs/adr/0009-llm-guardrails.md)).
+- **Invent a revision.** When the critic proposes a change, deterministic Python applies it
+  and rejects anything referencing a price or method the scorer never produced
+  ([ADR-0013](docs/adr/0013-suggestion-review-pipeline.md)).
+
+After every fill, a reconciliation pass matches broker activity back to the suggestion that
+predicted it, computes FIFO realised PnL, and flags manual trades it can't account for — so
+the audit trail is *what I suggested* vs *what actually happened*.
+
+**This build** is the paper-only public build of a private multi-broker system
+([ADR-0036](docs/adr/0036-paper-only-public-build.md)). The multi-broker data model, jobs and
+API scoping are retained in full — a second broker account still connects end to end, it just
+can never be a live one. Household view (4.9b), IBKR + Tiger (4.9c) and multi-tenant
+(Phase 5) are designed but not built.
 
 ---
 
